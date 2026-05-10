@@ -18,6 +18,8 @@ scalar.out
 scalar.err
 sse2.out
 sse2.err
+multi.out
+multi.err
 
 # OS clutter
 .DS_Store

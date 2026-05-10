@@ -880,7 +880,9 @@ int main(int argc, char **argv) {
     const char *model_path = argv[1];
     const char *tok_path   = argv[2];
     float temp = 0.8f, top_p = 0.95f;
-    int   ctx_max = 256;
+    // Default to the model's full sequence length so multi-turn has
+    // room. Overridable via -c.
+    int   ctx_max = -1;
     uint64_t seed = (uint64_t)time(NULL);
     for (int i = 3; i + 1 < argc; i += 2) {
         if      (!strcmp(argv[i], "-c")) ctx_max = atoi(argv[i+1]);
@@ -892,7 +894,7 @@ int main(int argc, char **argv) {
 
     nc_model M = {0};
     if (!model_load(&M, model_path)) return 2;
-    if (M.sequence_len < ctx_max) ctx_max = M.sequence_len;
+    if (ctx_max <= 0 || ctx_max > M.sequence_len) ctx_max = M.sequence_len;
 
     nct *T = nct_load(tok_path);
     if (!T) { fprintf(stderr, "[nc_run] tokenizer load failed: %s\n", tok_path); return 3; }
@@ -970,15 +972,45 @@ int main(int argc, char **argv) {
     char turn_buf[16384];
     char tail_match[8] = {0};
 
+    // Multi-turn: keep the KV cache across turns so the model "remembers"
+    // earlier exchanges. We only restore_prefix() when the user types
+    // "/reset" or when the cache approaches sequence_len (forced reset
+    // with a notice to the GUI).
+    int turn_idx = 0;
+
     while (read_line(line, sizeof(line)) >= 0) {
         if (line[0] == 0) continue;
 
-        // Restore KV cache to the post-prefix state (skips the long re-prefill).
-        state_restore_prefix(&S);
+        // /reset: drop conversation history, return to post-fewshot state.
+        if (!strcmp(line, "/reset")) {
+            state_restore_prefix(&S);
+            turn_idx = 0;
+            emit_sentinel_str("INFO", "conversation reset");
+            emit_sentinel_str("EOT", "0");
+            continue;
+        }
+
+        // Estimate worst-case prefill + generate length. If we're within
+        // ~64 tokens of ctx_max, force a reset before this turn so we
+        // don't run off the end mid-generation.
+        if (S.seq_pos + 64 >= ctx_max) {
+            state_restore_prefix(&S);
+            turn_idx = 0;
+            emit_sentinel_str("INFO", "context full, conversation reset");
+        }
+
         prof_reset();
 
-        // Per-turn tail = user line + "\nA:"
-        snprintf(turn_buf, sizeof(turn_buf), "%s%s", line, PROMPT_SUFFIX);
+        // Per-turn tail.
+        //   First turn: prefix already ends in "Q: ", so we just append
+        //   the user line + "\nA:".
+        //   Later turns: prefix the user line with "\n\nQ: " to continue
+        //   the running Q&A pattern.
+        if (turn_idx == 0) {
+            snprintf(turn_buf, sizeof(turn_buf), "%s%s", line, PROMPT_SUFFIX);
+        } else {
+            snprintf(turn_buf, sizeof(turn_buf), "\n\nQ: %s%s", line, PROMPT_SUFFIX);
+        }
 
         int n = 0;
         n += nct_encode(T, turn_buf, prompt_ids + n,
@@ -1045,6 +1077,7 @@ int main(int argc, char **argv) {
             snprintf(eot_msg, sizeof(eot_msg), "%d", gen_count);
             emit_sentinel_str("EOT", eot_msg);
         }
+        turn_idx++;
     }
 
     state_free(&S);
