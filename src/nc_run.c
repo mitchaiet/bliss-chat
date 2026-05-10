@@ -71,6 +71,62 @@ static double now_sec(void) {
 #endif
 }
 
+// High-resolution monotonic timer for profiling. Returns nanoseconds.
+#ifdef _WIN32
+static int64_t g_qpc_freq = 0;
+static int64_t now_ns(void) {
+    LARGE_INTEGER c;
+    if (!g_qpc_freq) {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        g_qpc_freq = f.QuadPart;
+    }
+    QueryPerformanceCounter(&c);
+    return (int64_t)((double)c.QuadPart * 1.0e9 / (double)g_qpc_freq);
+}
+#else
+static int64_t now_ns(void) {
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+#endif
+
+// ===== profiler =====
+typedef struct {
+    int64_t forward_calls;
+    int64_t forward_ns;
+    int64_t linear_calls;
+    int64_t linear_ns;
+    int64_t rmsnorm_calls;
+    int64_t rmsnorm_ns;
+    int64_t softmax_ns;     // attention softmax (per block)
+    int64_t rope_ns;
+    int64_t ve_lookup_ns;
+} nc_prof;
+
+static nc_prof g_prof;
+
+static void prof_reset(void) {
+    memset(&g_prof, 0, sizeof(g_prof));
+}
+
+static void prof_dump(FILE *f, const char *label) {
+    fprintf(f, "[prof %s] forward_calls=%lld total=%.3fms avg=%.3fms\n", label,
+            (long long)g_prof.forward_calls,
+            g_prof.forward_ns / 1.0e6,
+            g_prof.forward_calls ? g_prof.forward_ns / 1.0e6 / (double)g_prof.forward_calls : 0.0);
+    fprintf(f, "[prof %s]   linear:  %.3fms (%lld calls, avg %.3fus)\n", label,
+            g_prof.linear_ns / 1.0e6,
+            (long long)g_prof.linear_calls,
+            g_prof.linear_calls ? g_prof.linear_ns / 1000.0 / (double)g_prof.linear_calls : 0.0);
+    fprintf(f, "[prof %s]   rmsnorm: %.3fms (%lld calls)\n", label,
+            g_prof.rmsnorm_ns / 1.0e6, (long long)g_prof.rmsnorm_calls);
+    fprintf(f, "[prof %s]   rope:    %.3fms\n", label, g_prof.rope_ns / 1.0e6);
+    fprintf(f, "[prof %s]   softmax: %.3fms\n", label, g_prof.softmax_ns / 1.0e6);
+    fprintf(f, "[prof %s]   ve_look: %.3fms\n", label, g_prof.ve_lookup_ns / 1.0e6);
+    fflush(f);
+}
+
 static void *xmalloc(size_t n) {
     void *p = malloc(n);
     if (!p) { fprintf(stderr, "[nc_run] OOM allocating %zu bytes\n", n); exit(2); }
@@ -301,11 +357,14 @@ static int model_load(nc_model *m, const char *path) {
 // y = RMSNorm(x), no learnable scale (matches nanochat's norm())
 // y[i] = x[i] / sqrt(mean(x^2) + eps)
 static void rmsnorm(float *y, const float *x, int d) {
+    int64_t t0 = now_ns();
     double s = 0.0;
     for (int i = 0; i < d; i++) s += (double)x[i] * x[i];
     s /= (double)d;
     float scale = (float)(1.0 / sqrt(s + 1e-6));
     for (int i = 0; i < d; i++) y[i] = x[i] * scale;
+    g_prof.rmsnorm_ns += now_ns() - t0;
+    g_prof.rmsnorm_calls++;
 }
 
 // y = W @ x where W is (rows, cols) fp32 row-major, x is (cols), y is (rows).
@@ -334,20 +393,25 @@ static void matmul_int8(float *y, const int8_t *W, const float *scales,
 
 static inline void linear(float *y, const float *x, int rows, int cols,
                           void *q, float *scale, float *fp32) {
+    int64_t t0 = now_ns();
     if (fp32) matmul_fp32(y, fp32, x, rows, cols);
     else      matmul_int8(y, (const int8_t *)q, scale, x, rows, cols);
+    g_prof.linear_ns += now_ns() - t0;
+    g_prof.linear_calls++;
 }
 
 // Apply RoPE (nanochat variant: split second-half rotates against first-half).
 // d = head_dim; cos/sin: (head_dim/2)
 // Layout: x[..head] is (head_dim) per head.
 static void apply_rope_head(float *x, const float *cosrow, const float *sinrow, int head_dim) {
+    int64_t t0 = now_ns();
     int d = head_dim / 2;
     for (int i = 0; i < d; i++) {
         float x1 = x[i], x2 = x[i + d];
         x[i]     =  x1 * cosrow[i] + x2 * sinrow[i];
         x[i + d] = -x1 * sinrow[i] + x2 * cosrow[i];
     }
+    g_prof.rope_ns += now_ns() - t0;
 }
 
 static inline float sigmoidf(float x) { return 1.0f / (1.0f + expf(-x)); }
@@ -454,6 +518,7 @@ static void state_restore_prefix(nc_state *s) {
 // Reads from state.x (which the caller has prepared from token id), writes back to state.x.
 // Updates KV cache. Computes logits at end.
 static void forward_one(nc_state *s, int token_id) {
+    int64_t fwd_t0 = now_ns();
     nc_model *m = s->m;
     int D = m->n_embd, H = m->n_head, KH = m->n_kv_head, HD = m->head_dim, KD = m->kv_dim;
     int T = m->sequence_len, FF = 4 * D;
@@ -563,6 +628,7 @@ static void forward_one(nc_state *s, int token_id) {
 
         // Per head, compute scores, softmax, weighted sum
         // GQA: each query head uses kv head h_kv = h * KH / H
+        int64_t sm_t0 = now_ns();
         float scale = 1.0f / sqrtf((float)HD);
         memset(s->xb2, 0, sizeof(float) * D);  // reuse xb2 as attention output (D = H*HD)
         for (int h = 0; h < H; h++) {
@@ -594,6 +660,7 @@ static void forward_one(nc_state *s, int token_id) {
                 for (int d = 0; d < HD; d++) out[d] += w * vh[d];
             }
         }
+        g_prof.softmax_ns += now_ns() - sm_t0;
 
         // attn output projection: x_out = c_proj(xb2)
         linear(s->xb, s->xb2, D, D, m->L[li].o_w, m->L[li].o_scale, m->L[li].o_fp32);
@@ -634,6 +701,8 @@ static void forward_one(nc_state *s, int token_id) {
     }
 
     s->seq_pos = pos + 1;
+    g_prof.forward_calls++;
+    g_prof.forward_ns += now_ns() - fwd_t0;
 }
 
 // ===== sampling =====
@@ -828,6 +897,7 @@ int main(int argc, char **argv) {
 
         // Restore KV cache to the post-prefix state (skips the long re-prefill).
         state_restore_prefix(&S);
+        prof_reset();
 
         // Per-turn tail = user line + "\nA:"
         snprintf(turn_buf, sizeof(turn_buf), "%s%s", line, PROMPT_SUFFIX);
@@ -888,6 +958,9 @@ int main(int argc, char **argv) {
             if (S.seq_pos >= ctx_max) break;
         }
         if (!hit_stop && hold_n > 0) emit_text(hold, hold_n);
+        // Dump profiling breakdown for the turn to stderr (captured into
+        // backend-*.log by the GUI).
+        prof_dump(stderr, "turn");
         // Emit token count after EOT so the GUI can compute tok/s.
         {
             char eot_msg[32];
