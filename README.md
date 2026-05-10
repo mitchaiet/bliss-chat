@@ -10,16 +10,19 @@ native Win32 GUI.
 generating fluent English at 4.7 tokens/sec on a single-core 3 GHz Pentium 4
 from 2004.
 
-## Just want to try it?
+## Download
 
-Grab the portable EXE from the [Releases](../../releases) page, drop it on
-a Windows XP machine, double-click. The .exe self-extracts to a temp dir,
-launches the chat GUI, and cleans up on exit. Nothing else to install.
+Drop the .exe on a Windows XP machine and double-click. It self-extracts
+to a temp dir, launches the chat GUI, and cleans up on exit. Nothing else
+to install.
 
-| Build | Size | Speed (Pentium 4) | Quality |
-|---|---|---|---|
-| `bliss-chat-fast-portable.exe`   | ~63 MB  | ~27 tok/s | d6 30M params, short factual answers |
-| `bliss-chat-portable.exe`        | ~252 MB | ~4.7 tok/s | d12 110M params, multi-sentence English |
+- ⚡ **[bliss-chat-fast-portable.exe][fast]** — 63 MB, d6 30M params, **~27 tok/s** on a Pentium 4. Short factual answers. Best for a first try.
+- 🧠 **[bliss-chat-portable.exe][full]** — 252 MB, d12 110M params, **~4.7 tok/s**. Multi-sentence English, fuller answers.
+
+Both files are also browsable on the [Releases](../../releases) page.
+
+[fast]: https://github.com/mitchaiet/bliss-chat/releases/latest/download/bliss-chat-fast-portable.exe
+[full]: https://github.com/mitchaiet/bliss-chat/releases/latest/download/bliss-chat-portable.exe
 
 ## What this is
 
