@@ -478,6 +478,60 @@ static inline void linear(float *y, const float *x, int rows, int cols,
     g_prof.linear_calls++;
 }
 
+// Inner product of two fp32 vectors of length n.
+// Used by attention QK·V — small (n = head_dim, typically 64 or 128) but hot.
+static inline float dot_fp32(const float *a, const float *b, int n) {
+#if NC_SSE2
+    int n4 = n & ~3;
+    __m128 a0 = _mm_setzero_ps();
+    __m128 a1 = _mm_setzero_ps();
+    int i = 0;
+    for (; i + 8 <= n4; i += 8) {
+        a0 = _mm_add_ps(a0, _mm_mul_ps(_mm_loadu_ps(a + i),     _mm_loadu_ps(b + i)));
+        a1 = _mm_add_ps(a1, _mm_mul_ps(_mm_loadu_ps(a + i + 4), _mm_loadu_ps(b + i + 4)));
+    }
+    for (; i < n4; i += 4) {
+        a0 = _mm_add_ps(a0, _mm_mul_ps(_mm_loadu_ps(a + i), _mm_loadu_ps(b + i)));
+    }
+    __m128 acc = _mm_add_ps(a0, a1);
+    __m128 t1 = _mm_add_ps(acc, _mm_shuffle_ps(acc, acc, _MM_SHUFFLE(2,3,0,1)));
+    __m128 t2 = _mm_add_ps(t1,  _mm_shuffle_ps(t1,  t1,  _MM_SHUFFLE(1,0,3,2)));
+    float sum = _mm_cvtss_f32(t2);
+    for (; i < n; i++) sum += a[i] * b[i];
+    return sum;
+#else
+    double s = 0.0;
+    for (int i = 0; i < n; i++) s += (double)a[i] * b[i];
+    return (float)s;
+#endif
+}
+
+// Fused multiply-add for fp32: out[i] += w * b[i], for i in [0, n).
+// Used for the V weighted-sum step in attention.
+static inline void axpy_fp32(float *out, float w, const float *b, int n) {
+#if NC_SSE2
+    __m128 wv = _mm_set1_ps(w);
+    int n4 = n & ~3;
+    int i = 0;
+    for (; i + 8 <= n4; i += 8) {
+        __m128 o0 = _mm_loadu_ps(out + i);
+        __m128 o1 = _mm_loadu_ps(out + i + 4);
+        o0 = _mm_add_ps(o0, _mm_mul_ps(wv, _mm_loadu_ps(b + i)));
+        o1 = _mm_add_ps(o1, _mm_mul_ps(wv, _mm_loadu_ps(b + i + 4)));
+        _mm_storeu_ps(out + i,     o0);
+        _mm_storeu_ps(out + i + 4, o1);
+    }
+    for (; i < n4; i += 4) {
+        __m128 o0 = _mm_loadu_ps(out + i);
+        o0 = _mm_add_ps(o0, _mm_mul_ps(wv, _mm_loadu_ps(b + i)));
+        _mm_storeu_ps(out + i, o0);
+    }
+    for (; i < n; i++) out[i] += w * b[i];
+#else
+    for (int i = 0; i < n; i++) out[i] += w * b[i];
+#endif
+}
+
 // Apply RoPE (nanochat variant: split second-half rotates against first-half).
 // d = head_dim; cos/sin: (head_dim/2)
 // Layout: x[..head] is (head_dim) per head.
@@ -716,9 +770,7 @@ static void forward_one(nc_state *s, int token_id) {
             for (int t = p0; t <= pos; t++) {
                 const float *kh = s->kcache + (size_t)li * T * KD
                                 + (size_t)t * KD + h_kv * HD;
-                double dot = 0.0;
-                for (int d = 0; d < HD; d++) dot += (double)qh[d] * kh[d];
-                scores[t] = (float)(dot * scale);
+                scores[t] = dot_fp32(qh, kh, HD) * scale;
             }
             // softmax over [p0..pos]
             float maxv = scores[p0];
@@ -735,7 +787,7 @@ static void forward_one(nc_state *s, int token_id) {
                 float w = scores[t] * inv;
                 const float *vh = s->vcache + (size_t)li * T * KD
                                 + (size_t)t * KD + h_kv * HD;
-                for (int d = 0; d < HD; d++) out[d] += w * vh[d];
+                axpy_fp32(out, w, vh, HD);
             }
         }
         g_prof.softmax_ns += now_ns() - sm_t0;

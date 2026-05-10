@@ -101,3 +101,30 @@ in the noise. Further matmul wins (e.g. SSE2 lookup-table-free int8
 × int8 with packed-x quantization) would be incremental; bigger
 gains likely come from reducing call count (KV-cache reuse,
 batched lm_head) than from making each call faster.
+
+## Run 4 — XP Pentium 4, d12 int8, **SSE2 attention helpers** (2026-05)
+
+Adding SSE2 to the QK·V dot product (`dot_fp32`) and the V weighted-sum
+(`axpy_fp32`). `expf` left scalar (transcendental, polynomial approx
+not worth the precision risk).
+
+```
+[prof turn] forward_calls=21 total=4486.136ms avg=213.626ms
+[prof turn]   linear:  4001.548ms (1533 calls, avg 2610.273us)
+[prof turn]   rmsnorm: 13.793ms     (3570 calls)
+[prof turn]   rope:    5.497ms
+[prof turn]   softmax: 163.967ms
+[prof turn]   ve_look: 0.000ms
+```
+
+Softmax block (QK·V + softmax + V·weights):
+
+| Stage         | Per-forward ms | Speedup |
+|---------------|----------------|---------|
+| Run 1 scalar  | ~17.1 ms       | 1×      |
+| Run 3 SSE2 mm | 20.6 ms        | 0.8×    |
+| Run 4 SSE2 attn | **7.8 ms**   | **2.2×** vs scalar |
+
+End-to-end per forward: **234.8 → 213.6 ms** (+9 %). Cumulative
+end-to-end vs the original scalar baseline: **1138.6 → 213.6 ms =
+5.33× faster, ~4.68 tok/s on the Pentium 4.**
