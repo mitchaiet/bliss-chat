@@ -938,6 +938,9 @@ int main(int argc, char **argv) {
         "Q: What are the planets of the solar system?\n"
         "A: The planets are Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus, and Neptune.\n"
         "\n"
+        "Q: What is 7 plus 5?\n"
+        "A: 7 plus 5 equals 12.\n"
+        "\n"
         "Q: Tell me a joke.\n"
         "A: Why did the scarecrow win an award? Because he was outstanding in his field.\n"
         "\n"
@@ -1021,11 +1024,14 @@ int main(int argc, char **argv) {
 
         // Generate. Stop on:
         //  - eos / assistant_end
-        //  - "\n\nQ:" appearing in the recent output (model started a new question)
+        //  - "\nQ:" appearing in the recent output (next user turn starts)
+        //  - "\nA:" appearing in the recent output (model trying to keep
+        //    talking as itself — happens when a short answer doesn't have
+        //    a natural continuation and the model self-prompts)
         //  - context overflow
         // Defer-emit logic: hold the trailing 3 bytes back so we can detect
-        // and STRIP "\nQ:" without ever showing it to the GUI. Older bytes
-        // are emitted as new ones push them out.
+        // and STRIP the stop sequence without ever showing it to the GUI.
+        // Older bytes are emitted as new ones push them out.
         char hold[3] = {0,0,0};
         int  hold_n = 0;
         int  hit_stop = 0;
@@ -1051,7 +1057,8 @@ int main(int argc, char **argv) {
                         hold[1] = hold[2];
                         hold[2] = piece[k];
                     }
-                    if (hold_n == 3 && hold[0] == '\n' && hold[1] == 'Q' && hold[2] == ':') {
+                    if (hold_n == 3 && hold[0] == '\n' && hold[2] == ':' &&
+                        (hold[1] == 'Q' || hold[1] == 'A')) {
                         hit_stop = 1;
                         break;
                     }
@@ -1067,7 +1074,20 @@ int main(int argc, char **argv) {
             }
             if (S.seq_pos >= ctx_max) break;
         }
-        if (!hit_stop && hold_n > 0) emit_text(hold, hold_n);
+        if (!hit_stop && hold_n > 0) {
+            // If hold contains a partial stop pattern ("\nQ" or "\nA"
+            // — model wanted to start a new turn but generation ended
+            // before the ":" landed) anywhere in its 3 bytes, truncate
+            // at the partial-stop start so we don't leak it to the GUI.
+            int trunc = hold_n;
+            for (int i = 0; i + 1 < hold_n; i++) {
+                if (hold[i] == '\n' && (hold[i+1] == 'Q' || hold[i+1] == 'A')) {
+                    trunc = i;
+                    break;
+                }
+            }
+            if (trunc > 0) emit_text(hold, trunc);
+        }
         // Dump profiling breakdown for the turn to stderr (captured into
         // backend-*.log by the GUI).
         prof_dump(stderr, "turn");
