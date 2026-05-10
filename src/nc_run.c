@@ -142,11 +142,27 @@ static int read_file(const char *path, void **out_blob, size_t *out_len) {
     long sz = ftell(f);
     fseek(f, 0, SEEK_SET);
     void *buf = xmalloc((size_t)sz);
-    size_t got = fread(buf, 1, (size_t)sz, f);
+    size_t total = (size_t)sz;
+    size_t got_total = 0;
+    const size_t CHUNK = 1024 * 1024; // 1 MB chunks for real progress reporting
+    int last_pct = -1;
+    while (got_total < total) {
+        size_t want = total - got_total;
+        if (want > CHUNK) want = CHUNK;
+        size_t got = fread((char *)buf + got_total, 1, want, f);
+        if (got == 0) break;
+        got_total += got;
+        int pct = (int)((double)got_total * 100.0 / (double)total);
+        if (pct != last_pct) {
+            fprintf(stdout, "\x01PROG %d\n", pct);
+            fflush(stdout);
+            last_pct = pct;
+        }
+    }
     fclose(f);
-    if (got != (size_t)sz) { free(buf); return 0; }
+    if (got_total != total) { free(buf); return 0; }
     *out_blob = buf;
-    *out_len = (size_t)sz;
+    *out_len = total;
     return 1;
 }
 
@@ -359,6 +375,14 @@ typedef struct {
     float    *probs;               // (vocab_size)
     float    *x_backout;           // (n_embd) — saved residual for backout
     int       backout_layer;
+    // Prefix snapshot for fast turn restart (set once after the static
+    // few-shot prefix is prefilled, then restored at the top of each turn).
+    int       prefix_saved;
+    float    *prefix_kcache;
+    float    *prefix_vcache;
+    float    *prefix_prev_x_norm;
+    int       prefix_seq_pos;
+    int       prefix_has_prev_x;
 } nc_state;
 
 static void state_init(nc_state *s, nc_model *m) {
@@ -397,6 +421,33 @@ static void state_free(nc_state *s) {
 static void state_reset(nc_state *s) {
     s->seq_pos = 0;
     s->has_prev_x = 0;
+}
+
+static void state_save_prefix(nc_state *s) {
+    nc_model *m = s->m;
+    size_t kv_bytes = (size_t)m->n_layer * m->sequence_len * m->kv_dim * sizeof(float);
+    if (!s->prefix_kcache) {
+        s->prefix_kcache = (float *)xmalloc(kv_bytes);
+        s->prefix_vcache = (float *)xmalloc(kv_bytes);
+        s->prefix_prev_x_norm = (float *)xmalloc((size_t)m->n_embd * sizeof(float));
+    }
+    memcpy(s->prefix_kcache, s->kcache, kv_bytes);
+    memcpy(s->prefix_vcache, s->vcache, kv_bytes);
+    memcpy(s->prefix_prev_x_norm, s->prev_x_norm, (size_t)m->n_embd * sizeof(float));
+    s->prefix_seq_pos = s->seq_pos;
+    s->prefix_has_prev_x = s->has_prev_x;
+    s->prefix_saved = 1;
+}
+
+static void state_restore_prefix(nc_state *s) {
+    if (!s->prefix_saved) { state_reset(s); return; }
+    nc_model *m = s->m;
+    size_t kv_bytes = (size_t)m->n_layer * m->sequence_len * m->kv_dim * sizeof(float);
+    memcpy(s->kcache, s->prefix_kcache, kv_bytes);
+    memcpy(s->vcache, s->prefix_vcache, kv_bytes);
+    memcpy(s->prev_x_norm, s->prefix_prev_x_norm, (size_t)m->n_embd * sizeof(float));
+    s->seq_pos = s->prefix_seq_pos;
+    s->has_prev_x = s->prefix_has_prev_x;
 }
 
 // ===== forward pass for a single token =====
@@ -635,35 +686,14 @@ static int sample(nc_state *s, float temperature, float top_p) {
     float inv = (float)(1.0 / ssum);
     for (int i = 0; i < V; i++) s->probs[i] *= inv;
 
-    if (top_p >= 1.0f) {
-        // direct sample
-        float r = urand(), cdf = 0.0f;
-        for (int i = 0; i < V; i++) { cdf += s->probs[i]; if (r < cdf) return i; }
-        return V - 1;
-    }
-
-    // top-p filter: sort indices by probability desc
-    for (int i = 0; i < V; i++) s->ranking[i] = i;
-#ifdef _WIN32
-    g_cmp_p = s->probs;
-    qsort(s->ranking, V, sizeof(int), cmp_desc_w);
-#else
-    qsort_r(s->ranking, V, sizeof(int), cmp_desc, (void *)s->probs);
-#endif
-    float acc = 0.0f;
-    int last = 0;
-    for (int i = 0; i < V; i++) {
-        acc += s->probs[s->ranking[i]];
-        last = i;
-        if (acc >= top_p) break;
-    }
-    // sample from top (last+1) by their original probs
-    float r = urand() * acc, cdf = 0.0f;
-    for (int i = 0; i <= last; i++) {
-        cdf += s->probs[s->ranking[i]];
-        if (r < cdf) return s->ranking[i];
-    }
-    return s->ranking[last];
+    // Direct (multinomial) sample. We don't bother with top-p filtering for
+    // this tiny model — temperature alone gives enough diversity, and
+    // aggressive top-p filtering on a 32K vocab requires either a partial
+    // sort (added complexity) or a full sort (slow + NaN-fragile). KISS.
+    (void)top_p;
+    float r = urand(), cdf = 0.0f;
+    for (int i = 0; i < V; i++) { cdf += s->probs[i]; if (r < cdf) return i; }
+    return V - 1;
 }
 
 // ===== sentinel I/O =====
@@ -740,41 +770,130 @@ int main(int argc, char **argv) {
                  M.dtype_code == 1 ? "int8" : "fp32");
         emit_sentinel_str("INFO", info);
     }
-    emit_sentinel_str("READY", NULL);
 
     char line[8192];
     int   prompt_ids[1024];
 
+    // Few-shot Q&A prompt prefix. The base LM is most coherent when given
+    // a pattern to follow. We prefill the prefix ONCE at startup, snapshot
+    // the KV cache, and restore it at the top of each turn — so the cost
+    // of the prefix is paid only on the very first model load, not per
+    // user message.
+    static const char *FEWSHOT_PREFIX =
+        "The following is a conversation between a curious user and a helpful assistant.\n"
+        "The assistant gives short, accurate, polite answers.\n"
+        "\n"
+        "Q: What is the capital of France?\n"
+        "A: The capital of France is Paris.\n"
+        "\n"
+        "Q: What are the planets of the solar system?\n"
+        "A: The planets are Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus, and Neptune.\n"
+        "\n"
+        "Q: Tell me a joke.\n"
+        "A: Why did the scarecrow win an award? Because he was outstanding in his field.\n"
+        "\n"
+        "Q: ";
+    static const char *PROMPT_SUFFIX  = "\nA:";
+
+    // === Prefill the static prefix once and snapshot the KV cache ===
+    // NOTE: must happen BEFORE we emit READY, otherwise the GUI lets the
+    // user type while the backend is still tied up prefilling and the
+    // first turn appears to take forever.
+    {
+        int prefix_ids[1024];
+        int pn = 0;
+        if (bos_id >= 0) prefix_ids[pn++] = bos_id;
+        pn += nct_encode(T, FEWSHOT_PREFIX, prefix_ids + pn,
+                         (int)(sizeof(prefix_ids)/sizeof(int)) - pn);
+        int last_pct = -1;
+        for (int i = 0; i < pn; i++) {
+            forward_one(&S, prefix_ids[i]);
+            int pct = (int)((double)(i + 1) * 100.0 / (double)pn);
+            if (pct != last_pct) {
+                fprintf(stdout, "\x01PROG %d\n", pct); fflush(stdout);
+                last_pct = pct;
+            }
+        }
+        state_save_prefix(&S);
+    }
+
+    // Now we're truly ready for user input.
+    emit_sentinel_str("READY", NULL);
+
+    char turn_buf[16384];
+    char tail_match[8] = {0};
+
     while (read_line(line, sizeof(line)) >= 0) {
         if (line[0] == 0) continue;
 
-        // Reset KV cache each turn for now (no multi-turn memory yet)
-        state_reset(&S);
+        // Restore KV cache to the post-prefix state (skips the long re-prefill).
+        state_restore_prefix(&S);
 
-        // Build prompt: <bos> <user_start> user-text <user_end> <assistant_start>
+        // Per-turn tail = user line + "\nA:"
+        snprintf(turn_buf, sizeof(turn_buf), "%s%s", line, PROMPT_SUFFIX);
+
         int n = 0;
-        if (bos_id >= 0)          prompt_ids[n++] = bos_id;
-        if (user_start >= 0)      prompt_ids[n++] = user_start;
-        n += nct_encode(T, line, prompt_ids + n, (int)(sizeof(prompt_ids)/sizeof(int)) - n - 8);
-        if (user_end >= 0)        prompt_ids[n++] = user_end;
-        if (assistant_start >= 0) prompt_ids[n++] = assistant_start;
+        n += nct_encode(T, turn_buf, prompt_ids + n,
+                        (int)(sizeof(prompt_ids)/sizeof(int)) - n - 8);
 
         // Prefill
         for (int i = 0; i < n; i++) forward_one(&S, prompt_ids[i]);
 
-        // Generate
-        int last_token = prompt_ids[n - 1];
-        for (int gen = 0; gen < ctx_max - n; gen++) {
+        // Generate. Stop on:
+        //  - eos / assistant_end
+        //  - "\n\nQ:" appearing in the recent output (model started a new question)
+        //  - context overflow
+        // Defer-emit logic: hold the trailing 3 bytes back so we can detect
+        // and STRIP "\nQ:" without ever showing it to the GUI. Older bytes
+        // are emitted as new ones push them out.
+        char hold[3] = {0,0,0};
+        int  hold_n = 0;
+        int  hit_stop = 0;
+        int  gen_count = 0;
+        (void)tail_match;
+
+        int budget = ctx_max - S.seq_pos;
+        if (budget < 0) budget = 0;
+        for (int gen = 0; gen < budget; gen++) {
             int next = sample(&S, temp, top_p);
             if (next == eos_id || next == assistant_end) break;
+
             char piece[64];
             int pn = nct_decode_one(T, next, piece, sizeof(piece));
-            if (pn > 0) emit_text(piece, pn);
+            gen_count++;
+            if (pn > 0) {
+                for (int k = 0; k < pn; k++) {
+                    if (hold_n < 3) {
+                        hold[hold_n++] = piece[k];
+                    } else {
+                        emit_text(&hold[0], 1);
+                        hold[0] = hold[1];
+                        hold[1] = hold[2];
+                        hold[2] = piece[k];
+                    }
+                    if (hold_n == 3 && hold[0] == '\n' && hold[1] == 'Q' && hold[2] == ':') {
+                        hit_stop = 1;
+                        break;
+                    }
+                }
+                if (hit_stop) break;
+            }
             forward_one(&S, next);
-            last_token = next;
+            // Report real generation progress: emitted tokens / token budget.
+            if (budget > 0) {
+                int pct = (int)((double)(gen + 1) * 100.0 / (double)budget);
+                if (pct > 100) pct = 100;
+                fprintf(stdout, "\x01PROG %d\n", pct); fflush(stdout);
+            }
             if (S.seq_pos >= ctx_max) break;
         }
-        emit_sentinel_str("EOT", NULL);
+        if (!hit_stop && hold_n > 0) emit_text(hold, hold_n);
+        // Emit token count after EOT so the GUI can compute tok/s.
+        {
+            char eot_msg[32];
+            snprintf(eot_msg, sizeof(eot_msg), "%d", gen_count);
+            emit_sentinel_str("EOT", eot_msg);
+        }
     }
 
     state_free(&S);

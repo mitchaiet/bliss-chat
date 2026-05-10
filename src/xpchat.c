@@ -41,10 +41,12 @@
 #define IDM_ABOUT      2005
 
 #define WM_APPEND_TEXT    (WM_APP + 1)
-#define WM_RUN_DONE       (WM_APP + 2)
+#define WM_RUN_DONE       (WM_APP + 2)   // wparam = generated_token_count, lparam = response text
 #define WM_BACKEND_READY  (WM_APP + 3)
 #define WM_BACKEND_DEAD   (WM_APP + 4)
 #define WM_BACKEND_INFO   (WM_APP + 5)
+#define WM_RUN_ERR        (WM_APP + 6)   // lparam = error text
+#define WM_BACKEND_PROG   (WM_APP + 7)   // wparam = pct (0..100)
 #define TIMER_STATUS      3001
 
 #define PROMPT_MAX     8192
@@ -277,8 +279,10 @@ static void set_running(BOOL running) {
     BOOL ready = InterlockedCompareExchange(&gBackendReady, 0, 0) != 0;
     EnableWindow(gSend,  ready && !running);
     EnableWindow(gInput, ready);
-    EnableWindow(gStop,  FALSE);  // stop unsupported in this build
+    EnableWindow(gStop,  FALSE);
     EnableWindow(gClear, !running);
+    // Reset bar at phase transitions; backend will fill it via PROG messages.
+    if (gProgress) SendMessageA(gProgress, PBM_SETPOS, 0, 0);
     if (running) SetTimer(gMain, TIMER_STATUS, 1000, NULL);
     else KillTimer(gMain, TIMER_STATUS);
 }
@@ -323,15 +327,22 @@ static DWORD WINAPI reader_thread(LPVOID param) {
                         char *t = dup_text(line.data + 5);
                         PostMessageA(gMain, WM_BACKEND_INFO, 0, (LPARAM)t);
                     } else if (strncmp(line.data, "EOT", 3) == 0) {
-                        logf("BACKEND", "EOT received, turn produced %lu bytes", (unsigned long)turn.len);
+                        // Form: "EOT <token_count>"
+                        int tcount = 0;
+                        if (line.data[3] == ' ') tcount = atoi(line.data + 4);
+                        logf("BACKEND", "EOT received, %d tokens, %lu bytes", tcount, (unsigned long)turn.len);
                         char *t = dup_text_len(turn.data ? turn.data : "", turn.len);
-                        PostMessageA(gMain, WM_RUN_DONE, 0, (LPARAM)t);
+                        PostMessageA(gMain, WM_RUN_DONE, (WPARAM)tcount, (LPARAM)t);
                         turn.len = 0;
                         if (turn.data) turn.data[0] = 0;
+                    } else if (strncmp(line.data, "PROG ", 5) == 0) {
+                        int pct = atoi(line.data + 5);
+                        if (pct < 0) pct = 0; if (pct > 100) pct = 100;
+                        PostMessageA(gMain, WM_BACKEND_PROG, (WPARAM)pct, 0);
                     } else if (strncmp(line.data, "ERR", 3) == 0) {
                         logf("BACKEND", "ERR sentinel: %s", line.data + 3);
                         char *t = dup_text(line.data + 3);
-                        PostMessageA(gMain, WM_RUN_DONE, 1, (LPARAM)t);
+                        PostMessageA(gMain, WM_RUN_ERR, 0, (LPARAM)t);
                         turn.len = 0;
                         if (turn.data) turn.data[0] = 0;
                     } else {
@@ -622,11 +633,15 @@ static void create_controls(HWND hwnd) {
         icc.dwSize = sizeof(icc);
         icc.dwICC  = ICC_PROGRESS_CLASS;
         InitCommonControlsEx(&icc);
+        // Use the standard segmented bar (works on classic-themed XP without
+        // a COMCTL32 v6 manifest — PBS_MARQUEE silently no-ops without themes).
+        // We animate it manually via TIMER_PROGRESS sweeping 0->100 repeatedly.
         gProgress = CreateWindowExA(0, PROGRESS_CLASSA, NULL,
-            WS_CHILD | WS_VISIBLE | PBS_MARQUEE,
+            WS_CHILD | WS_VISIBLE,
             0, 0, 10, 16, hwnd, (HMENU)(INT_PTR)IDC_PROGRESS, gInstance, NULL);
-        // Start marquee animation now (showing during load)
-        SendMessageA(gProgress, PBM_SETMARQUEE, TRUE, 30);
+        SendMessageA(gProgress, PBM_SETRANGE32, 0, 100);
+        SendMessageA(gProgress, PBM_SETSTEP, 4, 0);
+        SendMessageA(gProgress, PBM_SETPOS, 0, 0);
     }
 
     EnableWindow(gSend,  FALSE);
@@ -777,6 +792,11 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         SetFocus(gInput);
         return 0;
 
+    case WM_BACKEND_PROG: {
+        if (gProgress) SendMessageA(gProgress, PBM_SETPOS, (WPARAM)wparam, 0);
+        return 0;
+    }
+
     case WM_BACKEND_INFO: {
         char *info = (char *)lparam;
         if (info && *info) {
@@ -803,16 +823,45 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         return 0;
     }
 
-    case WM_RUN_DONE: {
+    case WM_RUN_ERR: {
         char *message = (char *)lparam;
         InterlockedExchange(&gRunning, 0);
         set_running(FALSE);
-        if (wparam != 0 && message && *message) {
+        if (message && *message) {
             rich_append_color("\r\n[error: ", RGB(192, 0, 0), TRUE);
             rich_append_color(message, RGB(192, 0, 0), FALSE);
             rich_append_color("]\r\n\r\n", RGB(192, 0, 0), TRUE);
-        } else {
-            rich_append_color("\r\n\r\n", RGB(0, 0, 0), FALSE);
+        }
+        if (message) free(message);
+        set_status("Error");
+        SetFocus(gInput);
+        return 0;
+    }
+
+    case WM_RUN_DONE: {
+        char *message = (char *)lparam;
+        int  tcount   = (int)wparam;
+        DWORD elapsed_ms = GetTickCount() - gRunStarted;
+        double elapsed_s = elapsed_ms / 1000.0;
+        InterlockedExchange(&gRunning, 0);
+        set_running(FALSE);
+        rich_append_color("\r\n", RGB(0, 0, 0), FALSE);
+        // Stats footer + timestamp.
+        {
+            SYSTEMTIME st;
+            GetLocalTime(&st);
+            char foot[160];
+            if (tcount > 0) {
+                snprintf(foot, sizeof(foot),
+                    "[%.1f sec - %.2f sec/token - %d tokens - %02d:%02d:%02d]\r\n\r\n",
+                    elapsed_s, elapsed_s / (double)tcount, tcount,
+                    st.wHour, st.wMinute, st.wSecond);
+            } else {
+                snprintf(foot, sizeof(foot),
+                    "[%.1f sec - no tokens generated - %02d:%02d:%02d]\r\n\r\n",
+                    elapsed_s, st.wHour, st.wMinute, st.wSecond);
+            }
+            rich_append_color(foot, RGB(96, 96, 96), FALSE);
         }
         if (message) free(message);
         set_status("Ready");
