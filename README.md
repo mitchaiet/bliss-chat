@@ -16,8 +16,8 @@ Drop the .exe on a Windows XP machine and double-click. It self-extracts
 to a temp dir, launches the chat GUI, and cleans up on exit. Nothing else
 to install.
 
-- ⚡ **[bliss-chat-fast-portable.exe][fast]** — 63 MB, d6 30M params, **~27 tok/s** on a Pentium 4. Short factual answers. Best for a first try.
-- 🧠 **[bliss-chat-portable.exe][full]** — 252 MB, d12 110M params, **~4.7 tok/s**. Multi-sentence English, fuller answers.
+- **[bliss-chat-fast-portable.exe][fast]** — 63 MB, d6 30M params, **~27 tok/s** on a Pentium 4. Short factual answers. Best for a first try.
+- **[bliss-chat-portable.exe][full]** — 252 MB, d12 110M params, **~4.7 tok/s**. Multi-sentence English, fuller answers.
 
 Both files are also browsable on the [Releases](../../releases) page.
 
@@ -201,13 +201,17 @@ points to (or rename) — `NC_RUN.EXE` always loads the file named
 
 ## Status
 
-- ✅ Pipeline working end-to-end (d6 + d12, both shipped)
-- ✅ Custom binary formats verified across Linux and XP
-- ✅ Cross-compile clean (KERNEL32 + MSVCRT only — no UCRT, no Vista APIs)
-- ✅ GUI integration with dynamic model label and live progress bar
-- ✅ SSE2 SIMD: matmul (5.45×) + attention helpers (2.6× softmax block)
-- ✅ Multi-turn KV cache with `/reset` and auto-overflow
-- ✅ d6 Chinchilla-trained model (val_bpb 1.165 → 1.075)
-- ✅ Live training dashboard at `http://localhost:8899/`
-- ❌ SFT chat-tuning — still diverges to NaN; bf16-overflow falsified.
-     Next experiment: gradient clipping. See `context/10-known-issues.md`.
+Shipping:
+
+- Pipeline working end-to-end (d6 + d12, both shipped)
+- Custom binary formats verified across Linux and XP
+- Cross-compile clean (KERNEL32 + MSVCRT only — no UCRT, no Vista APIs)
+- GUI integration with dynamic model label and live progress bar
+- SSE2 SIMD: matmul (5.45×) + attention helpers (2.6× softmax block)
+- Multi-turn KV cache with `/reset` and auto-overflow
+- d6 Chinchilla-trained model (val_bpb 1.165 → 1.075)
+- Live training dashboard at `http://localhost:8899/`
+
+Open:
+
+- SFT chat-tuning still diverges to NaN; bf16-overflow falsified. Next experiment: gradient clipping. See `context/10-known-issues.md`.
