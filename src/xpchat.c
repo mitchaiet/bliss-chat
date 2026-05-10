@@ -118,7 +118,7 @@ static void log_init(void) {
     gLogInited = 1;
 }
 
-static void logf(const char * tag, const char * fmt, ...) {
+static void dbg_log(const char * tag, const char * fmt, ...) {
     SYSTEMTIME st;
     va_list ap;
     if (!gLogFile) return;
@@ -156,7 +156,7 @@ static void log_bytes(const char * tag, const char * data, size_t len) {
 
 static void log_close(void) {
     if (gLogFile) {
-        logf("GUI", "session ending");
+        dbg_log("GUI", "session ending");
         fclose(gLogFile);
         gLogFile = NULL;
     }
@@ -321,18 +321,18 @@ static DWORD WINAPI reader_thread(LPVOID param) {
                 if (c == '\n') {
                     line.data[line.len] = 0;
                     if (strncmp(line.data, "READY", 5) == 0) {
-                        logf("BACKEND", "READY received");
+                        dbg_log("BACKEND", "READY received");
                         InterlockedExchange(&gBackendReady, 1);
                         PostMessageA(gMain, WM_BACKEND_READY, 0, 0);
                     } else if (strncmp(line.data, "INFO ", 5) == 0) {
-                        logf("BACKEND", "INFO: %s", line.data + 5);
+                        dbg_log("BACKEND", "INFO: %s", line.data + 5);
                         char *t = dup_text(line.data + 5);
                         PostMessageA(gMain, WM_BACKEND_INFO, 0, (LPARAM)t);
                     } else if (strncmp(line.data, "EOT", 3) == 0) {
                         // Form: "EOT <token_count>"
                         int tcount = 0;
                         if (line.data[3] == ' ') tcount = atoi(line.data + 4);
-                        logf("BACKEND", "EOT received, %d tokens, %lu bytes", tcount, (unsigned long)turn.len);
+                        dbg_log("BACKEND", "EOT received, %d tokens, %lu bytes", tcount, (unsigned long)turn.len);
                         char *t = dup_text_len(turn.data ? turn.data : "", turn.len);
                         PostMessageA(gMain, WM_RUN_DONE, (WPARAM)tcount, (LPARAM)t);
                         turn.len = 0;
@@ -342,13 +342,13 @@ static DWORD WINAPI reader_thread(LPVOID param) {
                         if (pct < 0) pct = 0; if (pct > 100) pct = 100;
                         PostMessageA(gMain, WM_BACKEND_PROG, (WPARAM)pct, 0);
                     } else if (strncmp(line.data, "ERR", 3) == 0) {
-                        logf("BACKEND", "ERR sentinel: %s", line.data + 3);
+                        dbg_log("BACKEND", "ERR sentinel: %s", line.data + 3);
                         char *t = dup_text(line.data + 3);
                         PostMessageA(gMain, WM_RUN_ERR, 0, (LPARAM)t);
                         turn.len = 0;
                         if (turn.data) turn.data[0] = 0;
                     } else {
-                        logf("BACKEND", "unknown sentinel: %s", line.data);
+                        dbg_log("BACKEND", "unknown sentinel: %s", line.data);
                     }
                     line.len = 0;
                     if (line.data) line.data[0] = 0;
@@ -376,7 +376,7 @@ static DWORD WINAPI reader_thread(LPVOID param) {
             post_chunk(chunk + flush_from, n);
         }
     }
-    logf("READER", "ReadFile loop ended (pipe closed or error)");
+    dbg_log("READER", "ReadFile loop ended (pipe closed or error)");
 
     free(line.data);
     free(turn.data);
@@ -421,8 +421,8 @@ static int launch_backend(void) {
         "\"%s\\%s\" \"%s\\%s\" \"%s\\%s\" -c 256 -t 0.8 -p 0.95",
         gAppDir, BACKEND_EXE, gAppDir, MODEL_FILE, gAppDir, TOKENIZER_FILE);
 
-    logf("GUI", "spawning backend: %s", command);
-    logf("GUI", "backend stderr -> %s", err_log_path);
+    dbg_log("GUI", "spawning backend: %s", command);
+    dbg_log("GUI", "backend stderr -> %s", err_log_path);
 
     ZeroMemory(&si, sizeof(si));
     ZeroMemory(&pi, sizeof(pi));
@@ -436,11 +436,11 @@ static int launch_backend(void) {
     if (!CreateProcessA(NULL, command, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, gAppDir, &si, &pi)) {
         DWORD err = GetLastError();
         snprintf(err_buf, sizeof(err_buf), "Could not start " BACKEND_EXE ". Windows error %lu.", (unsigned long)err);
-        logf("GUI", "CreateProcess failed: %lu", (unsigned long)err);
+        dbg_log("GUI", "CreateProcess failed: %lu", (unsigned long)err);
         MessageBoxA(gMain, err_buf, APP_NAME, MB_ICONERROR | MB_OK);
         goto fail;
     }
-    logf("GUI", "backend pid=%lu started", (unsigned long)pi.dwProcessId);
+    dbg_log("GUI", "backend pid=%lu started", (unsigned long)pi.dwProcessId);
 
     // Close the child ends in this process.
     CloseHandle(in_r); in_r = NULL;
@@ -542,10 +542,10 @@ static void send_prompt(void) {
     set_running(TRUE);
     set_status("Generating...");
 
-    logf("USER", "%s", user_prompt);
+    dbg_log("USER", "%s", user_prompt);
     snprintf(with_newline, sizeof(with_newline), "%s\n", user_prompt);
     if (!WriteFile(gBackendStdinW, with_newline, (DWORD)strlen(with_newline), &written, NULL)) {
-        logf("GUI", "WriteFile to backend stdin failed");
+        dbg_log("GUI", "WriteFile to backend stdin failed");
         rich_append_color("[backend write failed]\r\n", RGB(192, 0, 0), TRUE);
         InterlockedExchange(&gRunning, 0);
         set_running(FALSE);
@@ -728,7 +728,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
     case WM_CREATE:
         gMain = hwnd;
         log_init();
-        logf("GUI", "WM_CREATE, app dir = %s", gAppDir);
+        dbg_log("GUI", "WM_CREATE, app dir = %s", gAppDir);
         make_menu(hwnd);
         create_fonts();
         create_controls(hwnd);
@@ -737,7 +737,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         clear_transcript();
         if (!file_exists_in_app_dir(BACKEND_EXE) || !file_exists_in_app_dir(MODEL_FILE)
             || !file_exists_in_app_dir(TOKENIZER_FILE)) {
-            logf("GUI", "missing files: %s=%d %s=%d %s=%d",
+            dbg_log("GUI", "missing files: %s=%d %s=%d %s=%d",
                 BACKEND_EXE, file_exists_in_app_dir(BACKEND_EXE),
                 MODEL_FILE, file_exists_in_app_dir(MODEL_FILE),
                 TOKENIZER_FILE, file_exists_in_app_dir(TOKENIZER_FILE));
@@ -918,7 +918,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         return 0;
 
     case WM_DESTROY:
-        logf("GUI", "WM_DESTROY");
+        dbg_log("GUI", "WM_DESTROY");
         shutdown_backend();
         if (gUiFont)    DeleteObject(gUiFont);
         if (gTitleFont) DeleteObject(gTitleFont);
