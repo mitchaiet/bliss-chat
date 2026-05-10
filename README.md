@@ -43,11 +43,14 @@ xp-llm/
 ├── assets/
 │   └── xp_tiny_llm.ico   app icon
 ├── scripts/              build + deploy automation
-│   ├── build-xp.sh       cross-compile NC_RUN + XPCHAT for XP
-│   ├── train-d6.sh       train a tiny d6 model (~30M params, ~2 min on RTX 6000)
-│   ├── train-d12.sh      train a real d12 model (~110M params, ~50 min on RTX 6000)
-│   ├── export-and-deploy.sh  ckpt → NCB+NCT in build/deploy/
-│   └── push-to-xp.sh     copy binaries+model to the live XP box over telnet+HTTP
+│   ├── build-xp.sh                cross-compile NC_RUN + XPCHAT for XP
+│   ├── train-d6.sh                d6 ratio-12 (legacy short run)
+│   ├── train-d6-chinchilla.sh     d6 ratio-20 (Chinchilla-optimal, ~9 min)
+│   ├── train-d8-chinchilla.sh     d8 ratio-20 (untested middle ground)
+│   ├── train-d12.sh               d12 ratio-12 (~50 min)
+│   ├── sft-fp32.sh                SFT NaN-fix attempt (fp32 forward — falsified)
+│   ├── export-and-deploy.sh       ckpt → NCB+NCT in build/deploy/
+│   └── push-to-xp.sh              copy binaries+model to XP over telnet+HTTP
 └── docs/
     └── ARCHITECTURE.md   detailed architecture writeup
 ```
@@ -127,21 +130,53 @@ model description ("Model: nanochat-d12 110M (fp32 int8)"). Type, hit Enter.
 
 | Setup | Model | Speed |
 |---|---|---|
-| llama.cpp (XP-patched) + SmolLM2-135M Q8 | 135M params, vanilla llama-arch | ~25 sec/token |
-| llama.cpp (XP-patched) + SmolLM2-135M Q4 | 135M params | ~25 sec/token (no SIMD speedup on P4 SSE3) |
-| **`nc_run.c` + nanochat-d6 int8**         | 30M params, custom arch       | **~3 tok/s** |
-| `nc_run.c` + nanochat-d12 int8 (planned)  | 110M params                   | ~0.5–1 tok/s expected |
+| llama.cpp (XP-patched) + SmolLM2-135M Q8 | 135M params, vanilla llama-arch | ~0.04 tok/s |
+| `nc_run.c` scalar + nanochat-d12 int8     | 110M, hand-written engine | 0.88 tok/s |
+| **`nc_run.c` SSE2 + nanochat-d12 int8**   | 110M, +matmul+attention SIMD | **4.68 tok/s** |
+| **`nc_run.c` SSE2 + d6-chinchilla int8**  | 30M, ratio-20 trained        | **~27 tok/s** |
 
-The custom path beats off-the-shelf llama.cpp by **~100×** on this hardware
-because of (a) tiny-model targeting and (b) zero AVX-gated codepath bloat.
+The SSE2 path is **5.33× faster** than scalar on the same Pentium 4
+(`linear()` average per call dropped 15075 µs → 2765 µs, attention
+QK·V from 20.6 → 7.8 ms/forward). Compared to off-the-shelf llama.cpp
+on the same hardware, the custom pipeline is roughly **100× faster**.
+
+See `context/11-profiling.md` for full numbers.
+
+## Slash commands
+
+Type these as your message and the backend handles them, no model
+roundtrip:
+
+| Command | Effect |
+|---|---|
+| `/reset` | Drop the running KV cache, start a fresh conversation |
+| `/info`  | Show model size, dtype, current turn index, KV occupancy |
+| `/help`  | List the available slash commands |
+
+The backend also auto-resets when the KV cache is within 64 tokens of
+`sequence_len`, with a `[INFO] context full, conversation reset`
+notice.
+
+## Model variants
+
+| File | Params | Size | Tokens/s on P4 | Quality |
+|---|---|---|---|---|
+| `MODEL.NCB`     | d12, 110M | 280 MB | 4.68 | multi-sentence English, recognizable facts |
+| `MODEL_D6.NCB`  | d6, 30M   | 75 MB  | ~27   | shorter, factual answers, ramblier on free-form |
+
+Both ship to `C:\xp-llm\`. To switch, swap which file `MODEL.NCB`
+points to (or rename) — `NC_RUN.EXE` always loads the file named
+`MODEL.NCB`.
 
 ## Status
 
-- ✅ Pipeline working end-to-end with d6 base model
+- ✅ Pipeline working end-to-end (d6 + d12, both shipped)
 - ✅ Custom binary formats verified across Mac/Linux/XP
 - ✅ Cross-compile clean (KERNEL32 + MSVCRT only — no UCRT, no Vista APIs)
 - ✅ GUI integration with dynamic model label and live progress bar
+- ✅ SSE2 SIMD: matmul (5.45×) + attention helpers (2.6× softmax block)
+- ✅ Multi-turn KV cache with `/reset` and auto-overflow
+- ✅ d6 Chinchilla-trained model (val_bpb 1.165 → 1.075)
 - ✅ Live training dashboard at `http://localhost:8899/`
-- ⏳ d12 training in progress
-- ❌ SFT chat-tuning — diverges to NaN on small models, unresolved (likely needs
-     custom embedding init for the chat-special tokens; out of scope for v1)
+- ❌ SFT chat-tuning — still diverges to NaN; bf16-overflow falsified.
+     Next experiment: gradient clipping. See `context/10-known-issues.md`.
