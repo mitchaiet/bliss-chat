@@ -1,0 +1,17 @@
+# build artifacts
+build/
+*.exe
+*.o
+*.NCB
+*.NCT
+*.GGUF
+
+# python caches
+__pycache__/
+*.pyc
+
+# logs
+*.log
+
+# OS clutter
+.DS_Store
