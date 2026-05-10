@@ -279,7 +279,7 @@ static void set_running(BOOL running) {
     BOOL ready = InterlockedCompareExchange(&gBackendReady, 0, 0) != 0;
     EnableWindow(gSend,  ready && !running);
     EnableWindow(gInput, ready);
-    EnableWindow(gStop,  FALSE);
+    EnableWindow(gStop,  ready && running);
     EnableWindow(gClear, !running);
     // Reset bar at phase transitions; backend will fill it via PROG messages.
     if (gProgress) SendMessageA(gProgress, PBM_SETPOS, 0, 0);
@@ -876,9 +876,19 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
             send_prompt();
             return 0;
         case IDC_STOP:
-        case IDM_STOP:
-            // No-op: stop unsupported in this build.
+        case IDM_STOP: {
+            // Send a STOP sentinel down the backend's stdin pipe. NC_RUN
+            // polls stdin between tokens; if it sees "\x01STOP\n" mid-
+            // generation, it breaks out, emits an INFO + EOT, and
+            // returns to the read-line loop without losing the model.
+            if (InterlockedCompareExchange(&gRunning, 0, 0) && gBackendStdinW) {
+                static const char STOP_SENTINEL[] = "\x01STOP\n";
+                DWORD wrote = 0;
+                WriteFile(gBackendStdinW, STOP_SENTINEL, (DWORD)sizeof(STOP_SENTINEL) - 1, &wrote, NULL);
+                set_status("Stopping...");
+            }
             return 0;
+        }
         case IDC_CLEAR:
         case IDM_CLEAR:
             clear_transcript();

@@ -920,6 +920,42 @@ static int read_line(char *buf, int max) {
     return c == EOF && n == 0 ? -1 : n;
 }
 
+// Non-blocking poll of stdin for the GUI's STOP sentinel ("\x01STOP\n").
+// Called between generated tokens. If the sentinel is found, it is
+// consumed and the function returns 1 (caller should break).
+//
+// On Win32 we use PeekNamedPipe on the stdin handle. On non-Win32 we
+// just return 0 — the GUI doesn't run on those platforms anyway.
+static int check_stop_signal(void) {
+#ifdef _WIN32
+    HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
+    if (h == INVALID_HANDLE_VALUE || h == NULL) return 0;
+    DWORD avail = 0;
+    if (!PeekNamedPipe(h, NULL, 0, NULL, &avail, NULL)) return 0;
+    if (avail < 6) return 0;  // "\x01STOP\n" is 6 bytes
+    // Peek up to 64 bytes and look for the sentinel. Anything else stays
+    // queued for the next read_line() call (a normal user line).
+    char buf[64];
+    DWORD got = 0;
+    DWORD to_peek = avail < sizeof(buf) ? avail : (DWORD)sizeof(buf);
+    if (!PeekNamedPipe(h, buf, to_peek, &got, NULL, NULL)) return 0;
+    for (DWORD i = 0; i + 5 < got; i++) {
+        if (buf[i] == '\x01' && buf[i+1] == 'S' && buf[i+2] == 'T' &&
+            buf[i+3] == 'O' && buf[i+4] == 'P' && buf[i+5] == '\n') {
+            // Consume bytes up to and including the sentinel.
+            DWORD consumed = 0;
+            char drain[64];
+            DWORD to_read = i + 6;
+            ReadFile(h, drain, to_read, &consumed, NULL);
+            return 1;
+        }
+    }
+    return 0;
+#else
+    return 0;
+#endif
+}
+
 int main(int argc, char **argv) {
 #ifdef _WIN32
     _setmode(_fileno(stdout), _O_BINARY);
@@ -1113,7 +1149,12 @@ int main(int argc, char **argv) {
 
         int budget = ctx_max - S.seq_pos;
         if (budget < 0) budget = 0;
+        int user_stopped = 0;
         for (int gen = 0; gen < budget; gen++) {
+            // Check for the GUI's STOP sentinel before sampling each
+            // token. PeekNamedPipe is cheap (~few microseconds), so
+            // doing it every step is fine even at d6 speeds (~30 tok/s).
+            if (check_stop_signal()) { user_stopped = 1; break; }
             int next = sample(&S, temp, top_p);
             if (next == eos_id || next == assistant_end) break;
 
@@ -1147,7 +1188,11 @@ int main(int argc, char **argv) {
             }
             if (S.seq_pos >= ctx_max) break;
         }
-        if (!hit_stop && hold_n > 0) {
+        if (user_stopped) {
+            // Flush whatever the model had partially produced.
+            if (hold_n > 0) emit_text(hold, hold_n);
+            emit_sentinel_str("INFO", "stopped by user");
+        } else if (!hit_stop && hold_n > 0) {
             // If hold contains a partial stop pattern ("\nQ" or "\nA"
             // — model wanted to start a new turn but generation ended
             // before the ":" landed) anywhere in its 3 bytes, truncate
