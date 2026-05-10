@@ -29,6 +29,7 @@ step 5: nan  (and remains nan for the rest of training)
 | Identity-conversations only (patched `chat_sft.py`) | NaN |
 | `--init-lr-frac=0.05 --warmup-ratio=0.2` (effective matrix LR ~1e-4) | NaN @ step 5 |
 | Pre-init special-token wte/lm_head/value_embeds from `<\|bos\|>`'s trained values | **NaN @ step 5 still** |
+| `NANOCHAT_DTYPE=float32` (force fp32 forward — falsifies hypothesis 3) | NaN by step ~88 |
 
 ### Diagnosis attempts
 
@@ -42,12 +43,15 @@ We patched the checkpoint to copy `<|bos|>`'s well-trained embeddings into all t
 
 With matrix-lr=0.002 × init_lr_frac=0.05 × lrm-at-step-5=0.07 = effective LR ≈ 7e-6. Already absurdly small. NaN persists. So the issue isn't the optimizer step magnitude.
 
-**Hypothesis 3 (untested)**: bf16 forward overflow on long SmolTalk samples.
+**Hypothesis 3 (FALSIFIED 2026-05-10)**: bf16 forward overflow on long SmolTalk samples.
 
-The model is loaded in bf16 (pretrain dtype). SmolTalk has very long
-multi-turn dialogues (some near 2K tokens). With seq_len=1024 we should
-truncate, but maybe internal activations overflow bf16's max somewhere
-in the deeper d12 stack.
+Tested with `NANOCHAT_DTYPE=float32`. Loss still NaN'd by step ~88
+(later than bf16's step 5, but still terminal). bf16 was making the
+explosion faster, not causing it. The underlying instability is
+something else — most likely gradient explosion through unfrozen
+special-token embeddings under the Muon optimizer, or a malformed
+sample. Worth retrying with gradient clipping (`clip_grad_norm_(1.0)`)
+in the train loop next.
 
 **Hypothesis 4 (untested)**: Loss computation NaN from a malformed sample.
 
