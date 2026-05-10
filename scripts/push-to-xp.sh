@@ -8,10 +8,10 @@
 #   XP_HOST   target XP machine IP        (e.g. 192.168.1.31)
 #   XP_USER   telnet username             (e.g. xpt)
 #   XP_PASS   telnet password
-#   MAC_IP    this machine's LAN IP       (the XP box pulls files from us)
+#   HOST_IP   this machine's LAN IP        (the XP box pulls files from us)
 #   HTTP_PORT HTTP server port            (default 8088)
 #
-# Usage: XP_HOST=... XP_USER=... XP_PASS=... MAC_IP=... bash push-to-xp.sh
+# Usage: XP_HOST=... XP_USER=... XP_PASS=... HOST_IP=... bash push-to-xp.sh
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$HERE/build"
@@ -20,7 +20,7 @@ DEPLOY="$BUILD/deploy"
 XP_HOST="${XP_HOST:?set XP_HOST to the target XP machine IP}"
 XP_USER="${XP_USER:?set XP_USER to the telnet username}"
 XP_PASS="${XP_PASS:?set XP_PASS to the telnet password}"
-MAC_IP="${MAC_IP:?set MAC_IP to this machine's LAN IP}"
+HOST_IP="${HOST_IP:?set HOST_IP to this machine's LAN IP}"
 HTTP_PORT="${HTTP_PORT:-8088}"
 
 # Stage files to a single directory the HTTP server already serves
@@ -32,8 +32,8 @@ cp -f "$BUILD/XPCHAT.EXE"  "$STAGE/"
 [ -f "$DEPLOY/TOKENIZER.NCT" ] && cp -f "$DEPLOY/TOKENIZER.NCT" "$STAGE/"
 
 # Make sure HTTP server is up (background)
-if ! curl -sI "http://${MAC_IP}:${HTTP_PORT}/NC_RUN.EXE" >/dev/null 2>&1; then
-  (cd "$STAGE" && nohup python3 -m http.server "$HTTP_PORT" --bind "$MAC_IP" > /tmp/xp-http.log 2>&1 &)
+if ! curl -sI "http://${HOST_IP}:${HTTP_PORT}/NC_RUN.EXE" >/dev/null 2>&1; then
+  (cd "$STAGE" && nohup python3 -m http.server "$HTTP_PORT" --bind "$HOST_IP" > /tmp/xp-http.log 2>&1 &)
   sleep 1
 fi
 
@@ -49,15 +49,15 @@ send "cd /D C:\\\\xp-llm\r"; expect ">"
 send "taskkill /F /IM XPCHAT.EXE /IM NC_RUN.EXE 2>nul\r"; expect ">"
 send "ping -n 2 127.0.0.1 >nul\r"; expect ">"
 send "del NC_RUN.EXE XPCHAT.EXE 2>nul\r"; expect ">"
-send "cscript //nologo get.vbs http://${MAC_IP}:${HTTP_PORT}/NC_RUN.EXE NC_RUN.EXE\r"
+send "cscript //nologo get.vbs http://${HOST_IP}:${HTTP_PORT}/NC_RUN.EXE NC_RUN.EXE\r"
 expect { -re "OK NC_RUN.EXE" { expect ">" } timeout { exit 1 } }
-send "cscript //nologo get.vbs http://${MAC_IP}:${HTTP_PORT}/XPCHAT.EXE XPCHAT.EXE\r"
+send "cscript //nologo get.vbs http://${HOST_IP}:${HTTP_PORT}/XPCHAT.EXE XPCHAT.EXE\r"
 expect { -re "OK XPCHAT.EXE" { expect ">" } timeout { exit 1 } }
 set timeout 180
-send "XPGET.EXE ${MAC_IP} ${HTTP_PORT} /MODEL.NCB MODEL.NCB\r"
+send "XPGET.EXE ${HOST_IP} ${HTTP_PORT} /MODEL.NCB MODEL.NCB\r"
 expect { -re "xpget: done" { expect ">" } timeout { exit 1 } }
 set timeout 60
-send "cscript //nologo get.vbs http://${MAC_IP}:${HTTP_PORT}/TOKENIZER.NCT TOKENIZER.NCT\r"
+send "cscript //nologo get.vbs http://${HOST_IP}:${HTTP_PORT}/TOKENIZER.NCT TOKENIZER.NCT\r"
 expect { -re "OK TOKENIZER.NCT" { expect ">" } timeout { exit 1 } }
 send "dir NC_RUN.EXE XPCHAT.EXE MODEL.NCB TOKENIZER.NCT\r"; expect ">"
 send "exit\r"; expect eof

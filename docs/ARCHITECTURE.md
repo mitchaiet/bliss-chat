@@ -145,7 +145,7 @@ English chat, suboptimal for other languages.
 
 ## Cross-compile (`scripts/build-xp.sh`)
 
-Compiler: `i686-w64-mingw32-gcc` (Homebrew mingw-w64 on Mac).
+Compiler: `i686-w64-mingw32-gcc` (Linux mingw-w64 cross toolchain).
 Critical flags:
 
 | Flag | Why |

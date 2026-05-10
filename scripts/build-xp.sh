@@ -1,6 +1,6 @@
 #!/bin/bash
 # Cross-compile NC_RUN.EXE and XPCHAT.EXE for Windows XP (i686, no AVX, msvcrt only).
-# Requires: i686-w64-mingw32-gcc (Homebrew mingw-w64).
+# Requires: i686-w64-mingw32-gcc (Linux mingw-w64 cross toolchain).
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="$HERE/src"

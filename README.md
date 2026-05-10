@@ -32,7 +32,7 @@ launches the chat GUI, and cleans up on exit. Nothing else to install.
 | Inference engine | `nc_run.c` — ~1500 LOC of C99, single-threaded, scalar math, mmap-based weight load |
 | GUI | `xpchat.c` — Win32 (RichEdit + COMCTL32 progress bar), Win32 anonymous pipes for IPC |
 | Wire protocol | Sentinel-line protocol on stdin/stdout: `\x01READY\n`, `\x01INFO ...\n`, `\x01EOT\n`, `\x01ERR ...\n` |
-| Cross-compile | Mac → Win32 via `i686-w64-mingw32-gcc`, statically linked against legacy `msvcrt.dll` |
+| Cross-compile | Linux → Win32 via `i686-w64-mingw32-gcc`, statically linked against legacy `msvcrt.dll` |
 | Dashboard | `nc_dashboard.py` — single-file http.server + JS frontend, parses training logs |
 
 Target hardware: **Dell Dimension 4700**, Pentium 4 @ 3 GHz, 512 MB DDR-400,
@@ -111,13 +111,26 @@ bash /path/to/bliss-chat/scripts/train-d6.sh    # 1.6 min, base demo (rambly)
 bash /path/to/bliss-chat/scripts/train-d12.sh   # 50 min, coherent base
 ```
 
-### Build for XP (Mac with Homebrew mingw-w64)
+### Build for XP
+
+Requires `i686-w64-mingw32-gcc` (Linux mingw-w64 cross toolchain) and
+`makensis` (NSIS) if you want the portable installer.
 
 ```bash
-brew install mingw-w64
+sudo apt install gcc-mingw-w64-i686 nsis      # Debian/Ubuntu
+# or your distro's equivalent
+
 cd bliss-chat
 bash scripts/build-xp.sh
 # produces build/NC_RUN.EXE and build/XPCHAT.EXE
+```
+
+To rebuild the portable EXE shipped on the Releases page:
+
+```bash
+makensis -DMODEL=build/deploy/MODEL.NCB \
+         -DOUTFILE=build/bliss-chat-portable.exe \
+         installer/portable.nsi
 ```
 
 ### Export model + tokenizer (training machine)
@@ -186,7 +199,7 @@ points to (or rename) — `NC_RUN.EXE` always loads the file named
 ## Status
 
 - ✅ Pipeline working end-to-end (d6 + d12, both shipped)
-- ✅ Custom binary formats verified across Mac/Linux/XP
+- ✅ Custom binary formats verified across Linux and XP
 - ✅ Cross-compile clean (KERNEL32 + MSVCRT only — no UCRT, no Vista APIs)
 - ✅ GUI integration with dynamic model label and live progress bar
 - ✅ SSE2 SIMD: matmul (5.45×) + attention helpers (2.6× softmax block)

@@ -1,4 +1,4 @@
-// nc_run: native nanochat inference for Windows XP (and Mac/Linux for testing).
+// nc_run: native nanochat inference for Windows XP (POSIX builds available for testing).
 // Single-file C99, no dependencies beyond libc + winsock for the XPCHAT pipe protocol.
 //
 // Usage (CLI):
