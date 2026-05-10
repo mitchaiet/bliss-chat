@@ -1,12 +1,14 @@
 // XP Tiny LLM (real chat edition).
-// Front-end for an XP-native llama.cpp backend (BACKEND.EXE) that loads a
-// chat-tuned GGUF (MODEL.GGUF) once and stays resident. We talk to it over
-// stdin/stdout pipes using a tiny sentinel protocol:
-//   stdout: "\x01READY\n"  -> backend has loaded the model
-//   stdout: "\x01EOT\n"    -> end of one assistant turn
-//   stdout: "\x01ERR ...\n" -> backend reported an error this turn
-//   stdin:  "<text>\n"      -> one user turn (single line, no embedded newlines)
-//   stdin:  EOF             -> backend exits
+// Front-end for the custom NC_RUN.EXE inference backend (Karpathy nanochat
+// architecture). Loads MODEL.NCB once and stays resident. Sentinel protocol:
+//   stdout: "\x01READY\n"        -> backend has loaded the model
+//   stdout: "\x01INFO <text>\n"  -> backend status / banner / notice
+//   stdout: "\x01PROG <pct>\n"   -> progress 0..100 during load/prefill/gen
+//   stdout: "\x01EOT <count>\n"  -> end of one assistant turn (token count)
+//   stdout: "\x01ERR <text>\n"   -> backend reported an error this turn
+//   stdin:  "<text>\n"           -> one user turn (single line, no embedded newlines)
+//   stdin:  "\x01STOP\n"         -> abort current generation
+//   stdin:  EOF                  -> backend exits
 
 #define WIN32_LEAN_AND_MEAN
 #define _WIN32_WINNT 0x0501
@@ -895,9 +897,14 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
             return 0;
         case IDM_ABOUT:
             MessageBoxA(hwnd,
-                APP_NAME "\n\nReal chat-tuned LLM running natively on Windows XP.\n"
-                "Backend: llama.cpp (XP-patched, no AVX)\n"
-                "Model: whatever GGUF you put at MODEL.GGUF (label updates from llama_model_desc).",
+                APP_NAME "\n\nReal LLM running natively on Windows XP.\n"
+                "Backend: NC_RUN.EXE — custom C99 inference engine\n"
+                "Architecture: Karpathy nanochat (RMSNorm, RoPE, QK-norm,\n"
+                "  ReLU\xb2 MLP, value embeddings, sliding-window attention)\n"
+                "SIMD: SSE2 / SSE3 (Pentium 4 compatible)\n"
+                "Model file: MODEL.NCB (custom NCB1 format, int8 quantized)\n"
+                "\n"
+                "Slash commands: /help /info /reset",
                 APP_NAME, MB_ICONINFORMATION | MB_OK);
             return 0;
         case IDM_EXIT:
