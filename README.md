@@ -1,10 +1,25 @@
-# xp-llm
+# bliss-chat
 
 A chat LLM that runs natively on Windows XP, end-to-end.
 
 Train a custom transformer on a modern GPU, export to a tiny binary format,
 run inference on a 21-year-old Pentium 4 via a hand-written C engine and a
 native Win32 GUI.
+
+**No internet. No emulation. No cloud.** A real LLM, ~110M parameters,
+generating fluent English at 4.7 tokens/sec on a single-core 3 GHz Pentium 4
+from 2004.
+
+## Just want to try it?
+
+Grab the portable EXE from the [Releases](../../releases) page, drop it on
+a Windows XP machine, double-click. The .exe self-extracts to a temp dir,
+launches the chat GUI, and cleans up on exit. Nothing else to install.
+
+| Build | Size | Speed (Pentium 4) | Quality |
+|---|---|---|---|
+| `bliss-chat-fast-portable.exe`   | ~63 MB  | ~27 tok/s | d6 30M params, short factual answers |
+| `bliss-chat-portable.exe`        | ~252 MB | ~4.7 tok/s | d12 110M params, multi-sentence English |
 
 ## What this is
 
@@ -26,7 +41,7 @@ no AVX/SSE 4.x, integrated Intel 82915G graphics, IDE drive, Windows XP SP3.
 ## Repository layout
 
 ```
-xp-llm/
+bliss-chat/
 ├── README.md             this file
 ├── src/                  C source code
 │   ├── nc_run.c          inference engine (compiled to NC_RUN.EXE)
@@ -92,15 +107,15 @@ uv venv && uv sync --extra gpu
 source .venv/bin/activate
 
 # Pretrain (use one of these):
-bash /path/to/xp-llm/scripts/train-d6.sh    # 1.6 min, base demo (rambly)
-bash /path/to/xp-llm/scripts/train-d12.sh   # 50 min, coherent base
+bash /path/to/bliss-chat/scripts/train-d6.sh    # 1.6 min, base demo (rambly)
+bash /path/to/bliss-chat/scripts/train-d12.sh   # 50 min, coherent base
 ```
 
 ### Build for XP (Mac with Homebrew mingw-w64)
 
 ```bash
 brew install mingw-w64
-cd xp-llm
+cd bliss-chat
 bash scripts/build-xp.sh
 # produces build/NC_RUN.EXE and build/XPCHAT.EXE
 ```
@@ -108,13 +123,13 @@ bash scripts/build-xp.sh
 ### Export model + tokenizer (training machine)
 
 ```bash
-bash xp-llm/scripts/export-and-deploy.sh d12   # writes build/deploy/{MODEL.NCB,TOKENIZER.NCT}
+bash bliss-chat/scripts/export-and-deploy.sh d12   # writes build/deploy/{MODEL.NCB,TOKENIZER.NCT}
 ```
 
 ### Push to the XP machine
 
 ```bash
-bash xp-llm/scripts/push-to-xp.sh
+bash bliss-chat/scripts/push-to-xp.sh
 ```
 
 (One-time prerequisites on the XP side: telnet enabled, `get.vbs` and `XPGET.EXE`

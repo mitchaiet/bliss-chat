@@ -2,18 +2,25 @@
 # Push built artifacts to the live XP box at C:\xp-llm\.
 # Assumes:
 #   - HTTP server (python3 -m http.server 8088) running locally that serves $HERE/build/
-#   - XP machine has telnet (xpt/xpt-dimension), get.vbs and XPGET.EXE in C:\xp-llm
+#   - XP machine has telnet enabled, get.vbs and XPGET.EXE in C:\xp-llm
 #
-# Usage: push-to-xp.sh
+# Configure via env vars (no defaults for the creds — pass them in):
+#   XP_HOST   target XP machine IP        (e.g. 192.168.1.31)
+#   XP_USER   telnet username             (e.g. xpt)
+#   XP_PASS   telnet password
+#   MAC_IP    this machine's LAN IP       (the XP box pulls files from us)
+#   HTTP_PORT HTTP server port            (default 8088)
+#
+# Usage: XP_HOST=... XP_USER=... XP_PASS=... MAC_IP=... bash push-to-xp.sh
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$HERE/build"
 DEPLOY="$BUILD/deploy"
 
-XP_HOST="${XP_HOST:-192.168.1.31}"
-XP_USER="${XP_USER:-xpt}"
-XP_PASS="${XP_PASS:-xpt-dimension}"
-MAC_IP="${MAC_IP:-192.168.1.43}"
+XP_HOST="${XP_HOST:?set XP_HOST to the target XP machine IP}"
+XP_USER="${XP_USER:?set XP_USER to the telnet username}"
+XP_PASS="${XP_PASS:?set XP_PASS to the telnet password}"
+MAC_IP="${MAC_IP:?set MAC_IP to this machine's LAN IP}"
 HTTP_PORT="${HTTP_PORT:-8088}"
 
 # Stage files to a single directory the HTTP server already serves
