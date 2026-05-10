@@ -1044,6 +1044,27 @@ int main(int argc, char **argv) {
             emit_sentinel_str("EOT", "0");
             continue;
         }
+        // /help: list slash commands so users discover them.
+        if (!strcmp(line, "/help")) {
+            emit_sentinel_str("INFO", "/reset = drop conversation history");
+            emit_sentinel_str("INFO", "/info  = show model + perf info");
+            emit_sentinel_str("INFO", "/help  = show this list");
+            emit_sentinel_str("EOT", "0");
+            continue;
+        }
+        // /info: re-emit the model description (handy after a long session).
+        if (!strcmp(line, "/info")) {
+            char info[160];
+            snprintf(info, sizeof(info),
+                "nanochat-d%d %dM (%s) | seq=%d | turn=%d | pos=%d/%d",
+                M.n_layer,
+                (int)((size_t)M.n_layer * M.n_embd * M.n_embd * 12 / 1000000),
+                (M.dtype_code == 1 ? "int8" : "fp32"),
+                M.sequence_len, turn_idx, S.seq_pos, ctx_max);
+            emit_sentinel_str("INFO", info);
+            emit_sentinel_str("EOT", "0");
+            continue;
+        }
 
         // Estimate worst-case prefill + generate length. If we're within
         // ~64 tokens of ctx_max, force a reset before this turn so we
