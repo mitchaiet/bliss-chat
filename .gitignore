@@ -13,5 +13,11 @@ __pycache__/
 # logs
 *.log
 
+# transient profiling/test artifacts
+scalar.out
+scalar.err
+sse2.out
+sse2.err
+
 # OS clutter
 .DS_Store

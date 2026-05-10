@@ -24,6 +24,13 @@
 #include <fcntl.h>
 #endif
 
+#if defined(__SSE2__) || defined(_M_IX86_FP)
+#include <emmintrin.h>
+#define NC_SSE2 1
+#else
+#define NC_SSE2 0
+#endif
+
 // ===== model header (must match export_ncb.py) =====
 #pragma pack(push, 1)
 typedef struct {
@@ -371,24 +378,95 @@ static void rmsnorm(float *y, const float *x, int d) {
 // For us, "x" is the activation, W is the weight matrix.
 // In PyTorch nn.Linear: y = x @ W.T; W stored as (out_features, in_features) row-major.
 // So y[r] = sum_c W[r,c] * x[c]
+//
+// In nanochat the inner dim (`cols`) is always D (768), head_dim*H (768), FF
+// (3072), or D for lm_head — every model dim is a multiple of 8, so the SSE
+// tail loop is dead code in practice but kept for correctness.
 static void matmul_fp32(float *y, const float *W, const float *x, int rows, int cols) {
+#if NC_SSE2
+    int c4 = cols & ~3;
+    for (int r = 0; r < rows; r++) {
+        const float *wr = W + (size_t)r * cols;
+        __m128 a0 = _mm_setzero_ps();
+        __m128 a1 = _mm_setzero_ps();
+        int c = 0;
+        for (; c + 8 <= c4; c += 8) {
+            __m128 w0 = _mm_loadu_ps(wr + c);
+            __m128 w1 = _mm_loadu_ps(wr + c + 4);
+            __m128 v0 = _mm_loadu_ps(x  + c);
+            __m128 v1 = _mm_loadu_ps(x  + c + 4);
+            a0 = _mm_add_ps(a0, _mm_mul_ps(w0, v0));
+            a1 = _mm_add_ps(a1, _mm_mul_ps(w1, v1));
+        }
+        for (; c < c4; c += 4) {
+            __m128 w0 = _mm_loadu_ps(wr + c);
+            __m128 v0 = _mm_loadu_ps(x  + c);
+            a0 = _mm_add_ps(a0, _mm_mul_ps(w0, v0));
+        }
+        __m128 acc = _mm_add_ps(a0, a1);
+        // horizontal add: [a b c d] -> a+b+c+d
+        __m128 t1 = _mm_add_ps(acc, _mm_shuffle_ps(acc, acc, _MM_SHUFFLE(2,3,0,1)));
+        __m128 t2 = _mm_add_ps(t1,  _mm_shuffle_ps(t1,  t1,  _MM_SHUFFLE(1,0,3,2)));
+        float sum = _mm_cvtss_f32(t2);
+        for (; c < cols; c++) sum += wr[c] * x[c];
+        y[r] = sum;
+    }
+#else
     for (int r = 0; r < rows; r++) {
         const float *wr = W + (size_t)r * cols;
         double acc = 0.0;
         for (int c = 0; c < cols; c++) acc += (double)wr[c] * x[c];
         y[r] = (float)acc;
     }
+#endif
 }
 
 // Same as matmul_fp32 but W is int8 (rows*cols) with per-row fp32 scales[rows].
+// SSE2 path: load 8 int8 lanes, sign-extend to int16 (via cmpgt trick — no
+// SSSE3/SSE4.1 on Pentium 4), then to two int32 quads, convert to fp32, FMA-
+// ish into two accumulators.
 static void matmul_int8(float *y, const int8_t *W, const float *scales,
                         const float *x, int rows, int cols) {
+#if NC_SSE2
+    int c8 = cols & ~7;
+    const __m128i z = _mm_setzero_si128();
+    for (int r = 0; r < rows; r++) {
+        const int8_t *wr = W + (size_t)r * cols;
+        __m128 a0 = _mm_setzero_ps();
+        __m128 a1 = _mm_setzero_ps();
+        int c = 0;
+        for (; c < c8; c += 8) {
+            // Load 8 signed bytes into the low 64 bits of an xmm.
+            __m128i b8 = _mm_loadl_epi64((const __m128i*)(wr + c));
+            // Sign-extend 8x int8 -> 8x int16 in s16 (low 8 lanes).
+            __m128i sgn8  = _mm_cmpgt_epi8(z, b8);          // 0xFF where b8<0
+            __m128i s16   = _mm_unpacklo_epi8(b8, sgn8);
+            // Sign-extend 8x int16 -> 4x int32 (lo) and 4x int32 (hi).
+            __m128i sgn16 = _mm_cmpgt_epi16(z, s16);
+            __m128i s32lo = _mm_unpacklo_epi16(s16, sgn16);
+            __m128i s32hi = _mm_unpackhi_epi16(s16, sgn16);
+            __m128 fl = _mm_cvtepi32_ps(s32lo);
+            __m128 fh = _mm_cvtepi32_ps(s32hi);
+            __m128 xl = _mm_loadu_ps(x + c);
+            __m128 xh = _mm_loadu_ps(x + c + 4);
+            a0 = _mm_add_ps(a0, _mm_mul_ps(fl, xl));
+            a1 = _mm_add_ps(a1, _mm_mul_ps(fh, xh));
+        }
+        __m128 acc = _mm_add_ps(a0, a1);
+        __m128 t1 = _mm_add_ps(acc, _mm_shuffle_ps(acc, acc, _MM_SHUFFLE(2,3,0,1)));
+        __m128 t2 = _mm_add_ps(t1,  _mm_shuffle_ps(t1,  t1,  _MM_SHUFFLE(1,0,3,2)));
+        float sum = _mm_cvtss_f32(t2);
+        for (; c < cols; c++) sum += (float)wr[c] * x[c];
+        y[r] = sum * scales[r];
+    }
+#else
     for (int r = 0; r < rows; r++) {
         const int8_t *wr = W + (size_t)r * cols;
         double acc = 0.0;
         for (int c = 0; c < cols; c++) acc += (double)wr[c] * x[c];
         y[r] = (float)(acc * scales[r]);
     }
+#endif
 }
 
 static inline void linear(float *y, const float *x, int rows, int cols,

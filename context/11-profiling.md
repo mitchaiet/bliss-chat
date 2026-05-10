@@ -70,3 +70,34 @@ noise. Optimizations only matter if they speed up dense matmul:
 
 Softmax SIMD or rmsnorm SIMD: not worth the engineering effort
 (combined < 2 % of forward).
+
+## Run 3 — XP Pentium 4, d12 int8, **SSE2 matmul** (2026-05)
+
+After landing the SSE2 paths in `matmul_fp32` / `matmul_int8`
+(8-lane fp32 add/mul; 8-byte int8 → cmpgt sign-extend → cvtepi32_ps).
+
+```
+[prof turn] forward_calls=91 total=21366.711ms avg=234.799ms
+[prof turn]   linear:  18368.987ms (6643 calls, avg 2765.164us)
+[prof turn]   rmsnorm: 59.359ms     (15470 calls)
+[prof turn]   rope:    51.881ms
+[prof turn]   softmax: 1872.144ms
+[prof turn]   ve_look: 0.000ms
+```
+
+Speedups vs. Run 1 (scalar) — same hardware, same model:
+
+| Op           | Scalar avg / call | SSE2 avg / call | **Speedup** |
+|--------------|-------------------|-----------------|-------------|
+| `linear`     | 15075 µs          | 2765 µs         | **5.45×**   |
+| `forward_one`| 1138.6 ms         | 234.8 ms        | **4.85×**   |
+
+End-to-end: **0.88 → 4.26 tok/s**. Greedy output identical to scalar
+on `"What is 2 plus 2?"` (verified char-for-char vs. native arm64
+scalar reference).
+
+Softmax is now the second-largest cost (~9 %). RMSNorm/RoPE remain
+in the noise. Further matmul wins (e.g. SSE2 lookup-table-free int8
+× int8 with packed-x quantization) would be incremental; bigger
+gains likely come from reducing call count (KV-cache reuse,
+batched lm_head) than from making each call faster.
