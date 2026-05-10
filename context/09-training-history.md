@@ -145,12 +145,52 @@ aren't garbage.
 
 (In-progress at the time of writing.)
 
+## Run 6: d6 Chinchilla — **alternative shipped**
+
+**Goal**: a properly-trained tiny model — same 30M params as d6, but
+trained at Chinchilla-optimal data:param = 20 instead of the original's
+2.7 ratio. Hypothesis: more tokens of training will close most of the
+quality gap to d12, while staying small enough to be markedly faster
+on the Pentium 4.
+
+**Config** (`scripts/train-d6-chinchilla.sh`):
+
+```
+--depth=6 --head-dim=64 --window-pattern=L
+--max-seq-len=512 --device-batch-size=32 --total-batch-size=16384
+--target-param-data-ratio=20
+```
+
+nanochat computed `num_iterations=28320` from the ratio (~5.7× the
+original d6 run).
+
+**Numbers**:
+- Total params: **30M** (same as Run 1).
+- Tokens trained: 16384 × 28320 = **464M tokens** (~5.7× more than Run 1).
+- Wall clock: **9.1 minutes**.
+- Final val_bpb: **1.075** (vs. Run 1's 1.165 — ~8 % bpb improvement).
+- Sampled outputs (still rambly — d6 size, not training, is the cap):
+  - "The capital of France is the capital of the world..."
+  - "The chemical symbol of gold is gold. It is a metal that is used in the manufacture of jewelry..."
+
+**Export**: 75 MB int8 NCB1 file via `tools/export_ncb.py --int8`.
+Same byte size as Run 1 — quantization is per-row.
+
+**XP performance**: 36.5 ms/forward, ~**27 tok/s** — **5.85× faster
+than d12** (which is at 213.6 ms/forward = 4.68 tok/s). Linear is
+685 µs/call vs d12's 2610 µs/call (smaller `n_embd` and fewer calls).
+
+**Status**: shipped as `MODEL_D6.NCB` on the XP machine alongside
+`MODEL.NCB` (d12). User can choose which to load — d6 is faster but
+less coherent on free-form prompts; d12 is slower but produces fuller
+multi-sentence answers.
+
 ## Future runs to consider
 
 - **d20** for "real GPT-2-grade" coherence. Would take ~2 hours on the RTX 6000.
   280 MB → ~700 MB int8. Would NOT fit on the Dell's 512 MB RAM.
-- **d6 with 20× more tokens** (Chinchilla-optimal at 600M tokens) — for a
-  tiny but well-trained model that's fast on the P4.
+- **d8 / d10 at Chinchilla ratio 20** — somewhere between d6's speed
+  and d12's coherence.
 - **Smaller seq_len**: 256 or even 128 for production deployment to XP,
   saves KV cache memory.
 
