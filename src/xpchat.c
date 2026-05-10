@@ -1,4 +1,4 @@
-// XP Tiny LLM (real chat edition).
+// bliss-chat — XP-native LLM front-end.
 // Front-end for the custom NC_RUN.EXE inference backend (Karpathy nanochat
 // architecture). Loads MODEL.NCB once and stays resident. Sentinel protocol:
 //   stdout: "\x01READY\n"        -> backend has loaded the model
@@ -21,7 +21,7 @@
 #include <stdarg.h>
 #include <string.h>
 
-#define APP_NAME "XP Tiny LLM"
+#define APP_NAME "bliss-chat"
 #define IDI_APP 101
 
 #define IDC_TRANSCRIPT 1001
@@ -56,7 +56,7 @@
 #define MODEL_FILE     "MODEL.NCB"
 #define TOKENIZER_FILE "TOKENIZER.NCT"
 #define MODEL_LABEL    "Model: (loading...)"
-#define APP_SUBTITLE   "Chat-tuned LLM running locally on Windows XP"
+#define APP_SUBTITLE   ""  /* set at startup from get_pc_specs() */
 
 typedef struct {
     char *data;
@@ -111,7 +111,7 @@ static void log_init(void) {
         gAppDir, st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
     gLogFile = fopen(gLogPath, "w");
     if (gLogFile) {
-        fprintf(gLogFile, "=== XP Tiny LLM session log ===\n");
+        fprintf(gLogFile, "=== bliss-chat session log ===\n");
         fprintf(gLogFile, "log file: %s\n", gLogPath);
         fflush(gLogFile);
     }
@@ -263,7 +263,7 @@ static void rich_append_color(const char *text, COLORREF color, BOOL bold) {
 static void clear_transcript(void) {
     char model_text[256];
     SetWindowTextA(gTranscript, "");
-    rich_append_color("XP Tiny LLM\r\n", RGB(0, 128, 0), TRUE);
+    rich_append_color("bliss-chat\r\n", RGB(0, 128, 0), TRUE);
     if (gModel && GetWindowTextA(gModel, model_text, sizeof(model_text)) > 0) {
         rich_append_color(model_text, RGB(96, 96, 96), FALSE);
         rich_append_color("\r\n", RGB(96, 96, 96), FALSE);
@@ -564,7 +564,7 @@ static void make_menu(HWND hwnd) {
     AppendMenuA(convo, MF_STRING, IDM_SEND, "Send");
     AppendMenuA(convo, MF_SEPARATOR, 0, NULL);
     AppendMenuA(convo, MF_STRING, IDM_CLEAR, "Clear transcript");
-    AppendMenuA(help, MF_STRING, IDM_ABOUT, "About XP Tiny LLM");
+    AppendMenuA(help, MF_STRING, IDM_ABOUT, "About bliss-chat");
 
     AppendMenuA(menu, MF_POPUP, (UINT_PTR)file, "File");
     AppendMenuA(menu, MF_POPUP, (UINT_PTR)convo, "Conversation");
@@ -601,6 +601,54 @@ static HWND make_control(const char *klass, const char *text, DWORD style, DWORD
     return hwnd;
 }
 
+// Pull a one-line PC-spec banner: "<CPU name> | <RAM> MB". Falls back to
+// generic strings if the registry/system call fails.
+static void get_pc_specs(char *out, int outsz) {
+    char cpu[128] = "Unknown CPU";
+    HKEY key;
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+            "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
+            0, KEY_QUERY_VALUE, &key) == ERROR_SUCCESS) {
+        DWORD type = 0;
+        DWORD sz = (DWORD)sizeof(cpu);
+        if (RegQueryValueExA(key, "ProcessorNameString", NULL, &type,
+                             (BYTE *)cpu, &sz) == ERROR_SUCCESS) {
+            cpu[sizeof(cpu) - 1] = 0;
+            // Collapse runs of whitespace — Intel's strings have lots of padding.
+            char *r = cpu, *w = cpu; int sp = 0;
+            while (*r) {
+                if (*r == ' ' || *r == '\t') { if (!sp) *w++ = ' '; sp = 1; }
+                else { *w++ = *r; sp = 0; }
+                r++;
+            }
+            if (w > cpu && w[-1] == ' ') w--;
+            *w = 0;
+        }
+        RegCloseKey(key);
+    }
+
+    MEMORYSTATUSEX mem;
+    mem.dwLength = sizeof(mem);
+    unsigned int ram_mb = 0;
+    if (GlobalMemoryStatusEx(&mem)) {
+        // Round to nearest 64 MB so we don't print "511 MB" on a 512 MB box.
+        unsigned long long mb = mem.ullTotalPhys / (1024ULL * 1024ULL);
+        ram_mb = (unsigned int)(((mb + 32) / 64) * 64);
+    }
+
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    unsigned int cores = (unsigned int)si.dwNumberOfProcessors;
+
+    if (ram_mb > 0) {
+        snprintf(out, outsz, "%s   %ux core   %u MB RAM",
+                 cpu, cores, ram_mb);
+    } else {
+        snprintf(out, outsz, "%s   %ux core", cpu, cores);
+    }
+    out[outsz - 1] = 0;
+}
+
 static void create_controls(HWND hwnd) {
     HICON icon;
 
@@ -610,7 +658,13 @@ static void create_controls(HWND hwnd) {
 
     gTitle = make_control("STATIC", APP_NAME, SS_LEFT, 0, IDC_TITLE, hwnd);
     SendMessageA(gTitle, WM_SETFONT, (WPARAM)gTitleFont, TRUE);
-    gSubtitle = make_control("STATIC", APP_SUBTITLE, SS_LEFT, 0, IDC_SUBTITLE, hwnd);
+
+    // Subtitle = host PC specs (CPU + cores + RAM), discovered at startup.
+    {
+        char specs[192];
+        get_pc_specs(specs, sizeof(specs));
+        gSubtitle = make_control("STATIC", specs, SS_LEFT, 0, IDC_SUBTITLE, hwnd);
+    }
     gModel = make_control("STATIC", MODEL_LABEL, SS_LEFT, 0, IDC_MODEL, hwnd);
 
     gTranscript = make_control("RichEdit20A", "",

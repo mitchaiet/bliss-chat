@@ -2,7 +2,7 @@
 
 #define IDI_APP 101
 
-IDI_APP ICON "xp_tiny_llm.ico"
+IDI_APP ICON "bliss_chat.ico"
 
 1 VERSIONINFO
 FILEVERSION 1,0,0,0
@@ -17,12 +17,12 @@ BEGIN
   BEGIN
     BLOCK "040904b0"
     BEGIN
-      VALUE "CompanyName", "XP Tiny LLM"
-      VALUE "FileDescription", "Windows XP chat shell for TinyStories 42M"
+      VALUE "CompanyName", "bliss-chat"
+      VALUE "FileDescription", "bliss-chat — XP-native LLM chat"
       VALUE "FileVersion", "1.0.0"
       VALUE "InternalName", "XPCHAT"
       VALUE "OriginalFilename", "XPCHAT.EXE"
-      VALUE "ProductName", "XP Tiny LLM"
+      VALUE "ProductName", "bliss-chat"
       VALUE "ProductVersion", "1.0.0"
     END
   END
