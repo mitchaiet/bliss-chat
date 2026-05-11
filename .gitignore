@@ -21,5 +21,9 @@ sse2.err
 multi.out
 multi.err
 
+# bench artifacts that change every run — keep questions.csv only
+bench/results.csv
+bench/scored.csv
+
 # OS clutter
 .DS_Store
