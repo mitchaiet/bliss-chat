@@ -4,6 +4,10 @@
 
 IDI_APP ICON "bliss_chat.ico"
 
+// Toolbar icon strip — 5 icons x 24x24, magenta = transparency key.
+#define IDB_TOOLBAR 102
+IDB_TOOLBAR BITMAP "toolbar_icons.bmp"
+
 // Comctl32 v6 manifest — opts the process into the XP "Luna" theme so
 // the progress bar gets the green segmented look (and buttons / edits
 // pick up theming too) instead of the classic Win9x chrome.
@@ -41,7 +45,7 @@ IDI_APP ICON "bliss_chat.ico"
 #define IDC_SHORTCUTS_TEXT   231
 
 IDD_SETTINGS DIALOGEX 0, 0, 260, 280
-CAPTION "bliss-chat - Settings"
+CAPTION "Bliss Chat - Settings"
 FONT 8, "MS Shell Dlg"
 STYLE DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
 BEGIN
@@ -116,7 +120,7 @@ BEGIN
 END
 
 IDD_EDITPROMPT DIALOGEX 0, 0, 320, 180
-CAPTION "bliss-chat - Edit last prompt"
+CAPTION "Bliss Chat - Edit last prompt"
 FONT 8, "MS Shell Dlg"
 STYLE DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
 BEGIN
@@ -141,12 +145,12 @@ BEGIN
   BEGIN
     BLOCK "040904b0"
     BEGIN
-      VALUE "CompanyName", "bliss-chat"
-      VALUE "FileDescription", "bliss-chat — XP-native LLM chat"
+      VALUE "CompanyName", "Bliss Chat"
+      VALUE "FileDescription", "Bliss Chat — XP-native LLM"
       VALUE "FileVersion", "1.0.0"
       VALUE "InternalName", "XPCHAT"
       VALUE "OriginalFilename", "XPCHAT.EXE"
-      VALUE "ProductName", "bliss-chat"
+      VALUE "ProductName", "Bliss Chat"
       VALUE "ProductVersion", "1.0.0"
     END
   END
