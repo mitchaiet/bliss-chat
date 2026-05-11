@@ -1082,21 +1082,47 @@ int main(int argc, char **argv) {
         }
         // /help: list slash commands so users discover them.
         if (!strcmp(line, "/help")) {
-            emit_sentinel_str("INFO", "/reset = drop conversation history");
-            emit_sentinel_str("INFO", "/info  = show model + perf info");
-            emit_sentinel_str("INFO", "/help  = show this list");
+            emit_sentinel_str("INFO", "/reset       = drop conversation history");
+            emit_sentinel_str("INFO", "/info        = show model + perf info");
+            emit_sentinel_str("INFO", "/help        = show this list");
+            emit_sentinel_str("INFO", "/temp <f>    = set sampling temperature (0 = greedy)");
+            emit_sentinel_str("INFO", "/seed <int>  = re-seed the RNG");
+            emit_sentinel_str("EOT", "0");
+            continue;
+        }
+        // /temp <float>: update the sampling temperature in-place.
+        if (!strncmp(line, "/temp ", 6)) {
+            float v = (float)atof(line + 6);
+            if (v < 0.0f) v = 0.0f;
+            if (v > 5.0f) v = 5.0f;
+            temp = v;
+            char info[64];
+            snprintf(info, sizeof(info), "temperature = %.3f", v);
+            emit_sentinel_str("INFO", info);
+            emit_sentinel_str("EOT", "0");
+            continue;
+        }
+        // /seed <int>: re-seed the RNG so subsequent (non-greedy) samples
+        // become reproducible / different.
+        if (!strncmp(line, "/seed ", 6)) {
+            uint64_t s = (uint64_t)strtoull(line + 6, NULL, 10);
+            rng_state = s ? s : 0xDEADBEEFCAFEBABEULL;
+            char info[64];
+            snprintf(info, sizeof(info), "seed = %llu", (unsigned long long)s);
+            emit_sentinel_str("INFO", info);
             emit_sentinel_str("EOT", "0");
             continue;
         }
         // /info: re-emit the model description (handy after a long session).
         if (!strcmp(line, "/info")) {
-            char info[160];
+            char info[224];
             snprintf(info, sizeof(info),
-                "nanochat-d%d %dM (%s) | seq=%d | turn=%d | pos=%d/%d",
+                "nanochat-d%d %dM (%s) | seq=%d | turn=%d | pos=%d/%d | temp=%.2f",
                 M.n_layer,
                 (int)((size_t)M.n_layer * M.n_embd * M.n_embd * 12 / 1000000),
                 (M.dtype_code == 1 ? "int8" : "fp32"),
-                M.sequence_len, turn_idx, S.seq_pos, ctx_max);
+                M.sequence_len, turn_idx, S.seq_pos, ctx_max,
+                temp);
             emit_sentinel_str("INFO", info);
             emit_sentinel_str("EOT", "0");
             continue;

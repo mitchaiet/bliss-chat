@@ -43,6 +43,22 @@
 #define IDM_STOP       2004
 #define IDM_ABOUT      2005
 #define IDM_SAVE       2006
+#define IDM_NEWCHAT    2007
+#define IDM_SETTINGS   2008
+
+// Resource IDs from resource.rc — must stay in sync.
+#define IDD_SETTINGS         200
+#define IDC_TEMP_EDIT        201
+#define IDC_SEED_EDIT        202
+#define IDC_SEED_RANDOM      203
+#define IDC_PRESET_GREEDY    204
+#define IDC_PRESET_BALANCED  205
+#define IDC_PRESET_CREATIVE  206
+#define IDC_DEFAULTS         207
+
+// Defaults that match nc_run.c's CLI defaults.
+#define DEFAULT_TEMP   0.8f
+#define DEFAULT_SEED   0  /* 0 = "use clock" */
 
 #define WM_APPEND_TEXT    (WM_APP + 1)
 #define WM_RUN_DONE       (WM_APP + 2)   // wparam = generated_token_count, lparam = response text
@@ -95,6 +111,10 @@ static int gLogInited = 0;
 static volatile LONG gRunning;
 static volatile LONG gBackendReady;
 static DWORD gRunStarted;
+// Settings — mirror what we last sent to the backend so the dialog can
+// pre-populate. Persisted in HKCU\Software\bliss-chat\Settings.
+static float gTemp  = DEFAULT_TEMP;
+static DWORD gSeed  = DEFAULT_SEED;
 // Running count of *assistant* characters emitted in the current turn,
 // reset when a new turn starts. Used to compute live tok/s in the
 // status bar between EOT events. Reasonable approximation: tokens
@@ -591,9 +611,14 @@ static void make_menu(HWND hwnd) {
     AppendMenuA(file, MF_STRING, IDM_SAVE, "Save Transcript...\tCtrl+S");
     AppendMenuA(file, MF_SEPARATOR, 0, NULL);
     AppendMenuA(file, MF_STRING, IDM_EXIT, "Exit");
-    AppendMenuA(convo, MF_STRING, IDM_SEND, "Send");
+
+    AppendMenuA(convo, MF_STRING, IDM_NEWCHAT, "New Chat\tCtrl+N");
+    AppendMenuA(convo, MF_STRING, IDM_SEND,    "Send");
     AppendMenuA(convo, MF_SEPARATOR, 0, NULL);
-    AppendMenuA(convo, MF_STRING, IDM_CLEAR, "Clear transcript");
+    AppendMenuA(convo, MF_STRING, IDM_SETTINGS, "Settings...");
+    AppendMenuA(convo, MF_SEPARATOR, 0, NULL);
+    AppendMenuA(convo, MF_STRING, IDM_CLEAR,   "Clear transcript");
+
     AppendMenuA(help, MF_STRING, IDM_ABOUT, "About bliss-chat");
 
     AppendMenuA(menu, MF_POPUP, (UINT_PTR)file, "File");
@@ -787,6 +812,125 @@ static void layout_controls(HWND hwnd) {
 
     if (input_h < 96) ShowWindow(gClear, SW_HIDE);
     else ShowWindow(gClear, SW_SHOW);
+}
+
+// Send a single line to the backend's stdin (the line should NOT include
+// a trailing newline — we add it). Returns TRUE on success.
+static BOOL backend_send_line(const char *line) {
+    if (!line || !gBackendStdinW) return FALSE;
+    char buf[1024];
+    snprintf(buf, sizeof(buf), "%s\n", line);
+    DWORD wrote = 0;
+    return WriteFile(gBackendStdinW, buf, (DWORD)strlen(buf), &wrote, NULL);
+}
+
+// HKCU\Software\bliss-chat\Settings holds the persisted Temp/Seed.
+#define BLISS_REG_SETTINGS "Software\\bliss-chat\\Settings"
+
+static void settings_load(void) {
+    HKEY key;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, BLISS_REG_SETTINGS, 0,
+                      KEY_READ, &key) != ERROR_SUCCESS) return;
+    DWORD type = 0, sz;
+    DWORD t_milli = 0;     // store temp as int(*1000) so REG_DWORD fits cleanly
+    sz = sizeof(t_milli);
+    if (RegQueryValueExA(key, "TempMilli", NULL, &type, (BYTE *)&t_milli, &sz) == ERROR_SUCCESS) {
+        gTemp = (float)t_milli / 1000.0f;
+    }
+    DWORD seed = 0;
+    sz = sizeof(seed);
+    if (RegQueryValueExA(key, "Seed", NULL, &type, (BYTE *)&seed, &sz) == ERROR_SUCCESS) {
+        gSeed = seed;
+    }
+    RegCloseKey(key);
+}
+
+static void settings_save(void) {
+    HKEY key;
+    if (RegCreateKeyExA(HKEY_CURRENT_USER, BLISS_REG_SETTINGS, 0, NULL,
+                        REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL,
+                        &key, NULL) != ERROR_SUCCESS) return;
+    DWORD t_milli = (DWORD)(gTemp * 1000.0f + 0.5f);
+    RegSetValueExA(key, "TempMilli", 0, REG_DWORD, (BYTE *)&t_milli, sizeof(t_milli));
+    RegSetValueExA(key, "Seed",      0, REG_DWORD, (BYTE *)&gSeed,    sizeof(gSeed));
+    RegCloseKey(key);
+}
+
+// Push the current settings down to the backend via slash commands.
+// Safe to call any time — backend echoes an INFO + EOT for each.
+static void settings_apply_to_backend(void) {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "/temp %.3f", gTemp);
+    backend_send_line(buf);
+    if (gSeed != 0) {
+        snprintf(buf, sizeof(buf), "/seed %lu", (unsigned long)gSeed);
+        backend_send_line(buf);
+    }
+}
+
+// Dialog proc for the Settings dialog. Loads gTemp/gSeed into the
+// controls on init, writes them back on OK, and handles the preset +
+// random-seed buttons.
+static INT_PTR CALLBACK settings_dlg_proc(HWND dlg, UINT msg, WPARAM wparam, LPARAM lparam) {
+    char buf[64];
+    switch (msg) {
+    case WM_INITDIALOG:
+        snprintf(buf, sizeof(buf), "%.2f", gTemp);
+        SetDlgItemTextA(dlg, IDC_TEMP_EDIT, buf);
+        snprintf(buf, sizeof(buf), "%lu", (unsigned long)gSeed);
+        SetDlgItemTextA(dlg, IDC_SEED_EDIT, buf);
+        return TRUE;
+
+    case WM_COMMAND:
+        switch (LOWORD(wparam)) {
+        case IDOK:
+            GetDlgItemTextA(dlg, IDC_TEMP_EDIT, buf, sizeof(buf));
+            float t = (float)atof(buf);
+            if (t < 0.0f) t = 0.0f;
+            if (t > 5.0f) t = 5.0f;
+            gTemp = t;
+            GetDlgItemTextA(dlg, IDC_SEED_EDIT, buf, sizeof(buf));
+            gSeed = (DWORD)strtoul(buf, NULL, 10);
+            settings_save();
+            settings_apply_to_backend();
+            EndDialog(dlg, IDOK);
+            return TRUE;
+
+        case IDCANCEL:
+            EndDialog(dlg, IDCANCEL);
+            return TRUE;
+
+        case IDC_PRESET_GREEDY:
+            SetDlgItemTextA(dlg, IDC_TEMP_EDIT, "0.00");
+            return TRUE;
+
+        case IDC_PRESET_BALANCED:
+            SetDlgItemTextA(dlg, IDC_TEMP_EDIT, "0.70");
+            return TRUE;
+
+        case IDC_PRESET_CREATIVE:
+            SetDlgItemTextA(dlg, IDC_TEMP_EDIT, "1.20");
+            return TRUE;
+
+        case IDC_SEED_RANDOM: {
+            DWORD r = GetTickCount() ^ ((DWORD)(uintptr_t)dlg);
+            snprintf(buf, sizeof(buf), "%lu", (unsigned long)r);
+            SetDlgItemTextA(dlg, IDC_SEED_EDIT, buf);
+            return TRUE;
+        }
+
+        case IDC_DEFAULTS:
+            SetDlgItemTextA(dlg, IDC_TEMP_EDIT, "0.80");
+            SetDlgItemTextA(dlg, IDC_SEED_EDIT, "0");
+            return TRUE;
+        }
+        return FALSE;
+
+    case WM_CLOSE:
+        EndDialog(dlg, IDCANCEL);
+        return TRUE;
+    }
+    return FALSE;
 }
 
 // HKCU\Software\bliss-chat\Window holds the last main-window placement
@@ -999,6 +1143,8 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         set_running(FALSE);
         set_status("Ready");
         rich_append_color("Backend ready. Type a message and press Enter.\r\n\r\n", RGB(0, 128, 0), TRUE);
+        // Push the persisted Settings down to the new backend.
+        settings_apply_to_backend();
         SetFocus(gInput);
         return 0;
 
@@ -1122,6 +1268,18 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         case IDM_SAVE:
             save_transcript_dialog(hwnd);
             return 0;
+        case IDM_NEWCHAT:
+            // Drops backend conversation history and clears the on-screen
+            // transcript. The Clear menu item only does the latter.
+            if (InterlockedCompareExchange(&gBackendReady, 0, 0)) {
+                backend_send_line("/reset");
+            }
+            clear_transcript();
+            return 0;
+        case IDM_SETTINGS:
+            DialogBoxParamA(gInstance, MAKEINTRESOURCEA(IDD_SETTINGS), hwnd,
+                            settings_dlg_proc, 0);
+            return 0;
         }
         break;
 
@@ -1154,6 +1312,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE prev, LPSTR cmdline, int show) 
     (void)cmdline;
     gInstance = instance;
     get_app_dir();
+    settings_load();
 
     gRichEdit = LoadLibraryA("RICHED20.DLL");
     if (!gRichEdit) {
@@ -1195,9 +1354,10 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE prev, LPSTR cmdline, int show) 
     ShowWindow(hwnd, show);
     UpdateWindow(hwnd);
 
-    // Tiny accelerator table: Ctrl+S = Save Transcript.
+    // Tiny accelerator table.
     ACCEL accels[] = {
         { FCONTROL | FVIRTKEY, 'S', IDM_SAVE },
+        { FCONTROL | FVIRTKEY, 'N', IDM_NEWCHAT },
     };
     HACCEL haccel = CreateAcceleratorTableA(accels, (int)(sizeof(accels) / sizeof(accels[0])));
 
