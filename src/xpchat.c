@@ -23,7 +23,7 @@
 #include <stdarg.h>
 #include <string.h>
 
-#define APP_NAME "bliss-chat"
+#define APP_NAME "Bliss Chat"
 #define IDI_APP 101
 
 #define IDC_TRANSCRIPT 1001
@@ -40,9 +40,9 @@
 #define IDC_CHATLIST   1015
 #define IDC_NEWCHATBTN 1016
 #define IDC_SEARCH     1017
-#define IDC_TB_SAVE    1020
-#define IDC_TB_SETTINGS 1021
-#define IDC_TB_HELP    1022
+#define IDC_TOOLBAR    1020
+// Resource ID for the toolbar bitmap (matches resource.rc).
+#define IDB_TOOLBAR    102
 #define IDC_COPY_LAST  1030
 #define IDC_REGEN      1031
 #define IDC_EDIT_LAST  1032
@@ -138,9 +138,7 @@ static HWND gNewChatBtn;   // "+ New Chat" button under the listbox
 static HWND gSearch;       // search/filter EDIT above the listbox
 static WNDPROC gOldChatListProc;  // original listbox WNDPROC (for subclass)
 static char gSearchText[128];     // current filter; "" = show all
-static HWND gTbSave;       // toolbar buttons below the title strip
-static HWND gTbSettings;
-static HWND gTbHelp;
+static HWND gToolbar;      // COMCTL32 toolbar below the title strip
 static HWND gCopyLastBtn;  // per-message action strip above the transcript
 static HWND gRegenBtn;
 static HWND gEditLastBtn;
@@ -234,7 +232,7 @@ static void log_init(void) {
         gAppDir, st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
     gLogFile = fopen(gLogPath, "w");
     if (gLogFile) {
-        fprintf(gLogFile, "=== bliss-chat session log ===\n");
+        fprintf(gLogFile, "=== Bliss Chat session log ===\n");
         fprintf(gLogFile, "log file: %s\n", gLogPath);
         fflush(gLogFile);
     }
@@ -472,7 +470,7 @@ static void clear_transcript(void) {
     gPendingUser[0] = 0;
     update_msg_actions();
     SetWindowTextA(gTranscript, "");
-    rich_append_color("bliss-chat\r\n", RGB(0, 128, 0), TRUE);
+    rich_append_color("Bliss Chat\r\n", RGB(0, 128, 0), TRUE);
     if (gModel && GetWindowTextA(gModel, model_text, sizeof(model_text)) > 0) {
         rich_append_color(model_text, RGB(96, 96, 96), FALSE);
         rich_append_color("\r\n", RGB(96, 96, 96), FALSE);
@@ -488,7 +486,7 @@ static void clear_transcript(void) {
     // hint, not a turn. It stays until the first user turn pushes it
     // out of view; clear_transcript() rewrites it on Clear / New Chat.
     rich_append_color(
-        "Welcome to bliss-chat. Type a message below to start, or try a slash command like /help.\r\n\r\n",
+        "Welcome to Bliss Chat. Type a message below to start, or try a slash command like /help.\r\n\r\n",
         RGB(128, 128, 128), FALSE);
 }
 
@@ -498,6 +496,11 @@ static void set_running(BOOL running) {
     EnableWindow(gInput, ready);
     EnableWindow(gStop,  ready && running);
     EnableWindow(gClear, !running);
+    // Mirror Stop enabledness onto the toolbar button.
+    if (gToolbar) {
+        SendMessageA(gToolbar, TB_SETSTATE, IDM_STOP,
+                     (ready && running) ? TBSTATE_ENABLED : 0);
+    }
     // Per-message buttons follow the same idle/ready rules.
     update_msg_actions();
     // Reset bar at phase transitions; backend will fill it via PROG messages.
@@ -842,7 +845,7 @@ static void make_menu(HWND hwnd) {
     AppendMenuA(help, MF_STRING, IDM_SHORTCUTS, "Keyboard Shortcuts...");
     AppendMenuA(help, MF_STRING, IDM_SLASHHELP, "Slash Commands...");
     AppendMenuA(help, MF_SEPARATOR, 0, NULL);
-    AppendMenuA(help, MF_STRING, IDM_ABOUT, "About bliss-chat");
+    AppendMenuA(help, MF_STRING, IDM_ABOUT, "About Bliss Chat");
 
     AppendMenuA(menu, MF_POPUP, (UINT_PTR)file, "File");
     AppendMenuA(menu, MF_POPUP, (UINT_PTR)edit, "Edit");
@@ -979,12 +982,47 @@ static void create_controls(HWND hwnd) {
         SendMessageA(gProgress, PBM_SETPOS, 0, 0);
     }
 
-    // Toolbar below the title strip. Flat-look text buttons in the
-    // Outlook-XP style — themed by the comctl32 v6 manifest so they
-    // pick up the Luna hover/pressed colors.
-    gTbSave     = make_control("BUTTON", "Save",     BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_TB_SAVE,     hwnd);
-    gTbSettings = make_control("BUTTON", "Settings", BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_TB_SETTINGS, hwnd);
-    gTbHelp     = make_control("BUTTON", "Help",     BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_TB_HELP,     hwnd);
+    // XP Explorer-style toolbar below the title strip. Icons live in a
+    // single 5x1 BMP (assets/toolbar_icons.bmp); magenta is the transparency
+    // mask. Labels under each icon. Themed by the comctl32 v6 manifest.
+    {
+        INITCOMMONCONTROLSEX icc2;
+        icc2.dwSize = sizeof(icc2);
+        icc2.dwICC  = ICC_BAR_CLASSES;
+        InitCommonControlsEx(&icc2);
+
+        gToolbar = CreateWindowExA(0, TOOLBARCLASSNAMEA, NULL,
+            WS_CHILD | WS_VISIBLE
+              | TBSTYLE_FLAT | TBSTYLE_TOOLTIPS | TBSTYLE_LIST
+              | CCS_TOP | CCS_NODIVIDER,
+            0, 0, 0, 0, hwnd, (HMENU)(INT_PTR)IDC_TOOLBAR, gInstance, NULL);
+        SendMessageA(gToolbar, TB_BUTTONSTRUCTSIZE, sizeof(TBBUTTON), 0);
+        SendMessageA(gToolbar, TB_SETBITMAPSIZE, 0, MAKELPARAM(24, 24));
+        SendMessageA(gToolbar, TB_SETBUTTONSIZE, 0, MAKELPARAM(76, 50));
+
+        // Load BMP -> imagelist with magenta as mask color.
+        HBITMAP hbm = (HBITMAP)LoadImageA(gInstance, MAKEINTRESOURCEA(IDB_TOOLBAR),
+            IMAGE_BITMAP, 0, 0, LR_DEFAULTCOLOR);
+        if (hbm) {
+            HIMAGELIST hil = ImageList_Create(24, 24, ILC_COLOR24 | ILC_MASK, 5, 0);
+            ImageList_AddMasked(hil, hbm, RGB(255, 0, 255));
+            DeleteObject(hbm);
+            SendMessageA(gToolbar, TB_SETIMAGELIST, 0, (LPARAM)hil);
+        }
+
+        TBBUTTON tb_btns[] = {
+            { 0, IDM_NEWCHAT,  TBSTATE_ENABLED, BTNS_AUTOSIZE | BTNS_SHOWTEXT, {0}, 0, (INT_PTR)"New Chat" },
+            { 1, IDM_SAVE,     TBSTATE_ENABLED, BTNS_AUTOSIZE | BTNS_SHOWTEXT, {0}, 0, (INT_PTR)"Save"     },
+            { 0, 0,            TBSTATE_ENABLED, BTNS_SEP,                       {0}, 0, 0                  },
+            { 2, IDM_STOP,     0,               BTNS_AUTOSIZE | BTNS_SHOWTEXT, {0}, 0, (INT_PTR)"Stop"     },
+            { 0, 0,            TBSTATE_ENABLED, BTNS_SEP,                       {0}, 0, 0                  },
+            { 3, IDM_SETTINGS, TBSTATE_ENABLED, BTNS_AUTOSIZE | BTNS_SHOWTEXT, {0}, 0, (INT_PTR)"Settings" },
+            { 4, IDM_SHORTCUTS,TBSTATE_ENABLED, BTNS_AUTOSIZE | BTNS_SHOWTEXT, {0}, 0, (INT_PTR)"Help"     },
+        };
+        SendMessageA(gToolbar, TB_ADDBUTTONS,
+                     (WPARAM)(sizeof(tb_btns) / sizeof(tb_btns[0])),
+                     (LPARAM)tb_btns);
+    }
 
     // Per-message action strip — sits just above the transcript. Acts on
     // the most recent assistant turn / last user prompt. Disabled until
@@ -1050,13 +1088,13 @@ static void layout_controls(HWND hwnd) {
     MoveWindow(gSubtitle, pad + 50,    pad + 28, 480,  20, TRUE);
     MoveWindow(gModel,    w - pad - 320, pad + 6, 320, 20, TRUE);
 
-    // Toolbar — flat row of action buttons under the title strip.
+    // COMCTL32 toolbar handles its own sizing; we just place + autosize it.
     int tb_y = pad + header_h - 6;
-    int tb_h = 24;
-    int tb_w = 84;
-    MoveWindow(gTbSave,     pad,                  tb_y, tb_w, tb_h, TRUE);
-    MoveWindow(gTbSettings, pad + tb_w + 4,       tb_y, tb_w, tb_h, TRUE);
-    MoveWindow(gTbHelp,     pad + (tb_w + 4) * 2, tb_y, tb_w, tb_h, TRUE);
+    int tb_h = 56;  // 24 px icons + label below + chrome
+    if (gToolbar) {
+        MoveWindow(gToolbar, 0, tb_y, w, tb_h, TRUE);
+        SendMessageA(gToolbar, TB_AUTOSIZE, 0, 0);
+    }
 
     // Sidebar carves out the left 180px (below the header + toolbar).
     int sidebar_w = 180;
@@ -1477,7 +1515,7 @@ static void chats_load_into_view(int idx) {
     update_msg_actions();
 
     SetWindowTextA(gTranscript, "");
-    rich_append_color("bliss-chat\r\n", RGB(0, 128, 0), TRUE);
+    rich_append_color("Bliss Chat\r\n", RGB(0, 128, 0), TRUE);
     rich_append_color(gChats[idx].title, RGB(96, 96, 96), FALSE);
     rich_append_color("\r\n\r\n", RGB(96, 96, 96), FALSE);
 
@@ -2435,23 +2473,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
             PostMessageA(hwnd, WM_CLOSE, 0, 0);
             return 0;
         case IDM_SAVE:
-        case IDC_TB_SAVE:
             save_transcript_dialog(hwnd);
-            return 0;
-        case IDC_TB_SETTINGS:
-            // Same as IDM_SETTINGS below — duplicate the case so the toolbar
-            // button reaches the dialog without falling through code path.
-            DialogBoxParamA(gInstance, MAKEINTRESOURCEA(IDD_SETTINGS), hwnd,
-                            settings_dlg_proc, 0);
-            return 0;
-        case IDC_TB_HELP:
-            // Show the slash-commands list by sending /help to the backend
-            // (responses route through INFO -> status bar / transcript).
-            if (InterlockedCompareExchange(&gBackendReady, 0, 0)) {
-                backend_send_line("/help");
-            } else {
-                MessageBoxA(hwnd, "Backend not ready yet.", APP_NAME, MB_ICONINFORMATION | MB_OK);
-            }
             return 0;
         case IDM_NEWCHAT:
         case IDC_NEWCHATBTN:
