@@ -4,6 +4,11 @@
 
 IDI_APP ICON "bliss_chat.ico"
 
+// Comctl32 v6 manifest — opts the process into the XP "Luna" theme so
+// the progress bar gets the green segmented look (and buttons / edits
+// pick up theming too) instead of the classic Win9x chrome.
+1 RT_MANIFEST "xpchat.manifest"
+
 // ----- Settings dialog -----
 #define IDD_SETTINGS         200
 #define IDC_TEMP_EDIT        201

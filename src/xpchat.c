@@ -17,6 +17,7 @@
 #include <commctrl.h>
 #include <commdlg.h>
 #include <richedit.h>
+#include <shlobj.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -36,6 +37,8 @@
 #define IDC_SUBTITLE   1012
 #define IDC_APPICON    1013
 #define IDC_PROGRESS   1014
+#define IDC_CHATLIST   1015
+#define IDC_NEWCHATBTN 1016
 
 #define IDM_EXIT       2001
 #define IDM_CLEAR      2002
@@ -95,6 +98,8 @@ static HWND gTitle;
 static HWND gSubtitle;
 static HWND gIcon;
 static HWND gProgress;
+static HWND gChatList;     // sidebar listbox of saved chats
+static HWND gNewChatBtn;   // "+ New Chat" button under the listbox
 static HFONT gUiFont;
 static HFONT gTitleFont;
 static HFONT gMonoFont;
@@ -107,6 +112,23 @@ static char gLogPath[MAX_PATH];
 static FILE * gLogFile = NULL;
 static CRITICAL_SECTION gLogLock;
 static int gLogInited = 0;
+
+// Chat persistence — see big block below for the data model and helpers.
+// Forward declarations so send_prompt / WM_RUN_DONE can call them.
+#define MAX_CHATS 200
+#define CHAT_TITLE_MAX 80
+typedef struct {
+    char path[MAX_PATH];
+    char title[CHAT_TITLE_MAX];
+    SYSTEMTIME stamp;
+} ChatEntry;
+static ChatEntry gChats[MAX_CHATS];
+static int       gChatCount = 0;
+static int       gActiveIdx = -1;
+static char      gChatsDir[MAX_PATH];
+static void chats_create_new(void);
+static void chats_append_turn(const char *role, const char *text);
+static void chats_set_title_from(const char *user_text);
 
 static volatile LONG gRunning;
 static volatile LONG gBackendReady;
@@ -271,21 +293,6 @@ static void rich_set_format(COLORREF color, BOOL bold) {
     SendMessageA(gTranscript, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
 }
 
-// True if the transcript is currently scrolled all the way to the bottom
-// (within a small fudge factor for partial last line). Used to keep
-// auto-scroll "sticky": we only follow new output if the user hadn't
-// scrolled up to read history.
-static BOOL transcript_at_bottom(void) {
-    if (!gTranscript) return TRUE;
-    SCROLLINFO si;
-    si.cbSize = sizeof(si);
-    si.fMask  = SIF_RANGE | SIF_PAGE | SIF_POS | SIF_TRACKPOS;
-    if (!GetScrollInfo(gTranscript, SB_VERT, &si)) return TRUE;
-    int max_pos = (int)si.nMax - (int)si.nPage + 1;
-    if (max_pos < 0) max_pos = 0;
-    return (int)si.nPos >= max_pos - 2;
-}
-
 static void rich_append_color(const char *text, COLORREF color, BOOL bold) {
     CHARRANGE range;
     Buffer norm;
@@ -293,17 +300,18 @@ static void rich_append_color(const char *text, COLORREF color, BOOL bold) {
     buffer_init(&norm);
     normalize_newlines(&norm, text, strlen(text));
     if (!norm.data) return;
-    BOOL was_at_bottom = transcript_at_bottom();
     range.cpMin = -1;
     range.cpMax = -1;
     SendMessageA(gTranscript, EM_EXSETSEL, 0, (LPARAM)&range);
     rich_set_format(color, bold);
     SendMessageA(gTranscript, EM_REPLACESEL, FALSE, (LPARAM)norm.data);
-    // Only follow the output if the user was already at the bottom —
-    // otherwise let them keep reading whatever they scrolled up to.
-    if (was_at_bottom) {
-        SendMessageA(gTranscript, EM_SCROLLCARET, 0, 0);
-    }
+    // Always scroll to the new end. The previous "sticky-bottom" version
+    // checked SCROLLINFO before appending and only scrolled if the user
+    // was already at the bottom; SCROLLINFO lags during fast streaming
+    // and the result was that mid-generation text never followed.
+    // Standard chat-app behavior wins: auto-scroll on every append.
+    SendMessageA(gTranscript, WM_VSCROLL, SB_BOTTOM, 0);
+    SendMessageA(gTranscript, EM_SCROLLCARET, 0, 0);
     free(norm.data);
 }
 
@@ -579,6 +587,14 @@ static void send_prompt(void) {
 
     snprintf(gPendingUser, sizeof(gPendingUser), "%s", user_prompt);
 
+    // Persist this turn to the active chat file. Backend slash commands
+    // (lines that start with '/') are runtime-only — don't store them.
+    if (user_prompt[0] != '/') {
+        if (gActiveIdx < 0) chats_create_new();
+        chats_append_turn("USER", user_prompt);
+        chats_set_title_from(user_prompt);
+    }
+
     rich_append_color("You\r\n", RGB(0, 84, 166), TRUE);
     rich_append_color(user_prompt, RGB(0, 0, 0), FALSE);
     rich_append_color("\r\n\r\nAssistant\r\n", RGB(0, 128, 0), TRUE);
@@ -755,6 +771,14 @@ static void create_controls(HWND hwnd) {
         SendMessageA(gProgress, PBM_SETPOS, 0, 0);
     }
 
+    // Chat history sidebar.
+    gChatList   = make_control("LISTBOX", "",
+        LBS_NOTIFY | WS_VSCROLL | WS_BORDER | WS_TABSTOP,
+        0, IDC_CHATLIST, hwnd);
+    gNewChatBtn = make_control("BUTTON", "+ New Chat",
+        BS_PUSHBUTTON | WS_TABSTOP,
+        0, IDC_NEWCHATBTN, hwnd);
+
     EnableWindow(gSend,  FALSE);
     EnableWindow(gInput, FALSE);
     EnableWindow(gStop,  FALSE);
@@ -786,14 +810,26 @@ static void layout_controls(HWND hwnd) {
     MoveWindow(gSubtitle, pad + 50,    pad + 28, 480,  20, TRUE);
     MoveWindow(gModel,    w - pad - 320, pad + 6, 320, 20, TRUE);
 
-    inner_x = pad;
-    inner_w = w - pad * 2;
+    // Sidebar carves out the left 180px (below the header).
+    int sidebar_w = 180;
+    int sidebar_x = pad;
+    int sidebar_y = pad + header_h;
+    int new_btn_h = 28;
+
+    inner_x = sidebar_x + sidebar_w + 12;
+    inner_w = w - inner_x - pad;
     status_y = h - pad - 20;
     input_h = h < 560 ? 62 : 96;
     input_y = status_y - input_h - 10;
     transcript_y = pad + header_h;
     transcript_h = input_y - transcript_y - 10;
     if (transcript_h < 160) transcript_h = 160;
+
+    int sidebar_h = transcript_h;
+    MoveWindow(gChatList,   sidebar_x, sidebar_y,
+               sidebar_w, sidebar_h - new_btn_h - 6, TRUE);
+    MoveWindow(gNewChatBtn, sidebar_x, sidebar_y + sidebar_h - new_btn_h,
+               sidebar_w, new_btn_h, TRUE);
 
     MoveWindow(gTranscript, inner_x, transcript_y, inner_w, transcript_h, TRUE);
     MoveWindow(gInput,      inner_x, input_y, inner_w - action_w - 14, input_h, TRUE);
@@ -812,6 +848,239 @@ static void layout_controls(HWND hwnd) {
 
     if (input_h < 96) ShowWindow(gClear, SW_HIDE);
     else ShowWindow(gClear, SW_SHOW);
+}
+
+// =============================================================
+//  Chat persistence + sidebar
+// =============================================================
+//
+// Each chat is one .txt file in %APPDATA%\bliss-chat\chats\ named
+// <unix_timestamp>.txt. Format:
+//
+//   TITLE: <first user message, truncated>
+//   TIME: <ISO 8601 local timestamp>
+//   ---
+//   [USER]
+//   <text>
+//   [ASSISTANT]
+//   <text>
+//   ...
+//
+// gChats[] mirrors the on-disk list, sorted newest first. gActiveIdx
+// is the chat to which new turns get appended. Selecting a different
+// chat in the sidebar switches active (sends /reset to the backend so
+// the cache matches the empty state, and replays the historical text
+// into the transcript view — but we do NOT replay tokens through the
+// model, so previous-turn context is lost; this is the v1 trade-off).
+
+// (gChats / gChatCount / gActiveIdx / gChatsDir declared near the top.)
+
+// Resolve %APPDATA%\bliss-chat\chats and create it if missing.
+static void chats_resolve_dir(void) {
+    char appdata[MAX_PATH];
+    if (SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appdata) != S_OK) {
+        snprintf(gChatsDir, sizeof(gChatsDir), "%s\\chats", gAppDir);
+    } else {
+        snprintf(gChatsDir, sizeof(gChatsDir), "%s\\bliss-chat\\chats", appdata);
+    }
+    char parent[MAX_PATH];
+    snprintf(parent, sizeof(parent), "%s\\bliss-chat", appdata);
+    CreateDirectoryA(parent, NULL);          // ok if it exists
+    CreateDirectoryA(gChatsDir, NULL);
+}
+
+// Truncate a line to fit, dropping a trailing newline if present.
+static void chat_chomp_title(char *s) {
+    char *p = strchr(s, '\n'); if (p) *p = 0;
+    p = strchr(s, '\r'); if (p) *p = 0;
+    int n = (int)strlen(s);
+    if (n > CHAT_TITLE_MAX - 4) {
+        s[CHAT_TITLE_MAX - 4] = 0;
+        strcat(s, "...");
+    }
+}
+
+// Read the TITLE: header line of an existing chat file.
+static void chat_read_title(const char *path, char *out, int outsz) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp) { snprintf(out, outsz, "(unreadable)"); return; }
+    char line[CHAT_TITLE_MAX + 32];
+    out[0] = 0;
+    while (fgets(line, sizeof(line), fp)) {
+        if (!strncmp(line, "TITLE: ", 7)) {
+            snprintf(out, outsz, "%s", line + 7);
+            chat_chomp_title(out);
+            break;
+        }
+        if (!strncmp(line, "---", 3)) break;
+    }
+    fclose(fp);
+    if (!out[0]) snprintf(out, outsz, "(empty chat)");
+}
+
+// Append "<title>" to the listbox in the conventional "M/D h:mm — title"
+// shape. Done at the head of the list because we sort newest first.
+static void chats_listbox_insert(int idx, const ChatEntry *e) {
+    if (!gChatList) return;
+    char hour12 = (char)((e->stamp.wHour % 12) ? (e->stamp.wHour % 12) : 12);
+    char ampm   = (char)((e->stamp.wHour < 12) ? 'a' : 'p');
+    char display[200];
+    snprintf(display, sizeof(display), "%d/%d %d:%02d%c   %s",
+             e->stamp.wMonth, e->stamp.wDay,
+             hour12, e->stamp.wMinute, ampm,
+             e->title);
+    SendMessageA(gChatList, LB_INSERTSTRING, idx, (LPARAM)display);
+}
+
+// Compare for sort (newest first).
+static int chat_cmp_desc(const void *a, const void *b) {
+    const ChatEntry *ea = (const ChatEntry *)a;
+    const ChatEntry *eb = (const ChatEntry *)b;
+    FILETIME fa, fb;
+    SystemTimeToFileTime(&ea->stamp, &fa);
+    SystemTimeToFileTime(&eb->stamp, &fb);
+    return CompareFileTime(&fb, &fa);
+}
+
+static void chats_repopulate_listbox(void) {
+    if (!gChatList) return;
+    SendMessageA(gChatList, LB_RESETCONTENT, 0, 0);
+    for (int i = 0; i < gChatCount; i++) {
+        chats_listbox_insert(i, &gChats[i]);
+    }
+}
+
+// Scan gChatsDir, fill gChats[], populate the sidebar.
+static void chats_index_disk(void) {
+    gChatCount = 0;
+    char glob[MAX_PATH];
+    snprintf(glob, sizeof(glob), "%s\\*.txt", gChatsDir);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(glob, &fd);
+    if (h == INVALID_HANDLE_VALUE) goto done;
+    do {
+        if (gChatCount >= MAX_CHATS) break;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        ChatEntry *e = &gChats[gChatCount++];
+        snprintf(e->path, sizeof(e->path), "%s\\%s", gChatsDir, fd.cFileName);
+        FileTimeToSystemTime(&fd.ftLastWriteTime, &e->stamp);
+        SystemTimeToTzSpecificLocalTime(NULL, &e->stamp, &e->stamp);
+        chat_read_title(e->path, e->title, sizeof(e->title));
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+done:
+    qsort(gChats, gChatCount, sizeof(ChatEntry), chat_cmp_desc);
+    chats_repopulate_listbox();
+}
+
+// Create a new on-disk chat with empty body. Sets gActiveIdx to it
+// and refreshes the listbox. Title starts as "(new chat)" and is
+// rewritten on the first user turn.
+static void chats_create_new(void) {
+    if (gChatCount >= MAX_CHATS) return;
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    time_t now = time(NULL);
+    char path[MAX_PATH];
+    snprintf(path, sizeof(path), "%s\\%llu.txt", gChatsDir, (unsigned long long)now);
+
+    FILE *fp = fopen(path, "wb");
+    if (!fp) return;
+    fprintf(fp, "TITLE: (new chat)\r\n");
+    fprintf(fp, "TIME: %04d-%02d-%02dT%02d:%02d:%02d\r\n---\r\n",
+            st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    fclose(fp);
+
+    // Insert at front (newest first).
+    memmove(&gChats[1], &gChats[0], sizeof(ChatEntry) * (size_t)gChatCount);
+    gChatCount++;
+    snprintf(gChats[0].path, sizeof(gChats[0].path), "%s", path);
+    snprintf(gChats[0].title, sizeof(gChats[0].title), "(new chat)");
+    gChats[0].stamp = st;
+    gActiveIdx = 0;
+    chats_repopulate_listbox();
+    if (gChatList) SendMessageA(gChatList, LB_SETCURSEL, gActiveIdx, 0);
+}
+
+// Append a turn to the active chat file.
+static void chats_append_turn(const char *role, const char *text) {
+    if (gActiveIdx < 0 || gActiveIdx >= gChatCount) return;
+    FILE *fp = fopen(gChats[gActiveIdx].path, "ab");
+    if (!fp) return;
+    fprintf(fp, "[%s]\r\n%s\r\n", role, text);
+    fclose(fp);
+}
+
+// On the first user message of a chat, rewrite the TITLE: line so the
+// sidebar shows something meaningful.
+static void chats_set_title_from(const char *user_text) {
+    if (gActiveIdx < 0) return;
+    if (strcmp(gChats[gActiveIdx].title, "(new chat)") != 0) return;
+    char title[CHAT_TITLE_MAX];
+    snprintf(title, sizeof(title), "%s", user_text);
+    chat_chomp_title(title);
+    snprintf(gChats[gActiveIdx].title, sizeof(gChats[gActiveIdx].title),
+             "%s", title);
+
+    // Rewrite file in place: read all, swap TITLE: line, write back.
+    FILE *fp = fopen(gChats[gActiveIdx].path, "rb");
+    if (!fp) return;
+    fseek(fp, 0, SEEK_END);
+    long sz = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    char *buf = (char *)malloc((size_t)sz + 1);
+    if (!buf) { fclose(fp); return; }
+    fread(buf, 1, (size_t)sz, fp);
+    fclose(fp);
+    buf[sz] = 0;
+
+    fp = fopen(gChats[gActiveIdx].path, "wb");
+    if (!fp) { free(buf); return; }
+    fprintf(fp, "TITLE: %s\r\n", title);
+    char *body = strchr(buf, '\n');
+    if (body) fwrite(body + 1, 1, strlen(body + 1), fp);
+    free(buf);
+    fclose(fp);
+    chats_repopulate_listbox();
+    if (gChatList) SendMessageA(gChatList, LB_SETCURSEL, gActiveIdx, 0);
+}
+
+// Render a chat file into the transcript pane, replacing whatever is
+// there. [USER] turns are blue/bold "You" headers; [ASSISTANT] turns
+// are green/bold "Assistant" headers.
+static void chats_load_into_view(int idx) {
+    if (idx < 0 || idx >= gChatCount) return;
+    FILE *fp = fopen(gChats[idx].path, "rb");
+    if (!fp) return;
+
+    SetWindowTextA(gTranscript, "");
+    rich_append_color("bliss-chat\r\n", RGB(0, 128, 0), TRUE);
+    rich_append_color(gChats[idx].title, RGB(96, 96, 96), FALSE);
+    rich_append_color("\r\n\r\n", RGB(96, 96, 96), FALSE);
+
+    char line[8192];
+    int in_user = 0, in_asst = 0, past_header = 0;
+    while (fgets(line, sizeof(line), fp)) {
+        if (!past_header) {
+            if (!strncmp(line, "---", 3)) past_header = 1;
+            continue;
+        }
+        if (!strncmp(line, "[USER]", 6)) {
+            in_user = 1; in_asst = 0;
+            rich_append_color("You\r\n", RGB(0, 84, 166), TRUE);
+            continue;
+        }
+        if (!strncmp(line, "[ASSISTANT]", 11)) {
+            in_user = 0; in_asst = 1;
+            rich_append_color("\r\nAssistant\r\n", RGB(0, 128, 0), TRUE);
+            continue;
+        }
+        if (in_user || in_asst) {
+            rich_append_color(line, RGB(0, 0, 0), FALSE);
+        }
+    }
+    fclose(fp);
+    rich_append_color("\r\n", RGB(0, 0, 0), FALSE);
 }
 
 // Send a single line to the backend's stdin (the line should NOT include
@@ -1071,6 +1340,10 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         create_controls(hwnd);
         subclass_input();
         layout_controls(hwnd);
+        chats_resolve_dir();
+        chats_index_disk();
+        // Always start a fresh chat so this session has a place to write.
+        chats_create_new();
         clear_transcript();
         if (!file_exists_in_app_dir(BACKEND_EXE) || !file_exists_in_app_dir(MODEL_FILE)
             || !file_exists_in_app_dir(TOKENIZER_FILE)) {
@@ -1108,8 +1381,8 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
 
     case WM_GETMINMAXINFO: {
         MINMAXINFO *mmi = (MINMAXINFO *)lparam;
-        mmi->ptMinTrackSize.x = 720;
-        mmi->ptMinTrackSize.y = 480;
+        mmi->ptMinTrackSize.x = 900;  // wider to fit sidebar
+        mmi->ptMinTrackSize.y = 520;
         return 0;
     }
 
@@ -1202,6 +1475,11 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         double elapsed_s = elapsed_ms / 1000.0;
         InterlockedExchange(&gRunning, 0);
         set_running(FALSE);
+        // Persist the assistant turn to the active chat file (skip if the
+        // user just sent a slash command — backend may emit an empty EOT).
+        if (message && *message && tcount > 0) {
+            chats_append_turn("ASSISTANT", message);
+        }
         rich_append_color("\r\n", RGB(0, 0, 0), FALSE);
         // Stats footer + timestamp.
         {
@@ -1269,12 +1547,29 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
             save_transcript_dialog(hwnd);
             return 0;
         case IDM_NEWCHAT:
-            // Drops backend conversation history and clears the on-screen
-            // transcript. The Clear menu item only does the latter.
+        case IDC_NEWCHATBTN:
+            // Drops backend conversation history, creates a fresh on-disk
+            // chat, and clears the on-screen transcript.
             if (InterlockedCompareExchange(&gBackendReady, 0, 0)) {
                 backend_send_line("/reset");
             }
+            chats_create_new();
             clear_transcript();
+            return 0;
+        case IDC_CHATLIST:
+            // LBN_SELCHANGE fires on every selection change. Switch which
+            // chat new turns are appended to, and reload that chat's
+            // transcript into the view.
+            if (HIWORD(wparam) == LBN_SELCHANGE) {
+                int sel = (int)SendMessageA(gChatList, LB_GETCURSEL, 0, 0);
+                if (sel >= 0 && sel < gChatCount && sel != gActiveIdx) {
+                    if (InterlockedCompareExchange(&gBackendReady, 0, 0)) {
+                        backend_send_line("/reset");
+                    }
+                    gActiveIdx = sel;
+                    chats_load_into_view(sel);
+                }
+            }
             return 0;
         case IDM_SETTINGS:
             DialogBoxParamA(gInstance, MAKEINTRESOURCEA(IDD_SETTINGS), hwnd,
