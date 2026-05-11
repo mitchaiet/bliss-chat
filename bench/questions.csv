@@ -1,0 +1,101 @@
+id,category,question,expected_keywords
+1,factual,What is the capital of France?,paris
+2,factual,What is the capital of Spain?,madrid
+3,factual,What is the capital of Germany?,berlin
+4,factual,What is the capital of Italy?,rome
+5,factual,What is the capital of Japan?,tokyo
+6,factual,What is the capital of England?,london
+7,factual,What is the capital of Russia?,moscow
+8,factual,What is the capital of Egypt?,cairo
+9,factual,What is the capital of Canada?,ottawa
+10,factual,What is the capital of Australia?,canberra
+11,factual,What is the largest planet in our solar system?,jupiter
+12,factual,What is the smallest planet in our solar system?,mercury
+13,factual,How many continents are there?,seven|7
+14,factual,How many oceans are there?,five|5|four|4
+15,factual,What is the chemical symbol for gold?,au
+16,factual,What is the chemical symbol for water?,h2o
+17,factual,What animal is the king of the jungle?,lion
+18,factual,Who painted the Mona Lisa?,leonardo|da vinci|davinci
+19,factual,Who wrote Romeo and Juliet?,shakespeare
+20,factual,What is the longest river in the world?,nile|amazon
+21,math,What is 2 plus 2?,4|four
+22,math,What is 5 plus 3?,8|eight
+23,math,What is 10 minus 4?,6|six
+24,math,What is 3 times 4?,12|twelve
+25,math,What is 100 divided by 4?,25|twenty
+26,math,What is 7 plus 5?,12|twelve
+27,math,What is 9 plus 1?,10|ten
+28,math,What is 20 minus 5?,15|fifteen
+29,math,What is 6 times 6?,36|thirty
+30,math,What is 50 divided by 5?,10|ten
+31,math,What is 1 plus 1?,2|two
+32,math,What is 100 minus 50?,50|fifty
+33,math,What is 8 times 8?,64|sixty
+34,math,What is 200 plus 300?,500|five hundred
+35,math,What is half of 10?,5|five
+36,definition,What is water?,liquid|h2o|hydrogen|oxygen|drink
+37,definition,What is the sun?,star|hot|sky|fire
+38,definition,What is a dog?,animal|pet|mammal
+39,definition,What is a cat?,animal|pet|mammal|feline
+40,definition,What is a tree?,plant|wood|branch|leaf
+41,definition,What is a computer?,machine|electronic|device
+42,definition,What is the internet?,network|computer|online
+43,definition,What is a book?,read|paper|story
+44,definition,What is fire?,burn|hot|flame|heat
+45,definition,What is rain?,water|sky|cloud|wet
+46,definition,What is snow?,cold|white|frozen|water
+47,definition,What is a friend?,person|like|care|together
+48,definition,What is a doctor?,medicine|patient|health|hospital
+49,definition,What is a school?,learn|teacher|student
+50,definition,What is a hospital?,sick|patient|doctor|medical
+51,list,Name three primary colors.,red|blue|yellow
+52,list,Name three planets.,earth|mars|jupiter|venus|saturn
+53,list,Name three farm animals.,cow|pig|chicken|horse|sheep
+54,list,Name three fruits.,apple|banana|orange|grape
+55,list,Name three vegetables.,carrot|broccoli|potato|tomato|onion
+56,list,Name three countries in Europe.,france|germany|spain|italy|england
+57,list,Name three days of the week.,monday|tuesday|wednesday|thursday|friday
+58,list,Name three months of the year.,january|february|march|april|may
+59,list,Name three colors.,red|blue|green|yellow|black|white
+60,list,Name three types of music.,rock|pop|jazz|classical|country
+61,yesno,Is the sky blue?,yes
+62,yesno,Is fire hot?,yes
+63,yesno,Is snow cold?,yes
+64,yesno,Is water wet?,yes
+65,yesno,Can dogs fly?,no|cannot|can't
+66,yesno,Is the sun a planet?,no|star
+67,yesno,Do fish live in water?,yes
+68,yesno,Is 5 greater than 3?,yes
+69,yesno,Is the moon made of cheese?,no
+70,yesno,Do humans need water to live?,yes
+71,social,Hello!,hello|hi|nice|how
+72,social,How are you?,well|good|fine|thanks
+73,social,Good morning.,morning|hello|good
+74,social,What is your name?,name|am|i
+75,social,Tell me a joke.,why|because|joke
+76,comparison,Which is bigger an elephant or a mouse?,elephant
+77,comparison,Which is faster a car or a bicycle?,car
+78,comparison,Which is colder ice or fire?,ice
+79,comparison,Which is heavier a feather or a brick?,brick
+80,comparison,Which is taller a giraffe or a dog?,giraffe
+81,comparison,Which is older 1990 or 2020?,1990
+82,comparison,Which planet is closer to the sun Earth or Mars?,earth
+83,comparison,Which is sweeter sugar or salt?,sugar
+84,comparison,Which is louder a whisper or a shout?,shout
+85,comparison,Which is brighter the sun or a candle?,sun
+86,time,How many days are in a week?,seven|7
+87,time,How many months are in a year?,twelve|12
+88,time,How many hours are in a day?,twenty-four|24|twenty four
+89,time,How many minutes are in an hour?,sixty|60
+90,time,How many seconds are in a minute?,sixty|60
+91,causal,Why do plants need water?,grow|survive|alive|live
+92,causal,Why is the sky blue?,light|color|scatter|sun
+93,causal,Why do we eat food?,energy|live|grow|hungry|nutrition
+94,causal,Why do birds fly?,wings|escape|find|sky
+95,causal,Why does it rain?,cloud|water|sky|condense
+96,causal,Why do we sleep?,rest|tired|night|body|energy
+97,causal,Why is fire dangerous?,burn|hot|hurt|injure
+98,causal,Why do we wear clothes?,warm|cover|protect|cold
+99,causal,Why do bees make honey?,food|store|winter|eat
+100,causal,Why is exercise good for you?,health|strong|fit|body
