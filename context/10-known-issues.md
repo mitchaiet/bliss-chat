@@ -31,6 +31,7 @@ step 5: nan  (and remains nan for the rest of training)
 | Pre-init special-token wte/lm_head/value_embeds from `<\|bos\|>`'s trained values | **NaN @ step 5 still** |
 | `NANOCHAT_DTYPE=float32` (force fp32 forward — falsifies hypothesis 3) | NaN by step ~88 |
 | Grad-finite check + manual `mul_` clip (max_norm=1.0) + skip-on-NaN | Trained 7 steps cleanly (loss 1.32→2.33), then **NaN by step 8** |
+| Vanilla `torch.optim.AdamW` (replace Muon entirely) + lr 5e-5 + same guards | **Identical divergence pattern**: trained 7 steps (loss 1.32→2.31), NaN at step 8 |
 
 ### Diagnosis attempts
 
@@ -61,19 +62,44 @@ that avoids the inf-times-zero trap, skip optimizer step on non-finite grad
 norm). Result: trains 7 steps cleanly, loss climbs 1.32 → 2.33 (i.e. it is
 DIVERGING under the constraints), then walls at NaN by step 8.
 
-**Working theory**: Muon's Newton-Schultz orthogonalization step can amplify
-even pre-clipped gradients, so `clip_grad_norm_(1.0)` isn't a hard upper
-bound on the actual weight update. The unfrozen special-token rows (random
-init magnitude vs. the trained-row magnitude) are likely the failure mode.
+**Working theory (UPDATED 2026-05-10)**: Optimizer is not the cause.
+
+Swapped Muon → vanilla `torch.optim.AdamW` with lr 5e-5 + all the
+NaN-skip / grad-clip guards still in place. **Result: the divergence
+trajectory is byte-identical** — loss 1.32 → 2.31 over 7 steps, NaN at
+step 8. AdamW with lr 5e-5 has a per-step update bounded at ~5e-5,
+which cannot explain weights going off-cliff in 7 steps. So whatever's
+driving divergence is either:
+
+* in the data — SFT data (SmolTalk-style) has a structural issue
+  with how special-token positions are masked / labeled, OR
+* in the patched checkpoint — `d12_patched` copies `<bos>`'s row into
+  every chat-special slot, so WTE[user_start] ≡ WTE[bos] etc. The
+  model can't distinguish them, gradients update them all in lock-
+  step, and after a few updates the embedding space collapses.
+
+The second is the more plausible explanation given the consistency of
+the 7-step run-up. Loss climbs each step (1.32, 1.71, 2.02, 2.13, 2.20,
+2.28, 2.31) — the model is _learning to be worse_ in a predictable way.
 
 **Next things to try** (when revisiting):
 
-1. Freeze everything except the special-token rows for the first ~50 steps
-   (warm them up to the trained-row distribution before unfreezing).
-2. Cap Muon's update norm directly (not just the input grad's norm).
-3. Run a chat-formatted dataset through `base_train.py` from scratch, no SFT.
-4. Train with a much smaller LR (`matrix-lr=0.0002` — 10× smaller again).
-5. AdamW instead of Muon for the SFT phase.
+1. **Re-init the special-token rows with random orthogonal vectors instead
+   of copying `<bos>`** (i.e. give the model a chance to differentiate them
+   instead of feeding it identical rows for 9 different roles).
+2. **Pretrain a fresh d12 from scratch on chat-formatted data** so the
+   special tokens are seen continuously during base training; no SFT needed.
+3. **LoRA / adapter** — freeze every base param, only learn a small
+   adapter. Loss landscape changes; might dodge the collapse.
+4. **Inspect a single sample's gradient direction**: is the model being
+   asked to learn an impossible mapping (e.g. all special-token labels
+   point to the same row, gradient becomes self-canceling).
+5. Patch nanochat's loss to log per-position cross-entropy at step 1; see
+   which positions contribute most to the climbing loss — likely the
+   special-token positions.
+
+These are research-grade and out of scope for the v1 ship. The base
+model ramble is what users will see for now.
 
 **Hypothesis 4 (untested)**: Loss computation NaN from a malformed sample.
 
