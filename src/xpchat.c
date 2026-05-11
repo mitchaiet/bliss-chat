@@ -58,6 +58,12 @@
 #define IDM_RENAME     2009
 #define IDM_DELETE     2010
 #define IDM_CHATSAVE   2011
+#define IDM_COPY       2020
+#define IDM_PASTE      2021
+#define IDM_SELECTALL  2022
+#define IDM_FIND       2023
+#define IDM_SHORTCUTS  2024
+#define IDM_SLASHHELP  2025
 
 // Resource IDs from resource.rc — must stay in sync.
 #define IDD_SETTINGS         200
@@ -68,15 +74,29 @@
 #define IDC_PRESET_BALANCED  205
 #define IDC_PRESET_CREATIVE  206
 #define IDC_DEFAULTS         207
+#define IDC_TOPP_EDIT        214
+#define IDC_MAXTOK_EDIT      215
+#define IDC_SYSPROMPT_EDIT   216
+#define IDC_RESET_ALL        217
+
 #define IDD_RENAME           210
 #define IDC_RENAME_EDIT      211
 
-#define IDD_EDITPROMPT       210
-#define IDC_EDITPROMPT_TEXT  211
+#define IDD_EDITPROMPT       212
+#define IDC_EDITPROMPT_TEXT  213
+
+#define IDD_FIND             220
+#define IDC_FIND_EDIT        221
+#define IDC_FIND_NEXT        222
+
+#define IDD_SHORTCUTS        230
+#define IDC_SHORTCUTS_TEXT   231
 
 // Defaults that match nc_run.c's CLI defaults.
 #define DEFAULT_TEMP   0.8f
 #define DEFAULT_SEED   0  /* 0 = "use clock" */
+#define DEFAULT_TOPP   0.95f
+#define DEFAULT_MAXTOK 0  /* 0 = "no cap, use context budget" */
 
 #define WM_APPEND_TEXT    (WM_APP + 1)
 #define WM_RUN_DONE       (WM_APP + 2)   // wparam = generated_token_count, lparam = response text
@@ -182,8 +202,15 @@ static int  gHasAsstTurn   = 0;
 static int  gRegenLabel = 0;
 // Settings — mirror what we last sent to the backend so the dialog can
 // pre-populate. Persisted in HKCU\Software\bliss-chat\Settings.
-static float gTemp  = DEFAULT_TEMP;
-static DWORD gSeed  = DEFAULT_SEED;
+static float gTemp     = DEFAULT_TEMP;
+static DWORD gSeed     = DEFAULT_SEED;
+static float gTopP     = DEFAULT_TOPP;
+static DWORD gMaxTok   = DEFAULT_MAXTOK;
+static char  gSysPrompt[2048] = "";  // empty = use backend default
+
+// Last find text from the Find dialog. Static so "Find Next" stays useful
+// when the dialog is dismissed (and reusable if we ever wire F3).
+static char  gLastFind[256] = "";
 // Running count of *assistant* characters emitted in the current turn,
 // reset when a new turn starts. Used to compute live tok/s in the
 // status bar between EOT events. Reasonable approximation: tokens
@@ -457,6 +484,12 @@ static void clear_transcript(void) {
     } else {
         rich_append_color("Loading model...\r\n\r\n", RGB(96, 96, 96), FALSE);
     }
+    // Empty-state welcome line. Renders in muted gray so it reads as a
+    // hint, not a turn. It stays until the first user turn pushes it
+    // out of view; clear_transcript() rewrites it on Clear / New Chat.
+    rich_append_color(
+        "Welcome to bliss-chat. Type a message below to start, or try a slash command like /help.\r\n\r\n",
+        RGB(128, 128, 128), FALSE);
 }
 
 static void set_running(BOOL running) {
@@ -785,12 +818,19 @@ static void send_prompt(void) {
 static void make_menu(HWND hwnd) {
     HMENU menu = CreateMenu();
     HMENU file = CreatePopupMenu();
+    HMENU edit = CreatePopupMenu();
     HMENU convo = CreatePopupMenu();
     HMENU help = CreatePopupMenu();
 
     AppendMenuA(file, MF_STRING, IDM_SAVE, "Save Transcript...\tCtrl+S");
     AppendMenuA(file, MF_SEPARATOR, 0, NULL);
     AppendMenuA(file, MF_STRING, IDM_EXIT, "Exit");
+
+    AppendMenuA(edit, MF_STRING, IDM_COPY,      "Copy\tCtrl+C");
+    AppendMenuA(edit, MF_STRING, IDM_PASTE,     "Paste\tCtrl+V");
+    AppendMenuA(edit, MF_STRING, IDM_SELECTALL, "Select All\tCtrl+A");
+    AppendMenuA(edit, MF_SEPARATOR, 0, NULL);
+    AppendMenuA(edit, MF_STRING, IDM_FIND,      "Find...\tCtrl+F");
 
     AppendMenuA(convo, MF_STRING, IDM_NEWCHAT, "New Chat\tCtrl+N");
     AppendMenuA(convo, MF_STRING, IDM_SEND,    "Send");
@@ -799,9 +839,13 @@ static void make_menu(HWND hwnd) {
     AppendMenuA(convo, MF_SEPARATOR, 0, NULL);
     AppendMenuA(convo, MF_STRING, IDM_CLEAR,   "Clear transcript");
 
+    AppendMenuA(help, MF_STRING, IDM_SHORTCUTS, "Keyboard Shortcuts...");
+    AppendMenuA(help, MF_STRING, IDM_SLASHHELP, "Slash Commands...");
+    AppendMenuA(help, MF_SEPARATOR, 0, NULL);
     AppendMenuA(help, MF_STRING, IDM_ABOUT, "About bliss-chat");
 
     AppendMenuA(menu, MF_POPUP, (UINT_PTR)file, "File");
+    AppendMenuA(menu, MF_POPUP, (UINT_PTR)edit, "Edit");
     AppendMenuA(menu, MF_POPUP, (UINT_PTR)convo, "Conversation");
     AppendMenuA(menu, MF_POPUP, (UINT_PTR)help, "Help");
     SetMenu(hwnd, menu);
@@ -1464,9 +1508,11 @@ static void chats_load_into_view(int idx) {
 
 // Send a single line to the backend's stdin (the line should NOT include
 // a trailing newline — we add it). Returns TRUE on success.
+// Buffer is sized to hold the longest realistic command: `/system` plus a
+// ~2k system prompt with escaped newlines.
 static BOOL backend_send_line(const char *line) {
     if (!line || !gBackendStdinW) return FALSE;
-    char buf[1024];
+    char buf[4096];
     snprintf(buf, sizeof(buf), "%s\n", line);
     DWORD wrote = 0;
     return WriteFile(gBackendStdinW, buf, (DWORD)strlen(buf), &wrote, NULL);
@@ -1490,6 +1536,24 @@ static void settings_load(void) {
     if (RegQueryValueExA(key, "Seed", NULL, &type, (BYTE *)&seed, &sz) == ERROR_SUCCESS) {
         gSeed = seed;
     }
+    // Top-P stored same as Temp: int(*1000) for REG_DWORD cleanliness.
+    DWORD p_milli = 0;
+    sz = sizeof(p_milli);
+    if (RegQueryValueExA(key, "TopPMilli", NULL, &type, (BYTE *)&p_milli, &sz) == ERROR_SUCCESS) {
+        gTopP = (float)p_milli / 1000.0f;
+    }
+    DWORD maxtok = 0;
+    sz = sizeof(maxtok);
+    if (RegQueryValueExA(key, "MaxTok", NULL, &type, (BYTE *)&maxtok, &sz) == ERROR_SUCCESS) {
+        gMaxTok = maxtok;
+    }
+    // System prompt is REG_SZ. May be empty (treated as "use backend default").
+    sz = sizeof(gSysPrompt);
+    if (RegQueryValueExA(key, "SystemPrompt", NULL, &type, (BYTE *)gSysPrompt, &sz) != ERROR_SUCCESS) {
+        gSysPrompt[0] = 0;
+    } else {
+        gSysPrompt[sizeof(gSysPrompt) - 1] = 0;
+    }
     RegCloseKey(key);
 }
 
@@ -1499,50 +1563,117 @@ static void settings_save(void) {
                         REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL,
                         &key, NULL) != ERROR_SUCCESS) return;
     DWORD t_milli = (DWORD)(gTemp * 1000.0f + 0.5f);
-    RegSetValueExA(key, "TempMilli", 0, REG_DWORD, (BYTE *)&t_milli, sizeof(t_milli));
-    RegSetValueExA(key, "Seed",      0, REG_DWORD, (BYTE *)&gSeed,    sizeof(gSeed));
+    DWORD p_milli = (DWORD)(gTopP * 1000.0f + 0.5f);
+    RegSetValueExA(key, "TempMilli",  0, REG_DWORD, (BYTE *)&t_milli,  sizeof(t_milli));
+    RegSetValueExA(key, "Seed",       0, REG_DWORD, (BYTE *)&gSeed,    sizeof(gSeed));
+    RegSetValueExA(key, "TopPMilli",  0, REG_DWORD, (BYTE *)&p_milli,  sizeof(p_milli));
+    RegSetValueExA(key, "MaxTok",     0, REG_DWORD, (BYTE *)&gMaxTok,  sizeof(gMaxTok));
+    RegSetValueExA(key, "SystemPrompt", 0, REG_SZ,
+                   (BYTE *)gSysPrompt, (DWORD)(strlen(gSysPrompt) + 1));
     RegCloseKey(key);
+}
+
+// Wipe the whole HKCU\Software\bliss-chat\Settings subkey and revert
+// the in-memory mirrors to defaults. Used by "Reset All Settings".
+static void settings_reset_all(void) {
+    gTemp   = DEFAULT_TEMP;
+    gSeed   = DEFAULT_SEED;
+    gTopP   = DEFAULT_TOPP;
+    gMaxTok = DEFAULT_MAXTOK;
+    gSysPrompt[0] = 0;
+    // Delete the subkey so a stale value can't be resurrected.
+    RegDeleteKeyA(HKEY_CURRENT_USER, BLISS_REG_SETTINGS);
+}
+
+// Escape newlines in a system-prompt string so it survives the single-line
+// stdin transport to the backend. Backend re-inflates "\\n" -> '\n'.
+static void escape_newlines(const char *in, char *out, size_t outsz) {
+    size_t o = 0;
+    for (size_t i = 0; in[i] && o + 3 < outsz; i++) {
+        if (in[i] == '\r') continue;
+        if (in[i] == '\n') {
+            out[o++] = '\\';
+            out[o++] = 'n';
+        } else if (in[i] == '\\') {
+            out[o++] = '\\';
+            out[o++] = '\\';
+        } else {
+            out[o++] = in[i];
+        }
+    }
+    out[o] = 0;
 }
 
 // Push the current settings down to the backend via slash commands.
 // Safe to call any time — backend echoes an INFO + EOT for each.
 static void settings_apply_to_backend(void) {
-    char buf[64];
+    char buf[3072];
     snprintf(buf, sizeof(buf), "/temp %.3f", gTemp);
+    backend_send_line(buf);
+    snprintf(buf, sizeof(buf), "/topp %.3f", gTopP);
+    backend_send_line(buf);
+    snprintf(buf, sizeof(buf), "/maxtok %lu", (unsigned long)gMaxTok);
     backend_send_line(buf);
     if (gSeed != 0) {
         snprintf(buf, sizeof(buf), "/seed %lu", (unsigned long)gSeed);
         backend_send_line(buf);
     }
+    if (gSysPrompt[0]) {
+        char esc[2200];
+        escape_newlines(gSysPrompt, esc, sizeof(esc));
+        snprintf(buf, sizeof(buf), "/system %s", esc);
+        backend_send_line(buf);
+    }
 }
 
-// Dialog proc for the Settings dialog. Loads gTemp/gSeed into the
-// controls on init, writes them back on OK, and handles the preset +
-// random-seed buttons.
+// Dialog proc for the Settings dialog. Loads gTemp / gSeed / gTopP /
+// gMaxTok / gSysPrompt into the controls on init, writes them back on
+// OK, and handles the preset / random-seed / reset buttons.
 static INT_PTR CALLBACK settings_dlg_proc(HWND dlg, UINT msg, WPARAM wparam, LPARAM lparam) {
     char buf[64];
+    (void)lparam;
     switch (msg) {
     case WM_INITDIALOG:
         snprintf(buf, sizeof(buf), "%.2f", gTemp);
         SetDlgItemTextA(dlg, IDC_TEMP_EDIT, buf);
         snprintf(buf, sizeof(buf), "%lu", (unsigned long)gSeed);
         SetDlgItemTextA(dlg, IDC_SEED_EDIT, buf);
+        snprintf(buf, sizeof(buf), "%.2f", gTopP);
+        SetDlgItemTextA(dlg, IDC_TOPP_EDIT, buf);
+        snprintf(buf, sizeof(buf), "%lu", (unsigned long)gMaxTok);
+        SetDlgItemTextA(dlg, IDC_MAXTOK_EDIT, buf);
+        SetDlgItemTextA(dlg, IDC_SYSPROMPT_EDIT, gSysPrompt);
         return TRUE;
 
     case WM_COMMAND:
         switch (LOWORD(wparam)) {
-        case IDOK:
+        case IDOK: {
+            float t, p;
+            DWORD maxtok;
+            char sysbuf[2048];
             GetDlgItemTextA(dlg, IDC_TEMP_EDIT, buf, sizeof(buf));
-            float t = (float)atof(buf);
+            t = (float)atof(buf);
             if (t < 0.0f) t = 0.0f;
             if (t > 5.0f) t = 5.0f;
             gTemp = t;
             GetDlgItemTextA(dlg, IDC_SEED_EDIT, buf, sizeof(buf));
             gSeed = (DWORD)strtoul(buf, NULL, 10);
+            GetDlgItemTextA(dlg, IDC_TOPP_EDIT, buf, sizeof(buf));
+            p = (float)atof(buf);
+            if (p < 0.0f) p = 0.0f;
+            if (p > 1.0f) p = 1.0f;
+            gTopP = p;
+            GetDlgItemTextA(dlg, IDC_MAXTOK_EDIT, buf, sizeof(buf));
+            maxtok = (DWORD)strtoul(buf, NULL, 10);
+            if (maxtok > 2048) maxtok = 2048;
+            gMaxTok = maxtok;
+            GetDlgItemTextA(dlg, IDC_SYSPROMPT_EDIT, sysbuf, sizeof(sysbuf));
+            snprintf(gSysPrompt, sizeof(gSysPrompt), "%s", sysbuf);
             settings_save();
             settings_apply_to_backend();
             EndDialog(dlg, IDOK);
             return TRUE;
+        }
 
         case IDCANCEL:
             EndDialog(dlg, IDCANCEL);
@@ -1568,8 +1699,25 @@ static INT_PTR CALLBACK settings_dlg_proc(HWND dlg, UINT msg, WPARAM wparam, LPA
         }
 
         case IDC_DEFAULTS:
+            // "Reset Defaults" — only clears the Sampling group, leaves
+            // the Advanced fields alone (system prompt etc.).
             SetDlgItemTextA(dlg, IDC_TEMP_EDIT, "0.80");
             SetDlgItemTextA(dlg, IDC_SEED_EDIT, "0");
+            return TRUE;
+
+        case IDC_RESET_ALL:
+            // "Reset All Settings" — wipe every field AND clear the
+            // registry subkey so a stale value can't sneak back.
+            if (MessageBoxA(dlg,
+                "Reset every setting (temperature, seed, top-p, max tokens, system prompt) to defaults and clear the saved registry values?",
+                "Reset all settings", MB_ICONQUESTION | MB_YESNO) == IDYES) {
+                settings_reset_all();
+                SetDlgItemTextA(dlg, IDC_TEMP_EDIT, "0.80");
+                SetDlgItemTextA(dlg, IDC_SEED_EDIT, "0");
+                SetDlgItemTextA(dlg, IDC_TOPP_EDIT, "0.95");
+                SetDlgItemTextA(dlg, IDC_MAXTOK_EDIT, "0");
+                SetDlgItemTextA(dlg, IDC_SYSPROMPT_EDIT, "");
+            }
             return TRUE;
         }
         return FALSE;
@@ -1718,6 +1866,152 @@ static void save_transcript_dialog(HWND parent) {
     fwrite("\r\n", 1, 2, fp);
     fclose(fp);
     free(buf);
+}
+
+// ---------- Edit-menu plumbing ----------
+//
+// Routes Copy / Paste / Select All to the right control:
+//  - Copy: prefers the transcript (it's read-only but holds the visible
+//    chat history); falls back to whatever has focus so input-box copies
+//    still work.
+//  - Paste: targets the input box.
+//  - Select All: always targets the transcript.
+
+static void do_copy(void) {
+    HWND focus = GetFocus();
+    HWND target = gTranscript;
+    // If user has the input focused (e.g. selecting their own draft),
+    // let WM_COPY go there instead of the transcript.
+    if (focus == gInput) target = gInput;
+    if (target) SendMessageA(target, WM_COPY, 0, 0);
+}
+
+static void do_paste(void) {
+    if (gInput) {
+        SetFocus(gInput);
+        SendMessageA(gInput, WM_PASTE, 0, 0);
+    }
+}
+
+static void do_select_all(void) {
+    if (!gTranscript) return;
+    SetFocus(gTranscript);
+    // RichEdit honors plain EM_SETSEL just fine.
+    SendMessageA(gTranscript, EM_SETSEL, 0, -1);
+}
+
+// Case-insensitive substring search of the transcript starting from
+// the position right after the current selection. Returns 0 if not
+// found, 1 if a hit was selected.
+static int do_find_in_transcript(const char *needle) {
+    if (!gTranscript || !needle || !*needle) return 0;
+    int total = GetWindowTextLengthA(gTranscript);
+    if (total <= 0) return 0;
+    char *hay = (char *)malloc((size_t)total + 1);
+    if (!hay) return 0;
+    GetWindowTextA(gTranscript, hay, total + 1);
+
+    // Where to start: just after the current selection end. If nothing
+    // selected, start at 0. If we've already scanned past the end on a
+    // previous "Find Next", wrap to the top.
+    DWORD sel_lo = 0, sel_hi = 0;
+    SendMessageA(gTranscript, EM_GETSEL, (WPARAM)&sel_lo, (LPARAM)&sel_hi);
+    int start = (int)sel_hi;
+    if (start < 0 || start >= total) start = 0;
+
+    size_t nlen = strlen(needle);
+    int found_at = -1;
+    for (int pass = 0; pass < 2 && found_at < 0; pass++) {
+        int from = (pass == 0) ? start : 0;
+        int to   = (pass == 0) ? total : start;
+        for (int i = from; i + (int)nlen <= to; i++) {
+            int ok = 1;
+            for (size_t j = 0; j < nlen; j++) {
+                char a = hay[i + j], b = needle[j];
+                if (a >= 'A' && a <= 'Z') a = (char)(a + 32);
+                if (b >= 'A' && b <= 'Z') b = (char)(b + 32);
+                if (a != b) { ok = 0; break; }
+            }
+            if (ok) { found_at = i; break; }
+        }
+    }
+    free(hay);
+    if (found_at < 0) return 0;
+    SendMessageA(gTranscript, EM_SETSEL, (WPARAM)found_at,
+                 (LPARAM)(found_at + (int)nlen));
+    SendMessageA(gTranscript, EM_SCROLLCARET, 0, 0);
+    return 1;
+}
+
+static INT_PTR CALLBACK find_dlg_proc(HWND dlg, UINT msg, WPARAM wparam, LPARAM lparam) {
+    (void)lparam;
+    switch (msg) {
+    case WM_INITDIALOG:
+        SetDlgItemTextA(dlg, IDC_FIND_EDIT, gLastFind);
+        // Move caret to end of edit so typing replaces.
+        SendDlgItemMessageA(dlg, IDC_FIND_EDIT, EM_SETSEL, 0, -1);
+        return TRUE;
+
+    case WM_COMMAND:
+        switch (LOWORD(wparam)) {
+        case IDC_FIND_NEXT:
+        case IDOK:
+            GetDlgItemTextA(dlg, IDC_FIND_EDIT, gLastFind, sizeof(gLastFind));
+            if (gLastFind[0]) {
+                if (!do_find_in_transcript(gLastFind)) {
+                    MessageBoxA(dlg, "Not found.", APP_NAME,
+                                MB_ICONINFORMATION | MB_OK);
+                }
+            }
+            return TRUE;
+
+        case IDCANCEL:
+            EndDialog(dlg, IDCANCEL);
+            return TRUE;
+        }
+        return FALSE;
+
+    case WM_CLOSE:
+        EndDialog(dlg, IDCANCEL);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static INT_PTR CALLBACK shortcuts_dlg_proc(HWND dlg, UINT msg, WPARAM wparam, LPARAM lparam) {
+    (void)lparam;
+    switch (msg) {
+    case WM_INITDIALOG: {
+        static const char SHORTCUTS_BODY[] =
+            "Keyboard shortcuts\r\n"
+            "\r\n"
+            "  Ctrl+N      New Chat\r\n"
+            "  Ctrl+S      Save Transcript\r\n"
+            "  Ctrl+C      Copy\r\n"
+            "  Ctrl+V      Paste\r\n"
+            "  Ctrl+A      Select All (transcript)\r\n"
+            "  Ctrl+F      Find in transcript\r\n"
+            "  Esc         Stop generation\r\n"
+            "  Enter       Send message\r\n"
+            "  Shift+Enter Insert newline in input\r\n"
+            "  F2          Rename chat (if available)\r\n"
+            "  Del         Delete chat (if available)\r\n";
+        SetDlgItemTextA(dlg, IDC_SHORTCUTS_TEXT, SHORTCUTS_BODY);
+        return TRUE;
+    }
+
+    case WM_COMMAND:
+        if (LOWORD(wparam) == IDOK || LOWORD(wparam) == IDCANCEL) {
+            EndDialog(dlg, IDOK);
+            return TRUE;
+        }
+        return FALSE;
+
+    case WM_CLOSE:
+        EndDialog(dlg, IDOK);
+        return TRUE;
+    }
+    return FALSE;
 }
 
 static LRESULT CALLBACK input_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
@@ -2134,7 +2428,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
                 "SIMD: SSE2 / SSE3 (Pentium 4 compatible)\n"
                 "Model file: MODEL.NCB (custom NCB1 format, int8 quantized)\n"
                 "\n"
-                "Slash commands: /help /info /reset",
+                "Slash commands: /help /info /reset /temp /topp /seed /maxtok /system",
                 APP_NAME, MB_ICONINFORMATION | MB_OK);
             return 0;
         case IDM_EXIT:
@@ -2199,6 +2493,33 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         case IDM_SETTINGS:
             DialogBoxParamA(gInstance, MAKEINTRESOURCEA(IDD_SETTINGS), hwnd,
                             settings_dlg_proc, 0);
+            return 0;
+        case IDM_COPY:
+            do_copy();
+            return 0;
+        case IDM_PASTE:
+            do_paste();
+            return 0;
+        case IDM_SELECTALL:
+            do_select_all();
+            return 0;
+        case IDM_FIND:
+            DialogBoxParamA(gInstance, MAKEINTRESOURCEA(IDD_FIND), hwnd,
+                            find_dlg_proc, 0);
+            return 0;
+        case IDM_SHORTCUTS:
+            DialogBoxParamA(gInstance, MAKEINTRESOURCEA(IDD_SHORTCUTS), hwnd,
+                            shortcuts_dlg_proc, 0);
+            return 0;
+        case IDM_SLASHHELP:
+            // Backend already lists slash commands for `/help` — route the
+            // menu item through the same path the toolbar Help button uses.
+            if (InterlockedCompareExchange(&gBackendReady, 0, 0)) {
+                backend_send_line("/help");
+            } else {
+                MessageBoxA(hwnd, "Backend not ready yet.", APP_NAME,
+                            MB_ICONINFORMATION | MB_OK);
+            }
             return 0;
         }
         break;
@@ -2278,6 +2599,10 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE prev, LPSTR cmdline, int show) 
     ACCEL accels[] = {
         { FCONTROL | FVIRTKEY, 'S', IDM_SAVE },
         { FCONTROL | FVIRTKEY, 'N', IDM_NEWCHAT },
+        { FCONTROL | FVIRTKEY, 'C', IDM_COPY },
+        { FCONTROL | FVIRTKEY, 'V', IDM_PASTE },
+        { FCONTROL | FVIRTKEY, 'A', IDM_SELECTALL },
+        { FCONTROL | FVIRTKEY, 'F', IDM_FIND },
     };
     HACCEL haccel = CreateAcceleratorTableA(accels, (int)(sizeof(accels) / sizeof(accels[0])));
 
