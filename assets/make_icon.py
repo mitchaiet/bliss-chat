@@ -147,18 +147,105 @@ def render(size: int) -> Image.Image:
     return img
 
 
+def write_ico_bmp(images, out_path):
+    """
+    Hand-write a multi-size .ico with each entry as BITMAPINFOHEADER + 32bpp
+    BGRA pixel data + 1bpp AND mask.
+
+    Pillow's ICO writer uses PNG-encoded entries which Windows XP's icon
+    loader does not understand (PNG-in-ICO support was added in Vista).
+    """
+    import struct
+
+    n = len(images)
+    icondir = struct.pack("<HHH", 0, 1, n)  # reserved=0, type=1=icon, count=n
+
+    entries = []
+    blobs = []
+    offset = 6 + 16 * n  # after ICONDIR + n * ICONDIRENTRY
+
+    for img in images:
+        if img.mode != "RGBA":
+            img = img.convert("RGBA")
+        w, h = img.size
+
+        # 32bpp pixel rows, bottom-up, BGRA byte order.
+        pixels = img.load()
+        pixel_rows = []
+        for y in range(h - 1, -1, -1):
+            row = bytearray()
+            for x in range(w):
+                r, g, b, a = pixels[x, y]
+                row += bytes((b, g, r, a))
+            pixel_rows.append(bytes(row))
+        pixel_data = b"".join(pixel_rows)
+
+        # AND mask: 1bpp, bottom-up, rows padded to multiple of 4 bytes.
+        # 0 = opaque, 1 = transparent. Even with 32bpp + alpha, the mask must
+        # be present, and XP can use it for cursor-style hit-testing.
+        bytes_per_mask_row = ((w + 31) // 32) * 4
+        mask_rows = []
+        for y in range(h - 1, -1, -1):
+            bits = bytearray(bytes_per_mask_row)
+            for x in range(w):
+                _, _, _, a = pixels[x, y]
+                if a < 128:
+                    bits[x >> 3] |= 0x80 >> (x & 7)
+            mask_rows.append(bytes(bits))
+        mask_data = b"".join(mask_rows)
+
+        # BITMAPINFOHEADER: 40 bytes. Note: biHeight is doubled (XOR + AND).
+        bih = struct.pack(
+            "<IiiHHIIiiII",
+            40,         # biSize
+            w,          # biWidth
+            h * 2,      # biHeight = image + mask
+            1,          # biPlanes
+            32,         # biBitCount
+            0,          # biCompression = BI_RGB
+            len(pixel_data) + len(mask_data),  # biSizeImage
+            0, 0,       # biXPelsPerMeter, biYPelsPerMeter
+            0, 0,       # biClrUsed, biClrImportant
+        )
+
+        blob = bih + pixel_data + mask_data
+        # ICONDIRENTRY: width/height stored as u8, with 0 meaning 256.
+        ww = 0 if w == 256 else w
+        hh = 0 if h == 256 else h
+        entries.append(struct.pack(
+            "<BBBBHHII",
+            ww, hh, 0, 0,
+            1,          # color planes
+            32,         # bits per pixel
+            len(blob),  # bytes_in_res
+            offset,     # image offset
+        ))
+        blobs.append(blob)
+        offset += len(blob)
+
+    with open(out_path, "wb") as f:
+        f.write(icondir)
+        for e in entries:
+            f.write(e)
+        for b in blobs:
+            f.write(b)
+
+
 def main():
-    # Render the largest size at full detail, then let Pillow downsample
-    # for the smaller variants. This produces sharper results than
-    # rendering each size independently (small sizes lose detail in the
-    # per-pixel hill gradient).
+    # Render the largest size at full detail, then downsample for the
+    # smaller variants — small sizes lose detail if rendered directly,
+    # because the per-pixel hill gradient assumes more pixels than
+    # 16x16 has.
     master = render(max(SIZES))
-    master.save(
-        OUT,
-        format="ICO",
-        sizes=[(s, s) for s in SIZES],
-    )
-    print(f"wrote {OUT} ({OUT.stat().st_size} bytes, {len(SIZES)} sizes)")
+    images = []
+    for s in SIZES:
+        if s == max(SIZES):
+            images.append(master)
+        else:
+            images.append(master.resize((s, s), Image.LANCZOS))
+
+    write_ico_bmp(images, OUT)
+    print(f"wrote {OUT} ({OUT.stat().st_size} bytes, {len(SIZES)} sizes, BMP format)")
 
 
 if __name__ == "__main__":

@@ -15,6 +15,7 @@
 
 #include <windows.h>
 #include <commctrl.h>
+#include <commdlg.h>
 #include <richedit.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,6 +42,7 @@
 #define IDM_SEND       2003
 #define IDM_STOP       2004
 #define IDM_ABOUT      2005
+#define IDM_SAVE       2006
 
 #define WM_APPEND_TEXT    (WM_APP + 1)
 #define WM_RUN_DONE       (WM_APP + 2)   // wparam = generated_token_count, lparam = response text
@@ -93,6 +95,11 @@ static int gLogInited = 0;
 static volatile LONG gRunning;
 static volatile LONG gBackendReady;
 static DWORD gRunStarted;
+// Running count of *assistant* characters emitted in the current turn,
+// reset when a new turn starts. Used to compute live tok/s in the
+// status bar between EOT events. Reasonable approximation: tokens
+// average ~4 chars for English in our BPE.
+static volatile LONG gRunChars;
 
 static HANDLE gBackendProcess;
 static HANDLE gBackendStdinW;   // GUI writes here -> backend reads as stdin
@@ -244,6 +251,21 @@ static void rich_set_format(COLORREF color, BOOL bold) {
     SendMessageA(gTranscript, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
 }
 
+// True if the transcript is currently scrolled all the way to the bottom
+// (within a small fudge factor for partial last line). Used to keep
+// auto-scroll "sticky": we only follow new output if the user hadn't
+// scrolled up to read history.
+static BOOL transcript_at_bottom(void) {
+    if (!gTranscript) return TRUE;
+    SCROLLINFO si;
+    si.cbSize = sizeof(si);
+    si.fMask  = SIF_RANGE | SIF_PAGE | SIF_POS | SIF_TRACKPOS;
+    if (!GetScrollInfo(gTranscript, SB_VERT, &si)) return TRUE;
+    int max_pos = (int)si.nMax - (int)si.nPage + 1;
+    if (max_pos < 0) max_pos = 0;
+    return (int)si.nPos >= max_pos - 2;
+}
+
 static void rich_append_color(const char *text, COLORREF color, BOOL bold) {
     CHARRANGE range;
     Buffer norm;
@@ -251,12 +273,17 @@ static void rich_append_color(const char *text, COLORREF color, BOOL bold) {
     buffer_init(&norm);
     normalize_newlines(&norm, text, strlen(text));
     if (!norm.data) return;
+    BOOL was_at_bottom = transcript_at_bottom();
     range.cpMin = -1;
     range.cpMax = -1;
     SendMessageA(gTranscript, EM_EXSETSEL, 0, (LPARAM)&range);
     rich_set_format(color, bold);
     SendMessageA(gTranscript, EM_REPLACESEL, FALSE, (LPARAM)norm.data);
-    SendMessageA(gTranscript, EM_SCROLLCARET, 0, 0);
+    // Only follow the output if the user was already at the bottom —
+    // otherwise let them keep reading whatever they scrolled up to.
+    if (was_at_bottom) {
+        SendMessageA(gTranscript, EM_SCROLLCARET, 0, 0);
+    }
     free(norm.data);
 }
 
@@ -285,7 +312,7 @@ static void set_running(BOOL running) {
     EnableWindow(gClear, !running);
     // Reset bar at phase transitions; backend will fill it via PROG messages.
     if (gProgress) SendMessageA(gProgress, PBM_SETPOS, 0, 0);
-    if (running) SetTimer(gMain, TIMER_STATUS, 1000, NULL);
+    if (running) SetTimer(gMain, TIMER_STATUS, 500, NULL);
     else KillTimer(gMain, TIMER_STATUS);
 }
 
@@ -538,6 +565,7 @@ static void send_prompt(void) {
     SetWindowTextA(gInput, "");
 
     InterlockedExchange(&gRunning, 1);
+    InterlockedExchange(&gRunChars, 0);
     gRunStarted = GetTickCount();
     set_running(TRUE);
     set_status("Generating...");
@@ -560,6 +588,8 @@ static void make_menu(HWND hwnd) {
     HMENU convo = CreatePopupMenu();
     HMENU help = CreatePopupMenu();
 
+    AppendMenuA(file, MF_STRING, IDM_SAVE, "Save Transcript...\tCtrl+S");
+    AppendMenuA(file, MF_SEPARATOR, 0, NULL);
     AppendMenuA(file, MF_STRING, IDM_EXIT, "Exit");
     AppendMenuA(convo, MF_STRING, IDM_SEND, "Send");
     AppendMenuA(convo, MF_SEPARATOR, 0, NULL);
@@ -759,7 +789,108 @@ static void layout_controls(HWND hwnd) {
     else ShowWindow(gClear, SW_SHOW);
 }
 
+// HKCU\Software\bliss-chat\Window holds the last main-window placement
+// (x/y/w/h) so the next launch comes up where you left it.
+#define BLISS_REG_KEY "Software\\bliss-chat"
+
+static void win_save_placement(HWND hwnd) {
+    WINDOWPLACEMENT wp;
+    wp.length = sizeof(wp);
+    if (!GetWindowPlacement(hwnd, &wp)) return;
+    if (wp.showCmd == SW_SHOWMINIMIZED) return;  // don't persist iconic state
+    RECT r = wp.rcNormalPosition;
+    HKEY key;
+    if (RegCreateKeyExA(HKEY_CURRENT_USER, BLISS_REG_KEY, 0, NULL,
+                        REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL,
+                        &key, NULL) != ERROR_SUCCESS) return;
+    DWORD x = (DWORD)r.left, y = (DWORD)r.top;
+    DWORD w = (DWORD)(r.right - r.left), h = (DWORD)(r.bottom - r.top);
+    RegSetValueExA(key, "X", 0, REG_DWORD, (BYTE *)&x, sizeof(x));
+    RegSetValueExA(key, "Y", 0, REG_DWORD, (BYTE *)&y, sizeof(y));
+    RegSetValueExA(key, "W", 0, REG_DWORD, (BYTE *)&w, sizeof(w));
+    RegSetValueExA(key, "H", 0, REG_DWORD, (BYTE *)&h, sizeof(h));
+    RegCloseKey(key);
+}
+
+// Returns TRUE and fills *out if a saved placement exists. Coordinates
+// are sanity-clamped against the current virtual desktop, so unplugging
+// a second monitor doesn't strand the window off-screen.
+static BOOL win_load_placement(RECT *out) {
+    HKEY key;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, BLISS_REG_KEY, 0,
+                      KEY_READ, &key) != ERROR_SUCCESS) return FALSE;
+    DWORD x = 0, y = 0, w = 0, h = 0, type = 0, sz;
+    sz = sizeof(x); RegQueryValueExA(key, "X", NULL, &type, (BYTE *)&x, &sz);
+    sz = sizeof(y); RegQueryValueExA(key, "Y", NULL, &type, (BYTE *)&y, &sz);
+    sz = sizeof(w); RegQueryValueExA(key, "W", NULL, &type, (BYTE *)&w, &sz);
+    sz = sizeof(h); RegQueryValueExA(key, "H", NULL, &type, (BYTE *)&h, &sz);
+    RegCloseKey(key);
+    if (w < 320 || h < 240) return FALSE;
+    int sw = GetSystemMetrics(SM_CXSCREEN);
+    int sh = GetSystemMetrics(SM_CYSCREEN);
+    if ((int)x < -((int)w - 80) || (int)x > sw - 80) x = 40;
+    if ((int)y < 0              || (int)y > sh - 80) y = 40;
+    out->left   = (LONG)x;
+    out->top    = (LONG)y;
+    out->right  = (LONG)(x + w);
+    out->bottom = (LONG)(y + h);
+    return TRUE;
+}
+
+// Save the current transcript to a user-chosen .txt file. The Common
+// Dialog handles browse / overwrite confirm; we just dump the
+// RichEdit's plain text plus a small header.
+static void save_transcript_dialog(HWND parent) {
+    OPENFILENAMEA ofn;
+    char path[MAX_PATH];
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    snprintf(path, sizeof(path),
+             "bliss-chat-%04d%02d%02d-%02d%02d%02d.txt",
+             st.wYear, st.wMonth, st.wDay,
+             st.wHour, st.wMinute, st.wSecond);
+
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner   = parent;
+    ofn.lpstrFilter = "Text Files (*.txt)\0*.txt\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFile   = path;
+    ofn.nMaxFile    = sizeof(path);
+    ofn.lpstrTitle  = "Save Transcript";
+    ofn.lpstrDefExt = "txt";
+    ofn.Flags       = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+
+    if (!GetSaveFileNameA(&ofn)) return;
+
+    int n = GetWindowTextLengthA(gTranscript);
+    if (n <= 0) {
+        MessageBoxA(parent, "Transcript is empty.", APP_NAME, MB_ICONINFORMATION | MB_OK);
+        return;
+    }
+    char *buf = (char *)malloc((size_t)n + 1);
+    if (!buf) return;
+    GetWindowTextA(gTranscript, buf, n + 1);
+
+    FILE *fp = fopen(path, "wb");
+    if (!fp) {
+        free(buf);
+        MessageBoxA(parent, "Could not open file for writing.", APP_NAME, MB_ICONERROR | MB_OK);
+        return;
+    }
+    char header[160];
+    snprintf(header, sizeof(header),
+             "bliss-chat transcript -- saved %04d-%02d-%02d %02d:%02d:%02d\r\n"
+             "----------------------------------------------------------------\r\n",
+             st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    fwrite(header, 1, strlen(header), fp);
+    fwrite(buf, 1, (size_t)n, fp);
+    fwrite("\r\n", 1, 2, fp);
+    fclose(fp);
+    free(buf);
+}
+
 static LRESULT CALLBACK input_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+    // Enter sends; Shift+Enter inserts a newline (passthrough).
     if (msg == WM_KEYDOWN && wparam == VK_RETURN) {
         if (GetKeyState(VK_SHIFT) & 0x8000) {
             return CallWindowProcA(gOldInputProc, hwnd, msg, wparam, lparam);
@@ -769,6 +900,14 @@ static LRESULT CALLBACK input_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lp
     }
     if (msg == WM_CHAR && wparam == VK_RETURN && !(GetKeyState(VK_SHIFT) & 0x8000)) {
         return 0;
+    }
+    // Esc aborts an in-flight generation. Forwarded to the window
+    // proc so the same handler the Stop button uses fires.
+    if (msg == WM_KEYDOWN && wparam == VK_ESCAPE) {
+        if (InterlockedCompareExchange(&gRunning, 0, 0) && gMain) {
+            PostMessageA(gMain, WM_COMMAND, MAKEWPARAM(IDC_STOP, BN_CLICKED), 0);
+            return 0;
+        }
     }
     return CallWindowProcA(gOldInputProc, hwnd, msg, wparam, lparam);
 }
@@ -832,9 +971,24 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
 
     case WM_TIMER:
         if (wparam == TIMER_STATUS && InterlockedCompareExchange(&gRunning, 0, 0)) {
-            DWORD elapsed = (GetTickCount() - gRunStarted) / 1000;
+            DWORD elapsed_ms = GetTickCount() - gRunStarted;
+            double elapsed_s = elapsed_ms / 1000.0;
+            LONG chars = InterlockedCompareExchange(&gRunChars, 0, 0);
+            // Tokens-per-second from BPE-typical ~4 chars/token. Rough,
+            // but matches the EOT footer's measured tok/s within ~10%.
+            double approx_tps = 0.0;
+            if (elapsed_s > 0.25 && chars > 0) {
+                approx_tps = (double)chars / 4.0 / elapsed_s;
+            }
             char text[96];
-            snprintf(text, sizeof(text), "Generating... %lu sec elapsed", (unsigned long)elapsed);
+            if (approx_tps > 0.05) {
+                snprintf(text, sizeof(text),
+                         "Generating... %.1f sec, %.1f tok/s",
+                         elapsed_s, approx_tps);
+            } else {
+                snprintf(text, sizeof(text),
+                         "Generating... %.1f sec", elapsed_s);
+            }
             set_status(text);
             return 0;
         }
@@ -874,6 +1028,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
 
     case WM_APPEND_TEXT: {
         char *text = (char *)lparam;
+        if (text) InterlockedExchangeAdd(&gRunChars, (LONG)strlen(text));
         rich_append_color(text, RGB(0, 0, 0), FALSE);
         free(text);
         return 0;
@@ -964,10 +1119,14 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         case IDM_EXIT:
             PostMessageA(hwnd, WM_CLOSE, 0, 0);
             return 0;
+        case IDM_SAVE:
+            save_transcript_dialog(hwnd);
+            return 0;
         }
         break;
 
     case WM_CLOSE:
+        win_save_placement(hwnd);
         DestroyWindow(hwnd);
         return 0;
 
@@ -1014,18 +1173,39 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE prev, LPSTR cmdline, int show) 
 
     if (!RegisterClassA(&wc)) return 1;
 
+    // Restore last window placement if we have one in the registry,
+    // otherwise fall back to a sensible default size centered by Windows.
+    int win_x = CW_USEDEFAULT, win_y = CW_USEDEFAULT;
+    int win_w = 940, win_h = 660;
+    {
+        RECT saved;
+        if (win_load_placement(&saved)) {
+            win_x = (int)saved.left;
+            win_y = (int)saved.top;
+            win_w = (int)(saved.right - saved.left);
+            win_h = (int)(saved.bottom - saved.top);
+        }
+    }
     hwnd = CreateWindowExA(0, wc.lpszClassName, APP_NAME,
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-        CW_USEDEFAULT, CW_USEDEFAULT, 940, 660,
+        win_x, win_y, win_w, win_h,
         NULL, NULL, instance, NULL);
     if (!hwnd) return 1;
 
     ShowWindow(hwnd, show);
     UpdateWindow(hwnd);
 
+    // Tiny accelerator table: Ctrl+S = Save Transcript.
+    ACCEL accels[] = {
+        { FCONTROL | FVIRTKEY, 'S', IDM_SAVE },
+    };
+    HACCEL haccel = CreateAcceleratorTableA(accels, (int)(sizeof(accels) / sizeof(accels[0])));
+
     while (GetMessageA(&msg, NULL, 0, 0)) {
+        if (haccel && TranslateAcceleratorA(hwnd, haccel, &msg)) continue;
         TranslateMessage(&msg);
         DispatchMessageA(&msg);
     }
+    if (haccel) DestroyAcceleratorTable(haccel);
     return (int)msg.wParam;
 }
