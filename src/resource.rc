@@ -18,6 +18,10 @@ IDI_APP ICON "bliss_chat.ico"
 #define IDC_PRESET_BALANCED  205
 #define IDC_PRESET_CREATIVE  206
 #define IDC_DEFAULTS         207
+#define IDC_TOPP_EDIT        214
+#define IDC_MAXTOK_EDIT      215
+#define IDC_SYSPROMPT_EDIT   216
+#define IDC_RESET_ALL        217
 
 // ----- Rename Chat dialog -----
 #define IDD_RENAME           210
@@ -27,28 +31,77 @@ IDI_APP ICON "bliss_chat.ico"
 #define IDD_EDITPROMPT       212
 #define IDC_EDITPROMPT_TEXT  213
 
-IDD_SETTINGS DIALOGEX 0, 0, 240, 160
+// ----- Find dialog -----
+#define IDD_FIND             220
+#define IDC_FIND_EDIT        221
+#define IDC_FIND_NEXT        222
+
+// ----- Keyboard Shortcuts dialog -----
+#define IDD_SHORTCUTS        230
+#define IDC_SHORTCUTS_TEXT   231
+
+IDD_SETTINGS DIALOGEX 0, 0, 260, 280
 CAPTION "bliss-chat - Settings"
 FONT 8, "MS Shell Dlg"
 STYLE DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
 BEGIN
-    LTEXT      "Temperature:",                              -1, 12,  14, 60, 10
-    EDITTEXT                              IDC_TEMP_EDIT,        80, 12, 40, 12, ES_AUTOHSCROLL
-    LTEXT      "0 = greedy, higher = more random",        -1, 130, 14, 100, 10
+    GROUPBOX   "Sampling",                                  -1,  8,   4, 244, 112
 
-    LTEXT      "Seed:",                                     -1, 12,  32, 60, 10
-    EDITTEXT                              IDC_SEED_EDIT,        80, 30, 80, 12, ES_AUTOHSCROLL | ES_NUMBER
-    PUSHBUTTON "Random",                  IDC_SEED_RANDOM,     165, 30, 50, 14
+    LTEXT      "Temperature:",                              -1, 16,  18,  60, 10
+    EDITTEXT                              IDC_TEMP_EDIT,        80, 16,  40, 12, ES_AUTOHSCROLL
+    LTEXT      "0 = greedy, higher = more random",         -1, 128, 18, 116, 10
 
-    GROUPBOX   "Presets",                                   -1, 12,  52, 218, 56
-    PUSHBUTTON "Greedy (t=0)",            IDC_PRESET_GREEDY,    20, 66, 65, 14
-    PUSHBUTTON "Balanced (t=0.7)",        IDC_PRESET_BALANCED,  90, 66, 75, 14
-    PUSHBUTTON "Creative (t=1.2)",        IDC_PRESET_CREATIVE, 168, 66, 60, 14
-    LTEXT      "Greedy is fully deterministic.\nBalanced and Creative add variety with each retry.", -1, 20, 86, 200, 18
+    LTEXT      "Seed:",                                     -1, 16,  34,  60, 10
+    EDITTEXT                              IDC_SEED_EDIT,        80, 32,  80, 12, ES_AUTOHSCROLL | ES_NUMBER
+    PUSHBUTTON "Random",                  IDC_SEED_RANDOM,     165, 32,  50, 14
 
-    PUSHBUTTON "Reset Defaults",          IDC_DEFAULTS,       12, 135, 70, 18
-    DEFPUSHBUTTON "OK",                   IDOK,              130, 135, 45, 18
-    PUSHBUTTON    "Cancel",               IDCANCEL,          180, 135, 45, 18
+    LTEXT      "Presets:",                                  -1, 16,  52,  60, 10
+    PUSHBUTTON "Greedy (t=0)",            IDC_PRESET_GREEDY,    16, 64,  65, 14
+    PUSHBUTTON "Balanced (t=0.7)",        IDC_PRESET_BALANCED,  86, 64,  75, 14
+    PUSHBUTTON "Creative (t=1.2)",        IDC_PRESET_CREATIVE, 166, 64,  78, 14
+    LTEXT      "Greedy is fully deterministic; Balanced and Creative add variety.",
+                                                            -1, 16,  84, 230, 10
+    PUSHBUTTON "Reset Defaults",          IDC_DEFAULTS,        16,  98, 80, 14
+
+    GROUPBOX   "Advanced",                                  -1,  8, 120, 244, 130
+
+    LTEXT      "Top-P:",                                    -1, 16, 134,  60, 10
+    EDITTEXT                              IDC_TOPP_EDIT,        80, 132,  40, 12, ES_AUTOHSCROLL
+    LTEXT      "0..1, default 0.95",                        -1, 128, 134, 116, 10
+
+    LTEXT      "Max tokens:",                               -1, 16, 152,  60, 10
+    EDITTEXT                              IDC_MAXTOK_EDIT,      80, 150,  40, 12, ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT      "1..2048, 0 = no cap",                       -1, 128, 152, 116, 10
+
+    LTEXT      "System prompt:",                            -1, 16, 170,  80, 10
+    EDITTEXT                              IDC_SYSPROMPT_EDIT,   16, 182, 228, 48,
+                                                                ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL
+
+    PUSHBUTTON "Reset All Settings",      IDC_RESET_ALL,       16, 232, 110, 14
+
+    DEFPUSHBUTTON "OK",                   IDOK,               145, 256,  50, 18
+    PUSHBUTTON    "Cancel",               IDCANCEL,           199, 256,  50, 18
+END
+
+IDD_FIND DIALOGEX 0, 0, 220, 56
+CAPTION "Find"
+FONT 8, "MS Shell Dlg"
+STYLE DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+BEGIN
+    LTEXT         "Find what:",                -1,             8,  10,  40,  10
+    EDITTEXT                                   IDC_FIND_EDIT,  50,  8, 160,  12, ES_AUTOHSCROLL
+    DEFPUSHBUTTON "Find Next",                 IDC_FIND_NEXT,  50, 30,  60,  16
+    PUSHBUTTON    "Close",                     IDCANCEL,      150, 30,  60,  16
+END
+
+IDD_SHORTCUTS DIALOGEX 0, 0, 250, 180
+CAPTION "Keyboard Shortcuts"
+FONT 8, "MS Shell Dlg"
+STYLE DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+BEGIN
+    EDITTEXT                                   IDC_SHORTCUTS_TEXT, 8, 8, 234, 144,
+                                                ES_MULTILINE | ES_READONLY | WS_VSCROLL
+    DEFPUSHBUTTON "OK",                        IDOK,              190, 158, 52, 16
 END
 
 IDD_RENAME DIALOGEX 0, 0, 240, 62

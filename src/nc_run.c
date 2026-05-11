@@ -1016,6 +1016,9 @@ int main(int argc, char **argv) {
     // the KV cache, and restore it at the top of each turn — so the cost
     // of the prefix is paid only on the very first model load, not per
     // user message.
+    //
+    // The prefix can be replaced at runtime via the `/system <text>` slash
+    // command, which re-prefills and re-snapshots with the new text.
     static const char *FEWSHOT_PREFIX =
         "The following is a conversation between a curious user and a helpful assistant.\n"
         "The assistant gives short, accurate, polite answers.\n"
@@ -1035,27 +1038,37 @@ int main(int argc, char **argv) {
         "Q: ";
     static const char *PROMPT_SUFFIX  = "\nA:";
 
+    // Per-turn token cap. 0 = no cap (use the model's remaining context).
+    // Settable via `/maxtok <int>` at runtime; clamped to [0, 2048].
+    int max_tokens = 0;
+
+    // Helper to prefill an arbitrary prefix string and snapshot it as the
+    // restorable prefix. Resets the state first. Emits PROG sentinels as
+    // it goes so the GUI's progress bar reflects the work.
+    #define PREFILL_AND_SNAPSHOT(_text) do {                                   \
+        state_reset(&S);                                                       \
+        int prefix_ids[2048];                                                  \
+        int pn = 0;                                                            \
+        if (bos_id >= 0) prefix_ids[pn++] = bos_id;                            \
+        pn += nct_encode(T, (_text), prefix_ids + pn,                          \
+                         (int)(sizeof(prefix_ids)/sizeof(int)) - pn);          \
+        int last_pct = -1;                                                     \
+        for (int i = 0; i < pn; i++) {                                         \
+            forward_one(&S, prefix_ids[i]);                                    \
+            int pct = (int)((double)(i + 1) * 100.0 / (double)pn);             \
+            if (pct != last_pct) {                                             \
+                fprintf(stdout, "\x01PROG %d\n", pct); fflush(stdout);         \
+                last_pct = pct;                                                \
+            }                                                                  \
+        }                                                                      \
+        state_save_prefix(&S);                                                 \
+    } while (0)
+
     // === Prefill the static prefix once and snapshot the KV cache ===
     // NOTE: must happen BEFORE we emit READY, otherwise the GUI lets the
     // user type while the backend is still tied up prefilling and the
     // first turn appears to take forever.
-    {
-        int prefix_ids[1024];
-        int pn = 0;
-        if (bos_id >= 0) prefix_ids[pn++] = bos_id;
-        pn += nct_encode(T, FEWSHOT_PREFIX, prefix_ids + pn,
-                         (int)(sizeof(prefix_ids)/sizeof(int)) - pn);
-        int last_pct = -1;
-        for (int i = 0; i < pn; i++) {
-            forward_one(&S, prefix_ids[i]);
-            int pct = (int)((double)(i + 1) * 100.0 / (double)pn);
-            if (pct != last_pct) {
-                fprintf(stdout, "\x01PROG %d\n", pct); fflush(stdout);
-                last_pct = pct;
-            }
-        }
-        state_save_prefix(&S);
-    }
+    PREFILL_AND_SNAPSHOT(FEWSHOT_PREFIX);
 
     // Now we're truly ready for user input.
     emit_sentinel_str("READY", NULL);
@@ -1082,11 +1095,14 @@ int main(int argc, char **argv) {
         }
         // /help: list slash commands so users discover them.
         if (!strcmp(line, "/help")) {
-            emit_sentinel_str("INFO", "/reset       = drop conversation history");
-            emit_sentinel_str("INFO", "/info        = show model + perf info");
-            emit_sentinel_str("INFO", "/help        = show this list");
-            emit_sentinel_str("INFO", "/temp <f>    = set sampling temperature (0 = greedy)");
-            emit_sentinel_str("INFO", "/seed <int>  = re-seed the RNG");
+            emit_sentinel_str("INFO", "/reset         = drop conversation history");
+            emit_sentinel_str("INFO", "/info          = show model + perf info");
+            emit_sentinel_str("INFO", "/help          = show this list");
+            emit_sentinel_str("INFO", "/temp <f>      = set sampling temperature (0 = greedy)");
+            emit_sentinel_str("INFO", "/topp <f>      = set top-p nucleus sampling (0..1)");
+            emit_sentinel_str("INFO", "/seed <int>    = re-seed the RNG");
+            emit_sentinel_str("INFO", "/maxtok <int>  = cap per-turn tokens (0 = no cap)");
+            emit_sentinel_str("INFO", "/system <text> = replace system prompt (escape newlines as \\n)");
             emit_sentinel_str("EOT", "0");
             continue;
         }
@@ -1110,6 +1126,66 @@ int main(int argc, char **argv) {
             char info[64];
             snprintf(info, sizeof(info), "seed = %llu", (unsigned long long)s);
             emit_sentinel_str("INFO", info);
+            emit_sentinel_str("EOT", "0");
+            continue;
+        }
+        // /topp <float>: nucleus-sampling cutoff. Currently the sampler
+        // doesn't actually use top_p (temperature-only — see sample()), but
+        // we accept and store the value so the GUI can present it.
+        if (!strncmp(line, "/topp ", 6)) {
+            float v = (float)atof(line + 6);
+            if (v < 0.0f) v = 0.0f;
+            if (v > 1.0f) v = 1.0f;
+            top_p = v;
+            char info[64];
+            snprintf(info, sizeof(info), "top_p = %.3f", v);
+            emit_sentinel_str("INFO", info);
+            emit_sentinel_str("EOT", "0");
+            continue;
+        }
+        // /maxtok <int>: cap generated tokens per turn. 0 = unlimited
+        // (defer to the model's remaining context budget).
+        if (!strncmp(line, "/maxtok ", 8)) {
+            int v = atoi(line + 8);
+            if (v < 0) v = 0;
+            if (v > 2048) v = 2048;
+            max_tokens = v;
+            char info[64];
+            if (v == 0) snprintf(info, sizeof(info), "max_tokens = no cap");
+            else        snprintf(info, sizeof(info), "max_tokens = %d", v);
+            emit_sentinel_str("INFO", info);
+            emit_sentinel_str("EOT", "0");
+            continue;
+        }
+        // /system <text>: replace the prefilled system prompt. The text
+        // can contain literal "\n" escapes which we expand to real
+        // newlines, since the GUI sends slash commands on a single line.
+        // Implementation: build a new prefix string ending in "\n\nQ: "
+        // (so the existing Q/A pattern keeps working), then reset,
+        // prefill, and re-snapshot. Conversation history is dropped.
+        if (!strncmp(line, "/system ", 8)) {
+            const char *src = line + 8;
+            char unescaped[4096];
+            int u = 0;
+            for (int i = 0; src[i] && u + 1 < (int)sizeof(unescaped); i++) {
+                if (src[i] == '\\' && src[i+1] == 'n') {
+                    unescaped[u++] = '\n';
+                    i++;
+                } else if (src[i] == '\\' && src[i+1] == '\\') {
+                    unescaped[u++] = '\\';
+                    i++;
+                } else {
+                    unescaped[u++] = src[i];
+                }
+            }
+            unescaped[u] = 0;
+            char new_prefix[4096 + 32];
+            // Ensure the prefix ends in the Q/A scaffolding so the
+            // turn-builder below still works correctly.
+            snprintf(new_prefix, sizeof(new_prefix), "%s\n\nQ: ", unescaped);
+            PREFILL_AND_SNAPSHOT(new_prefix);
+            turn_idx = 0;
+            emit_sentinel_str("INFO", "system prompt replaced");
             emit_sentinel_str("EOT", "0");
             continue;
         }
@@ -1175,6 +1251,9 @@ int main(int argc, char **argv) {
 
         int budget = ctx_max - S.seq_pos;
         if (budget < 0) budget = 0;
+        // Optional per-turn cap from /maxtok. The context budget still
+        // applies on top — we take the tighter of the two.
+        if (max_tokens > 0 && max_tokens < budget) budget = max_tokens;
         int user_stopped = 0;
         for (int gen = 0; gen < budget; gen++) {
             // Check for the GUI's STOP sentinel before sampling each
