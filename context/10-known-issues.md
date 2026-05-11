@@ -30,6 +30,7 @@ step 5: nan  (and remains nan for the rest of training)
 | `--init-lr-frac=0.05 --warmup-ratio=0.2` (effective matrix LR ~1e-4) | NaN @ step 5 |
 | Pre-init special-token wte/lm_head/value_embeds from `<\|bos\|>`'s trained values | **NaN @ step 5 still** |
 | `NANOCHAT_DTYPE=float32` (force fp32 forward — falsifies hypothesis 3) | NaN by step ~88 |
+| Grad-finite check + manual `mul_` clip (max_norm=1.0) + skip-on-NaN | Trained 7 steps cleanly (loss 1.32→2.33), then **NaN by step 8** |
 
 ### Diagnosis attempts
 
@@ -47,11 +48,32 @@ With matrix-lr=0.002 × init_lr_frac=0.05 × lrm-at-step-5=0.07 = effective LR �
 
 Tested with `NANOCHAT_DTYPE=float32`. Loss still NaN'd by step ~88
 (later than bf16's step 5, but still terminal). bf16 was making the
-explosion faster, not causing it. The underlying instability is
-something else — most likely gradient explosion through unfrozen
-special-token embeddings under the Muon optimizer, or a malformed
-sample. Worth retrying with gradient clipping (`clip_grad_norm_(1.0)`)
-in the train loop next.
+explosion faster, not causing it.
+
+**Hypothesis 4 (FALSIFIED 2026-05-10)**: malformed all-masked samples produce
+0.0-with-no-grad cross-entropy that corrupts grads. Hypothesis 5: subsequent
+inf-grad steps cause `clip_grad_norm_` to do `0 * inf = NaN` and corrupt
+weights.
+
+Both were partially right, neither fully solves it. Patched `chat_sft.py`
+with all three guards (skip non-grad/non-finite loss, manual `.mul_()` clip
+that avoids the inf-times-zero trap, skip optimizer step on non-finite grad
+norm). Result: trains 7 steps cleanly, loss climbs 1.32 → 2.33 (i.e. it is
+DIVERGING under the constraints), then walls at NaN by step 8.
+
+**Working theory**: Muon's Newton-Schultz orthogonalization step can amplify
+even pre-clipped gradients, so `clip_grad_norm_(1.0)` isn't a hard upper
+bound on the actual weight update. The unfrozen special-token rows (random
+init magnitude vs. the trained-row magnitude) are likely the failure mode.
+
+**Next things to try** (when revisiting):
+
+1. Freeze everything except the special-token rows for the first ~50 steps
+   (warm them up to the trained-row distribution before unfreezing).
+2. Cap Muon's update norm directly (not just the input grad's norm).
+3. Run a chat-formatted dataset through `base_train.py` from scratch, no SFT.
+4. Train with a much smaller LR (`matrix-lr=0.0002` — 10× smaller again).
+5. AdamW instead of Muon for the SFT phase.
 
 **Hypothesis 4 (untested)**: Loss computation NaN from a malformed sample.
 

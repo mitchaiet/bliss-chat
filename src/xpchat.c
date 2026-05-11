@@ -39,6 +39,9 @@
 #define IDC_PROGRESS   1014
 #define IDC_CHATLIST   1015
 #define IDC_NEWCHATBTN 1016
+#define IDC_TB_SAVE    1020
+#define IDC_TB_SETTINGS 1021
+#define IDC_TB_HELP    1022
 
 #define IDM_EXIT       2001
 #define IDM_CLEAR      2002
@@ -100,6 +103,9 @@ static HWND gIcon;
 static HWND gProgress;
 static HWND gChatList;     // sidebar listbox of saved chats
 static HWND gNewChatBtn;   // "+ New Chat" button under the listbox
+static HWND gTbSave;       // toolbar buttons below the title strip
+static HWND gTbSettings;
+static HWND gTbHelp;
 static HFONT gUiFont;
 static HFONT gTitleFont;
 static HFONT gMonoFont;
@@ -595,9 +601,19 @@ static void send_prompt(void) {
         chats_set_title_from(user_prompt);
     }
 
-    rich_append_color("You\r\n", RGB(0, 84, 166), TRUE);
-    rich_append_color(user_prompt, RGB(0, 0, 0), FALSE);
-    rich_append_color("\r\n\r\nAssistant\r\n", RGB(0, 128, 0), TRUE);
+    {
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        int h12 = st.wHour % 12; if (h12 == 0) h12 = 12;
+        char hdr[64];
+        snprintf(hdr, sizeof(hdr), "You  -  %d:%02d %s\r\n",
+                 h12, st.wMinute, (st.wHour < 12 ? "AM" : "PM"));
+        rich_append_color(hdr, RGB(0, 84, 166), TRUE);
+        rich_append_color(user_prompt, RGB(0, 0, 0), FALSE);
+        snprintf(hdr, sizeof(hdr), "\r\n\r\nAssistant  -  %d:%02d %s\r\n",
+                 h12, st.wMinute, (st.wHour < 12 ? "AM" : "PM"));
+        rich_append_color(hdr, RGB(0, 128, 0), TRUE);
+    }
     SetWindowTextA(gInput, "");
 
     InterlockedExchange(&gRunning, 1);
@@ -771,6 +787,13 @@ static void create_controls(HWND hwnd) {
         SendMessageA(gProgress, PBM_SETPOS, 0, 0);
     }
 
+    // Toolbar below the title strip. Flat-look text buttons in the
+    // Outlook-XP style — themed by the comctl32 v6 manifest so they
+    // pick up the Luna hover/pressed colors.
+    gTbSave     = make_control("BUTTON", "Save",     BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_TB_SAVE,     hwnd);
+    gTbSettings = make_control("BUTTON", "Settings", BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_TB_SETTINGS, hwnd);
+    gTbHelp     = make_control("BUTTON", "Help",     BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_TB_HELP,     hwnd);
+
     // Chat history sidebar.
     gChatList   = make_control("LISTBOX", "",
         LBS_NOTIFY | WS_VSCROLL | WS_BORDER | WS_TABSTOP,
@@ -810,10 +833,18 @@ static void layout_controls(HWND hwnd) {
     MoveWindow(gSubtitle, pad + 50,    pad + 28, 480,  20, TRUE);
     MoveWindow(gModel,    w - pad - 320, pad + 6, 320, 20, TRUE);
 
-    // Sidebar carves out the left 180px (below the header).
+    // Toolbar — flat row of action buttons under the title strip.
+    int tb_y = pad + header_h - 6;
+    int tb_h = 24;
+    int tb_w = 84;
+    MoveWindow(gTbSave,     pad,                  tb_y, tb_w, tb_h, TRUE);
+    MoveWindow(gTbSettings, pad + tb_w + 4,       tb_y, tb_w, tb_h, TRUE);
+    MoveWindow(gTbHelp,     pad + (tb_w + 4) * 2, tb_y, tb_w, tb_h, TRUE);
+
+    // Sidebar carves out the left 180px (below the header + toolbar).
     int sidebar_w = 180;
     int sidebar_x = pad;
-    int sidebar_y = pad + header_h;
+    int sidebar_y = tb_y + tb_h + 8;
     int new_btn_h = 28;
 
     inner_x = sidebar_x + sidebar_w + 12;
@@ -821,7 +852,7 @@ static void layout_controls(HWND hwnd) {
     status_y = h - pad - 20;
     input_h = h < 560 ? 62 : 96;
     input_y = status_y - input_h - 10;
-    transcript_y = pad + header_h;
+    transcript_y = sidebar_y;
     transcript_h = input_y - transcript_y - 10;
     if (transcript_h < 160) transcript_h = 160;
 
@@ -1429,9 +1460,17 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
     case WM_BACKEND_INFO: {
         char *info = (char *)lparam;
         if (info && *info) {
-            char label[256];
-            snprintf(label, sizeof(label), "Model: %s", info);
-            SetWindowTextA(gModel, label);
+            // Only update the "Model: ..." header for actual model-name
+            // banners (start with "nanochat-"). Other INFO events — temp
+            // changes, /reset notices, etc. — flash through the status
+            // bar instead so the model identity stays visible.
+            if (!strncmp(info, "nanochat-", 9)) {
+                char label[256];
+                snprintf(label, sizeof(label), "Model: %s", info);
+                SetWindowTextA(gModel, label);
+            } else {
+                set_status(info);
+            }
         }
         if (info) free(info);
         return 0;
@@ -1544,7 +1583,23 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
             PostMessageA(hwnd, WM_CLOSE, 0, 0);
             return 0;
         case IDM_SAVE:
+        case IDC_TB_SAVE:
             save_transcript_dialog(hwnd);
+            return 0;
+        case IDC_TB_SETTINGS:
+            // Same as IDM_SETTINGS below — duplicate the case so the toolbar
+            // button reaches the dialog without falling through code path.
+            DialogBoxParamA(gInstance, MAKEINTRESOURCEA(IDD_SETTINGS), hwnd,
+                            settings_dlg_proc, 0);
+            return 0;
+        case IDC_TB_HELP:
+            // Show the slash-commands list by sending /help to the backend
+            // (responses route through INFO -> status bar / transcript).
+            if (InterlockedCompareExchange(&gBackendReady, 0, 0)) {
+                backend_send_line("/help");
+            } else {
+                MessageBoxA(hwnd, "Backend not ready yet.", APP_NAME, MB_ICONINFORMATION | MB_OK);
+            }
             return 0;
         case IDM_NEWCHAT:
         case IDC_NEWCHATBTN:
