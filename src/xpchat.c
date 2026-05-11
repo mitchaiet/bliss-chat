@@ -39,6 +39,7 @@
 #define IDC_PROGRESS   1014
 #define IDC_CHATLIST   1015
 #define IDC_NEWCHATBTN 1016
+#define IDC_SEARCH     1017
 #define IDC_TB_SAVE    1020
 #define IDC_TB_SETTINGS 1021
 #define IDC_TB_HELP    1022
@@ -51,6 +52,9 @@
 #define IDM_SAVE       2006
 #define IDM_NEWCHAT    2007
 #define IDM_SETTINGS   2008
+#define IDM_RENAME     2009
+#define IDM_DELETE     2010
+#define IDM_CHATSAVE   2011
 
 // Resource IDs from resource.rc — must stay in sync.
 #define IDD_SETTINGS         200
@@ -61,6 +65,8 @@
 #define IDC_PRESET_BALANCED  205
 #define IDC_PRESET_CREATIVE  206
 #define IDC_DEFAULTS         207
+#define IDD_RENAME           210
+#define IDC_RENAME_EDIT      211
 
 // Defaults that match nc_run.c's CLI defaults.
 #define DEFAULT_TEMP   0.8f
@@ -103,6 +109,9 @@ static HWND gIcon;
 static HWND gProgress;
 static HWND gChatList;     // sidebar listbox of saved chats
 static HWND gNewChatBtn;   // "+ New Chat" button under the listbox
+static HWND gSearch;       // search/filter EDIT above the listbox
+static WNDPROC gOldChatListProc;  // original listbox WNDPROC (for subclass)
+static char gSearchText[128];     // current filter; "" = show all
 static HWND gTbSave;       // toolbar buttons below the title strip
 static HWND gTbSettings;
 static HWND gTbHelp;
@@ -132,9 +141,17 @@ static ChatEntry gChats[MAX_CHATS];
 static int       gChatCount = 0;
 static int       gActiveIdx = -1;
 static char      gChatsDir[MAX_PATH];
+// Listbox row -> gChats index mapping. With search filtering active, only
+// a subset of gChats is visible; gFilteredIndices[row] resolves the row to
+// the underlying gChats slot. Length is the listbox item count.
+static int       gFilteredIndices[MAX_CHATS];
+static int       gFilteredCount = 0;
 static void chats_create_new(void);
 static void chats_append_turn(const char *role, const char *text);
 static void chats_set_title_from(const char *user_text);
+static void chats_repopulate_listbox(void);
+static void save_transcript_dialog(HWND parent);
+static BOOL backend_send_line(const char *line);
 
 static volatile LONG gRunning;
 static volatile LONG gBackendReady;
@@ -794,7 +811,22 @@ static void create_controls(HWND hwnd) {
     gTbSettings = make_control("BUTTON", "Settings", BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_TB_SETTINGS, hwnd);
     gTbHelp     = make_control("BUTTON", "Help",     BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_TB_HELP,     hwnd);
 
-    // Chat history sidebar.
+    // Chat history sidebar. Layout (top -> bottom):
+    //   [search edit]    <- filter; placeholder cue banner
+    //   [chat list]
+    //   [+ New Chat]
+    gSearch = make_control("EDIT", "",
+        ES_AUTOHSCROLL,
+        WS_EX_CLIENTEDGE, IDC_SEARCH, hwnd);
+    SendMessageA(gSearch, EM_SETLIMITTEXT, sizeof(gSearchText) - 1, 0);
+    // Cue banner: lpwstr is required to be a wide string, so transcode.
+    {
+        WCHAR cue[64];
+        MultiByteToWideChar(CP_UTF8, 0, "Search chats\xe2\x80\xa6",
+                            -1, cue, (int)(sizeof(cue) / sizeof(cue[0])));
+        // 1 = show cue even when focused (Edit_SetCueBannerTextFocused)
+        SendMessageW(gSearch, EM_SETCUEBANNER, (WPARAM)TRUE, (LPARAM)cue);
+    }
     gChatList   = make_control("LISTBOX", "",
         LBS_NOTIFY | WS_VSCROLL | WS_BORDER | WS_TABSTOP,
         0, IDC_CHATLIST, hwnd);
@@ -857,8 +889,13 @@ static void layout_controls(HWND hwnd) {
     if (transcript_h < 160) transcript_h = 160;
 
     int sidebar_h = transcript_h;
-    MoveWindow(gChatList,   sidebar_x, sidebar_y,
-               sidebar_w, sidebar_h - new_btn_h - 6, TRUE);
+    int search_h = 22;
+    int list_top = sidebar_y + search_h + 4;
+    int list_bot = sidebar_y + sidebar_h - new_btn_h - 6;
+    if (list_bot < list_top + 40) list_bot = list_top + 40;
+    MoveWindow(gSearch,     sidebar_x, sidebar_y, sidebar_w, search_h, TRUE);
+    MoveWindow(gChatList,   sidebar_x, list_top,
+               sidebar_w, list_bot - list_top, TRUE);
     MoveWindow(gNewChatBtn, sidebar_x, sidebar_y + sidebar_h - new_btn_h,
                sidebar_w, new_btn_h, TRUE);
 
@@ -973,11 +1010,46 @@ static int chat_cmp_desc(const void *a, const void *b) {
     return CompareFileTime(&fb, &fa);
 }
 
+// Case-insensitive ASCII substring test. Returns 1 if `needle` is "" or
+// is found inside `haystack`, 0 otherwise. The on-disk chat titles are
+// only loosely sanitized (user text), so we tolerate any 8-bit input.
+static int ascii_istrstr(const char *haystack, const char *needle) {
+    size_t nlen, i;
+    if (!needle || !*needle) return 1;
+    if (!haystack) return 0;
+    nlen = strlen(needle);
+    for (i = 0; haystack[i]; i++) {
+        size_t j;
+        for (j = 0; j < nlen; j++) {
+            unsigned char a = (unsigned char)haystack[i + j];
+            unsigned char b = (unsigned char)needle[j];
+            if (!a) return 0;
+            if (a >= 'A' && a <= 'Z') a = (unsigned char)(a + 32);
+            if (b >= 'A' && b <= 'Z') b = (unsigned char)(b + 32);
+            if (a != b) break;
+        }
+        if (j == nlen) return 1;
+    }
+    return 0;
+}
+
+// Repopulates the listbox from gChats[], filtering by the current
+// gSearchText (case-insensitive substring). Builds gFilteredIndices[]
+// so click handlers can map row -> gChats slot.
 static void chats_repopulate_listbox(void) {
     if (!gChatList) return;
     SendMessageA(gChatList, LB_RESETCONTENT, 0, 0);
+    gFilteredCount = 0;
+    int active_row = -1;
     for (int i = 0; i < gChatCount; i++) {
-        chats_listbox_insert(i, &gChats[i]);
+        if (gSearchText[0] && !ascii_istrstr(gChats[i].title, gSearchText)) continue;
+        gFilteredIndices[gFilteredCount] = i;
+        chats_listbox_insert(gFilteredCount, &gChats[i]);
+        if (i == gActiveIdx) active_row = gFilteredCount;
+        gFilteredCount++;
+    }
+    if (active_row >= 0) {
+        SendMessageA(gChatList, LB_SETCURSEL, (WPARAM)active_row, 0);
     }
 }
 
@@ -1030,7 +1102,6 @@ static void chats_create_new(void) {
     gChats[0].stamp = st;
     gActiveIdx = 0;
     chats_repopulate_listbox();
-    if (gChatList) SendMessageA(gChatList, LB_SETCURSEL, gActiveIdx, 0);
 }
 
 // Append a turn to the active chat file.
@@ -1042,38 +1113,138 @@ static void chats_append_turn(const char *role, const char *text) {
     fclose(fp);
 }
 
+// Rewrite the TITLE: line of the chat at gChats[idx] in place. Returns 1
+// on success. Used by both the auto-title-on-first-turn path and the
+// explicit Rename action. `new_title` is copied into gChats[idx].title
+// (length-clamped) before being written to the file.
+static int chats_write_title(int idx, const char *new_title) {
+    if (idx < 0 || idx >= gChatCount) return 0;
+    char title[CHAT_TITLE_MAX];
+    snprintf(title, sizeof(title), "%s", new_title ? new_title : "");
+    chat_chomp_title(title);
+
+    // Read full file, swap TITLE: line, write back.
+    FILE *fp = fopen(gChats[idx].path, "rb");
+    if (!fp) return 0;
+    fseek(fp, 0, SEEK_END);
+    long sz = ftell(fp);
+    if (sz < 0) { fclose(fp); return 0; }
+    fseek(fp, 0, SEEK_SET);
+    char *buf = (char *)malloc((size_t)sz + 1);
+    if (!buf) { fclose(fp); return 0; }
+    fread(buf, 1, (size_t)sz, fp);
+    fclose(fp);
+    buf[sz] = 0;
+
+    fp = fopen(gChats[idx].path, "wb");
+    if (!fp) { free(buf); return 0; }
+    fprintf(fp, "TITLE: %s\r\n", title);
+    // Skip the original TITLE: line (whatever's up to the first \n).
+    char *body = strchr(buf, '\n');
+    if (body) fwrite(body + 1, 1, strlen(body + 1), fp);
+    free(buf);
+    fclose(fp);
+
+    snprintf(gChats[idx].title, sizeof(gChats[idx].title), "%s", title);
+    return 1;
+}
+
 // On the first user message of a chat, rewrite the TITLE: line so the
 // sidebar shows something meaningful.
 static void chats_set_title_from(const char *user_text) {
     if (gActiveIdx < 0) return;
     if (strcmp(gChats[gActiveIdx].title, "(new chat)") != 0) return;
-    char title[CHAT_TITLE_MAX];
-    snprintf(title, sizeof(title), "%s", user_text);
-    chat_chomp_title(title);
-    snprintf(gChats[gActiveIdx].title, sizeof(gChats[gActiveIdx].title),
-             "%s", title);
+    if (chats_write_title(gActiveIdx, user_text)) {
+        chats_repopulate_listbox();
+    }
+}
 
-    // Rewrite file in place: read all, swap TITLE: line, write back.
-    FILE *fp = fopen(gChats[gActiveIdx].path, "rb");
-    if (!fp) return;
-    fseek(fp, 0, SEEK_END);
-    long sz = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-    char *buf = (char *)malloc((size_t)sz + 1);
-    if (!buf) { fclose(fp); return; }
-    fread(buf, 1, (size_t)sz, fp);
-    fclose(fp);
-    buf[sz] = 0;
-
-    fp = fopen(gChats[gActiveIdx].path, "wb");
-    if (!fp) { free(buf); return; }
-    fprintf(fp, "TITLE: %s\r\n", title);
-    char *body = strchr(buf, '\n');
-    if (body) fwrite(body + 1, 1, strlen(body + 1), fp);
-    free(buf);
-    fclose(fp);
+// Delete a chat: unlink the file, remove from gChats[], refresh.
+// Returns 1 if the deleted entry was the active chat, 0 otherwise.
+static int chats_delete(int idx) {
+    int was_active;
+    if (idx < 0 || idx >= gChatCount) return 0;
+    was_active = (idx == gActiveIdx);
+    DeleteFileA(gChats[idx].path);
+    if (idx + 1 < gChatCount) {
+        memmove(&gChats[idx], &gChats[idx + 1],
+                sizeof(ChatEntry) * (size_t)(gChatCount - idx - 1));
+    }
+    gChatCount--;
+    if (was_active) {
+        gActiveIdx = -1;
+    } else if (gActiveIdx > idx) {
+        gActiveIdx--;
+    }
     chats_repopulate_listbox();
-    if (gChatList) SendMessageA(gChatList, LB_SETCURSEL, gActiveIdx, 0);
+    return was_active;
+}
+
+// Modal dialog state for the rename dialog. The new title flows back
+// through gRenameBuf on IDOK; on IDCANCEL the buffer is left empty.
+static char gRenameBuf[CHAT_TITLE_MAX];
+
+static INT_PTR CALLBACK rename_dlg_proc(HWND dlg, UINT msg, WPARAM wparam, LPARAM lparam) {
+    (void)lparam;
+    switch (msg) {
+    case WM_INITDIALOG:
+        SetDlgItemTextA(dlg, IDC_RENAME_EDIT, gRenameBuf);
+        // Select all so the user can just start typing.
+        SendDlgItemMessageA(dlg, IDC_RENAME_EDIT, EM_SETSEL, 0, -1);
+        SetFocus(GetDlgItem(dlg, IDC_RENAME_EDIT));
+        return FALSE;  // we set focus manually
+    case WM_COMMAND:
+        switch (LOWORD(wparam)) {
+        case IDOK:
+            GetDlgItemTextA(dlg, IDC_RENAME_EDIT, gRenameBuf, (int)sizeof(gRenameBuf));
+            EndDialog(dlg, IDOK);
+            return TRUE;
+        case IDCANCEL:
+            gRenameBuf[0] = 0;
+            EndDialog(dlg, IDCANCEL);
+            return TRUE;
+        }
+        return FALSE;
+    case WM_CLOSE:
+        gRenameBuf[0] = 0;
+        EndDialog(dlg, IDCANCEL);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+// Prompt the user for a new title for gChats[idx]. Empty/whitespace ==
+// cancel. Persists the new title and refreshes the listbox.
+static void chats_rename_interactive(HWND parent, int idx) {
+    if (idx < 0 || idx >= gChatCount) return;
+    snprintf(gRenameBuf, sizeof(gRenameBuf), "%s", gChats[idx].title);
+    INT_PTR rc = DialogBoxParamA(gInstance, MAKEINTRESOURCEA(IDD_RENAME),
+                                 parent, rename_dlg_proc, 0);
+    if (rc != IDOK) return;
+    if (!input_has_text(gRenameBuf)) return;  // empty/whitespace -> cancel
+    if (chats_write_title(idx, gRenameBuf)) {
+        chats_repopulate_listbox();
+    }
+}
+
+// Confirm + delete gChats[idx]. If the deleted chat was active, fall back
+// to a fresh new chat (matches the existing IDC_NEWCHATBTN behavior).
+static void chats_delete_interactive(HWND parent, int idx) {
+    if (idx < 0 || idx >= gChatCount) return;
+    char prompt[CHAT_TITLE_MAX + 64];
+    snprintf(prompt, sizeof(prompt),
+             "Delete chat \"%s\"?\n\nThis cannot be undone.",
+             gChats[idx].title);
+    if (MessageBoxA(parent, prompt, APP_NAME,
+                    MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
+    int was_active = chats_delete(idx);
+    if (was_active) {
+        if (InterlockedCompareExchange(&gBackendReady, 0, 0)) {
+            backend_send_line("/reset");
+        }
+        chats_create_new();
+        clear_transcript();
+    }
 }
 
 // Render a chat file into the transcript pane, replacing whatever is
@@ -1360,6 +1531,92 @@ static void subclass_input(void) {
     gOldInputProc = (WNDPROC)SetWindowLongPtrA(gInput, GWLP_WNDPROC, (LONG_PTR)input_proc);
 }
 
+// Resolve the listbox row at point `pt` (client coords of gChatList). The
+// LB_ITEMFROMPOINT result encodes the row in LOWORD and "is the point
+// inside an item?" in HIWORD (0 = inside, 1 = below last item).
+static int chatlist_row_at(POINT pt_client) {
+    LRESULT r;
+    int row;
+    int outside;
+    r = SendMessageA(gChatList, LB_ITEMFROMPOINT, 0, MAKELPARAM(pt_client.x, pt_client.y));
+    row = (int)(short)LOWORD(r);
+    outside = (int)HIWORD(r);
+    if (outside) return -1;
+    if (row < 0 || row >= gFilteredCount) return -1;
+    return row;
+}
+
+// Pop up the right-click context menu for chat row `row` (listbox row,
+// already validated). Items: Rename / Delete / --- / Save Transcript...
+// Coordinates are in screen space (TrackPopupMenu expects that).
+static void chatlist_popup_menu(HWND parent, int row, int screen_x, int screen_y) {
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+    AppendMenuA(menu, MF_STRING, IDM_RENAME,   "Rename\tF2");
+    AppendMenuA(menu, MF_STRING, IDM_DELETE,   "Delete\tDel");
+    AppendMenuA(menu, MF_SEPARATOR, 0, NULL);
+    AppendMenuA(menu, MF_STRING, IDM_CHATSAVE, "Save Transcript...");
+    // Select the row so visually it's clear which one the menu targets.
+    SendMessageA(gChatList, LB_SETCURSEL, (WPARAM)row, 0);
+    int cmd = (int)TrackPopupMenu(menu,
+        TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN,
+        screen_x, screen_y, 0, parent, NULL);
+    DestroyMenu(menu);
+    if (cmd == 0) return;
+    if (row < 0 || row >= gFilteredCount) return;
+    int chat_idx = gFilteredIndices[row];
+    switch (cmd) {
+    case IDM_RENAME:
+        chats_rename_interactive(parent, chat_idx);
+        break;
+    case IDM_DELETE:
+        chats_delete_interactive(parent, chat_idx);
+        break;
+    case IDM_CHATSAVE:
+        save_transcript_dialog(parent);
+        break;
+    }
+}
+
+// Listbox subclass: handle F2 (rename), Delete (delete), and right-click
+// (context menu). Everything else falls through to the default listbox
+// behavior (selection, scroll, etc).
+static LRESULT CALLBACK chatlist_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+    if (msg == WM_KEYDOWN) {
+        if (wparam == VK_F2) {
+            int row = (int)SendMessageA(hwnd, LB_GETCURSEL, 0, 0);
+            if (row >= 0 && row < gFilteredCount) {
+                chats_rename_interactive(gMain, gFilteredIndices[row]);
+            }
+            return 0;
+        }
+        if (wparam == VK_DELETE) {
+            int row = (int)SendMessageA(hwnd, LB_GETCURSEL, 0, 0);
+            if (row >= 0 && row < gFilteredCount) {
+                chats_delete_interactive(gMain, gFilteredIndices[row]);
+            }
+            return 0;
+        }
+    }
+    if (msg == WM_RBUTTONDOWN) {
+        POINT pt;
+        pt.x = (short)LOWORD(lparam);
+        pt.y = (short)HIWORD(lparam);
+        int row = chatlist_row_at(pt);
+        if (row >= 0) {
+            POINT screen = pt;
+            ClientToScreen(hwnd, &screen);
+            chatlist_popup_menu(gMain, row, screen.x, screen.y);
+        }
+        return 0;
+    }
+    return CallWindowProcA(gOldChatListProc, hwnd, msg, wparam, lparam);
+}
+
+static void subclass_chatlist(void) {
+    gOldChatListProc = (WNDPROC)SetWindowLongPtrA(gChatList, GWLP_WNDPROC, (LONG_PTR)chatlist_proc);
+}
+
 static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     switch (msg) {
     case WM_CREATE:
@@ -1370,6 +1627,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         create_fonts();
         create_controls(hwnd);
         subclass_input();
+        subclass_chatlist();
         layout_controls(hwnd);
         chats_resolve_dir();
         chats_index_disk();
@@ -1614,16 +1872,28 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         case IDC_CHATLIST:
             // LBN_SELCHANGE fires on every selection change. Switch which
             // chat new turns are appended to, and reload that chat's
-            // transcript into the view.
+            // transcript into the view. Note: the listbox row is into the
+            // *filtered* view; map through gFilteredIndices[].
             if (HIWORD(wparam) == LBN_SELCHANGE) {
-                int sel = (int)SendMessageA(gChatList, LB_GETCURSEL, 0, 0);
-                if (sel >= 0 && sel < gChatCount && sel != gActiveIdx) {
-                    if (InterlockedCompareExchange(&gBackendReady, 0, 0)) {
-                        backend_send_line("/reset");
+                int row = (int)SendMessageA(gChatList, LB_GETCURSEL, 0, 0);
+                if (row >= 0 && row < gFilteredCount) {
+                    int sel = gFilteredIndices[row];
+                    if (sel >= 0 && sel < gChatCount && sel != gActiveIdx) {
+                        if (InterlockedCompareExchange(&gBackendReady, 0, 0)) {
+                            backend_send_line("/reset");
+                        }
+                        gActiveIdx = sel;
+                        chats_load_into_view(sel);
                     }
-                    gActiveIdx = sel;
-                    chats_load_into_view(sel);
                 }
+            }
+            return 0;
+        case IDC_SEARCH:
+            // EN_CHANGE on the search edit -> re-filter the listbox by
+            // the current text content (case-insensitive substring).
+            if (HIWORD(wparam) == EN_CHANGE) {
+                GetWindowTextA(gSearch, gSearchText, (int)sizeof(gSearchText));
+                chats_repopulate_listbox();
             }
             return 0;
         case IDM_SETTINGS:
