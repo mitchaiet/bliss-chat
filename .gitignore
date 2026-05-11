@@ -27,3 +27,4 @@ bench/scored.csv
 
 # OS clutter
 .DS_Store
+.claude/
