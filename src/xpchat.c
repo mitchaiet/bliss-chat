@@ -43,6 +43,9 @@
 #define IDC_TB_SAVE    1020
 #define IDC_TB_SETTINGS 1021
 #define IDC_TB_HELP    1022
+#define IDC_COPY_LAST  1030
+#define IDC_REGEN      1031
+#define IDC_EDIT_LAST  1032
 
 #define IDM_EXIT       2001
 #define IDM_CLEAR      2002
@@ -67,6 +70,9 @@
 #define IDC_DEFAULTS         207
 #define IDD_RENAME           210
 #define IDC_RENAME_EDIT      211
+
+#define IDD_EDITPROMPT       210
+#define IDC_EDITPROMPT_TEXT  211
 
 // Defaults that match nc_run.c's CLI defaults.
 #define DEFAULT_TEMP   0.8f
@@ -115,6 +121,9 @@ static char gSearchText[128];     // current filter; "" = show all
 static HWND gTbSave;       // toolbar buttons below the title strip
 static HWND gTbSettings;
 static HWND gTbHelp;
+static HWND gCopyLastBtn;  // per-message action strip above the transcript
+static HWND gRegenBtn;
+static HWND gEditLastBtn;
 static HFONT gUiFont;
 static HFONT gTitleFont;
 static HFONT gMonoFont;
@@ -156,6 +165,21 @@ static BOOL backend_send_line(const char *line);
 static volatile LONG gRunning;
 static volatile LONG gBackendReady;
 static DWORD gRunStarted;
+
+// Per-message action state. The most-recent-assistant-turn body lives in
+// the RichEdit between [gLastAsstStart, gLastAsstEnd) — character offsets,
+// not bytes. gLastAsstStart is set when we begin appending the assistant
+// header (we capture the cpMax AFTER appending the header), and
+// gLastAsstEnd is set when WM_RUN_DONE fires (right before the stats
+// footer is appended). gHasAsstTurn flips to TRUE once at least one
+// assistant turn has completed, gating the action buttons.
+static LONG gLastAsstStart = -1;
+static LONG gLastAsstEnd   = -1;
+static int  gHasAsstTurn   = 0;
+// Set TRUE by the Regenerate action so the next assistant header reads
+// "Assistant (regenerated) ..." instead of "Assistant ...". Cleared by
+// send_prompt() after one use.
+static int  gRegenLabel = 0;
 // Settings — mirror what we last sent to the backend so the dialog can
 // pre-populate. Persisted in HKCU\Software\bliss-chat\Settings.
 static float gTemp  = DEFAULT_TEMP;
@@ -338,8 +362,88 @@ static void rich_append_color(const char *text, COLORREF color, BOOL bold) {
     free(norm.data);
 }
 
+// Return the character offset of the RichEdit's end-of-text. RichEdit
+// offsets are in UTF-16 code units, but our content is ASCII-only and
+// CRLF-normalized, so EM_EXSETSEL(-1,-1) followed by EM_EXGETSEL gives
+// us a usable position for EM_GETTEXTRANGE later.
+static LONG rich_end_pos(void) {
+    CHARRANGE r;
+    if (!gTranscript) return 0;
+    r.cpMin = -1; r.cpMax = -1;
+    SendMessageA(gTranscript, EM_EXSETSEL, 0, (LPARAM)&r);
+    SendMessageA(gTranscript, EM_EXGETSEL, 0, (LPARAM)&r);
+    return r.cpMax;
+}
+
+// Pull a character range out of the transcript as ANSI text. Caller frees.
+// Returns NULL on failure or empty range.
+static char * rich_get_range(LONG start, LONG end) {
+    TEXTRANGEA tr;
+    LONG n;
+    char *buf;
+    if (!gTranscript || end <= start) return NULL;
+    n = end - start;
+    // EM_GETTEXTRANGE writes at most cpMax-cpMin chars plus a NUL, but
+    // because RichEdit positions count UTF-16 units we add slack to
+    // be safe against multi-byte expansion (we expect 1:1 ASCII, but
+    // belt-and-braces costs nothing).
+    buf = (char *)malloc((size_t)n * 2 + 8);
+    if (!buf) return NULL;
+    tr.chrg.cpMin = start;
+    tr.chrg.cpMax = end;
+    tr.lpstrText  = buf;
+    SendMessageA(gTranscript, EM_GETTEXTRANGE, 0, (LPARAM)&tr);
+    buf[(size_t)n * 2 + 7] = 0;
+    return buf;
+}
+
+// Put a NUL-terminated ANSI string on the clipboard as CF_TEXT.
+// Returns 1 on success, 0 on failure. text is copied into a moveable
+// HGLOBAL; SetClipboardData transfers ownership.
+static int clipboard_set_text(HWND owner, const char *text) {
+    HGLOBAL hg;
+    size_t len;
+    char *dst;
+    if (!text) return 0;
+    len = strlen(text);
+    if (!OpenClipboard(owner)) return 0;
+    EmptyClipboard();
+    hg = GlobalAlloc(GMEM_MOVEABLE, len + 1);
+    if (!hg) { CloseClipboard(); return 0; }
+    dst = (char *)GlobalLock(hg);
+    if (!dst) { GlobalFree(hg); CloseClipboard(); return 0; }
+    memcpy(dst, text, len);
+    dst[len] = 0;
+    GlobalUnlock(hg);
+    if (!SetClipboardData(CF_TEXT, hg)) {
+        GlobalFree(hg);
+        CloseClipboard();
+        return 0;
+    }
+    CloseClipboard();
+    return 1;
+}
+
+// Enable/disable the three per-message action buttons based on whether
+// we have a recorded assistant turn and the backend is idle.
+static void update_msg_actions(void) {
+    BOOL idle = !InterlockedCompareExchange(&gRunning, 0, 0);
+    BOOL ready = InterlockedCompareExchange(&gBackendReady, 0, 0) != 0;
+    BOOL have_asst = gHasAsstTurn ? TRUE : FALSE;
+    BOOL have_user = gPendingUser[0] != 0 ? TRUE : FALSE;
+    if (gCopyLastBtn) EnableWindow(gCopyLastBtn, have_asst);
+    if (gRegenBtn)    EnableWindow(gRegenBtn,    have_asst && have_user && ready && idle);
+    if (gEditLastBtn) EnableWindow(gEditLastBtn, have_user && ready && idle);
+}
+
 static void clear_transcript(void) {
     char model_text[256];
+    // Reset per-message action state alongside the visible text.
+    gLastAsstStart = -1;
+    gLastAsstEnd   = -1;
+    gHasAsstTurn   = 0;
+    gPendingUser[0] = 0;
+    update_msg_actions();
     SetWindowTextA(gTranscript, "");
     rich_append_color("bliss-chat\r\n", RGB(0, 128, 0), TRUE);
     if (gModel && GetWindowTextA(gModel, model_text, sizeof(model_text)) > 0) {
@@ -361,6 +465,8 @@ static void set_running(BOOL running) {
     EnableWindow(gInput, ready);
     EnableWindow(gStop,  ready && running);
     EnableWindow(gClear, !running);
+    // Per-message buttons follow the same idle/ready rules.
+    update_msg_actions();
     // Reset bar at phase transitions; backend will fill it via PROG messages.
     if (gProgress) SendMessageA(gProgress, PBM_SETPOS, 0, 0);
     if (running) SetTimer(gMain, TIMER_STATUS, 500, NULL);
@@ -593,8 +699,13 @@ static void sanitize_user(char *text) {
     }
 }
 
-static void send_prompt(void) {
-    char user_prompt[PROMPT_MAX];
+// Internal: send a fully-prepared prompt through the same path the Send
+// button uses. user_prompt has already been sanitized. If show_user_header
+// is true, a fresh "You — h:mm" header + the user text is appended to the
+// transcript; Regenerate sets this to false so the prior user header isn't
+// duplicated. The assistant header reads "Assistant (regenerated) — h:mm"
+// when gRegenLabel is set (cleared here after use).
+static void send_prompt_text(const char *user_prompt, int show_user_header) {
     DWORD written;
     char with_newline[PROMPT_MAX + 4];
 
@@ -603,10 +714,7 @@ static void send_prompt(void) {
         return;
     }
     if (InterlockedCompareExchange(&gRunning, 0, 0)) return;
-
-    GetWindowTextA(gInput, user_prompt, sizeof(user_prompt));
-    sanitize_user(user_prompt);
-    if (!input_has_text(user_prompt)) return;
+    if (!user_prompt || !input_has_text(user_prompt)) return;
 
     snprintf(gPendingUser, sizeof(gPendingUser), "%s", user_prompt);
 
@@ -623,15 +731,29 @@ static void send_prompt(void) {
         GetLocalTime(&st);
         int h12 = st.wHour % 12; if (h12 == 0) h12 = 12;
         char hdr[64];
-        snprintf(hdr, sizeof(hdr), "You  -  %d:%02d %s\r\n",
-                 h12, st.wMinute, (st.wHour < 12 ? "AM" : "PM"));
-        rich_append_color(hdr, RGB(0, 84, 166), TRUE);
-        rich_append_color(user_prompt, RGB(0, 0, 0), FALSE);
-        snprintf(hdr, sizeof(hdr), "\r\n\r\nAssistant  -  %d:%02d %s\r\n",
-                 h12, st.wMinute, (st.wHour < 12 ? "AM" : "PM"));
+        const char *ampm = (st.wHour < 12 ? "AM" : "PM");
+        if (show_user_header) {
+            snprintf(hdr, sizeof(hdr), "You  -  %d:%02d %s\r\n",
+                     h12, st.wMinute, ampm);
+            rich_append_color(hdr, RGB(0, 84, 166), TRUE);
+            rich_append_color(user_prompt, RGB(0, 0, 0), FALSE);
+            snprintf(hdr, sizeof(hdr), "\r\n\r\n");
+            rich_append_color(hdr, RGB(0, 0, 0), FALSE);
+        }
+        if (gRegenLabel) {
+            snprintf(hdr, sizeof(hdr), "Assistant (regenerated)  -  %d:%02d %s\r\n",
+                     h12, st.wMinute, ampm);
+            gRegenLabel = 0;
+        } else {
+            snprintf(hdr, sizeof(hdr), "Assistant  -  %d:%02d %s\r\n",
+                     h12, st.wMinute, ampm);
+        }
         rich_append_color(hdr, RGB(0, 128, 0), TRUE);
+        // The assistant *body* starts right after this header. Capture
+        // the current end-of-text as the body's start cpMin.
+        gLastAsstStart = rich_end_pos();
+        gLastAsstEnd   = gLastAsstStart;  // will move forward as tokens arrive
     }
-    SetWindowTextA(gInput, "");
 
     InterlockedExchange(&gRunning, 1);
     InterlockedExchange(&gRunChars, 0);
@@ -648,6 +770,15 @@ static void send_prompt(void) {
         set_running(FALSE);
         set_status("Backend error");
     }
+}
+
+static void send_prompt(void) {
+    char user_prompt[PROMPT_MAX];
+    GetWindowTextA(gInput, user_prompt, sizeof(user_prompt));
+    sanitize_user(user_prompt);
+    if (!input_has_text(user_prompt)) return;
+    SetWindowTextA(gInput, "");
+    send_prompt_text(user_prompt, 1);
 }
 
 // ---------- menu / fonts / controls ----------
@@ -811,6 +942,16 @@ static void create_controls(HWND hwnd) {
     gTbSettings = make_control("BUTTON", "Settings", BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_TB_SETTINGS, hwnd);
     gTbHelp     = make_control("BUTTON", "Help",     BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_TB_HELP,     hwnd);
 
+    // Per-message action strip — sits just above the transcript. Acts on
+    // the most recent assistant turn / last user prompt. Disabled until
+    // an assistant turn has completed.
+    gCopyLastBtn = make_control("BUTTON", "Copy last reply", BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_COPY_LAST, hwnd);
+    gRegenBtn    = make_control("BUTTON", "Regenerate",      BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_REGEN,     hwnd);
+    gEditLastBtn = make_control("BUTTON", "Edit last prompt",BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_EDIT_LAST, hwnd);
+    EnableWindow(gCopyLastBtn, FALSE);
+    EnableWindow(gRegenBtn,    FALSE);
+    EnableWindow(gEditLastBtn, FALSE);
+
     // Chat history sidebar. Layout (top -> bottom):
     //   [search edit]    <- filter; placeholder cue banner
     //   [chat list]
@@ -884,11 +1025,28 @@ static void layout_controls(HWND hwnd) {
     status_y = h - pad - 20;
     input_h = h < 560 ? 62 : 96;
     input_y = status_y - input_h - 10;
-    transcript_y = sidebar_y;
+
+    // Per-message action strip sits just above the transcript and below
+    // the toolbar row, aligned with the transcript's left edge.
+    int msg_strip_h = 24;
+    int msg_strip_y = sidebar_y;
+    {
+        int bw = 130;
+        int bh = msg_strip_h;
+        int gap = 6;
+        int x0 = inner_x;
+        MoveWindow(gCopyLastBtn, x0,                       msg_strip_y, bw, bh, TRUE);
+        MoveWindow(gRegenBtn,    x0 + (bw + gap),          msg_strip_y, bw, bh, TRUE);
+        MoveWindow(gEditLastBtn, x0 + (bw + gap) * 2,      msg_strip_y, bw, bh, TRUE);
+    }
+
+    transcript_y = sidebar_y + msg_strip_h + 6;
     transcript_h = input_y - transcript_y - 10;
     if (transcript_h < 160) transcript_h = 160;
 
-    int sidebar_h = transcript_h;
+    // Sidebar spans from its original top to the transcript bottom.
+    // Layout inside: [search edit] [chat list] [+ New Chat].
+    int sidebar_h = (transcript_y + transcript_h) - sidebar_y;
     int search_h = 22;
     int list_top = sidebar_y + search_h + 4;
     int list_bot = sidebar_y + sidebar_h - new_btn_h - 6;
@@ -898,6 +1056,16 @@ static void layout_controls(HWND hwnd) {
                sidebar_w, list_bot - list_top, TRUE);
     MoveWindow(gNewChatBtn, sidebar_x, sidebar_y + sidebar_h - new_btn_h,
                sidebar_w, new_btn_h, TRUE);
+
+    // Per-message action strip sits right above the transcript area.
+    int msg_action_h = 22;
+    int msg_action_y = transcript_y;
+    int btn_w = 120;
+    MoveWindow(gCopyLastBtn, inner_x,                      msg_action_y, btn_w, msg_action_h, TRUE);
+    MoveWindow(gRegenBtn,    inner_x + btn_w + 6,          msg_action_y, btn_w, msg_action_h, TRUE);
+    MoveWindow(gEditLastBtn, inner_x + (btn_w + 6) * 2,    msg_action_y, btn_w, msg_action_h, TRUE);
+    transcript_y += msg_action_h + 6;
+    transcript_h -= msg_action_h + 6;
 
     MoveWindow(gTranscript, inner_x, transcript_y, inner_w, transcript_h, TRUE);
     MoveWindow(gInput,      inner_x, input_y, inner_w - action_w - 14, input_h, TRUE);
@@ -1255,6 +1423,15 @@ static void chats_load_into_view(int idx) {
     FILE *fp = fopen(gChats[idx].path, "rb");
     if (!fp) return;
 
+    // Reset per-message action state — the on-disk replay does not
+    // populate gLastAsst{Start,End} (those track only this-session
+    // turns), and gPendingUser belonged to the previous chat.
+    gLastAsstStart = -1;
+    gLastAsstEnd   = -1;
+    gHasAsstTurn   = 0;
+    gPendingUser[0] = 0;
+    update_msg_actions();
+
     SetWindowTextA(gTranscript, "");
     rich_append_color("bliss-chat\r\n", RGB(0, 128, 0), TRUE);
     rich_append_color(gChats[idx].title, RGB(96, 96, 96), FALSE);
@@ -1393,6 +1570,45 @@ static INT_PTR CALLBACK settings_dlg_proc(HWND dlg, UINT msg, WPARAM wparam, LPA
         case IDC_DEFAULTS:
             SetDlgItemTextA(dlg, IDC_TEMP_EDIT, "0.80");
             SetDlgItemTextA(dlg, IDC_SEED_EDIT, "0");
+            return TRUE;
+        }
+        return FALSE;
+
+    case WM_CLOSE:
+        EndDialog(dlg, IDCANCEL);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+// Edit-prompt dialog. lParam at DialogBoxParam time is a char* holding the
+// initial text; on OK we write the edited text back to that same buffer
+// (sized PROMPT_MAX). Cancel leaves it untouched.
+static INT_PTR CALLBACK editprompt_dlg_proc(HWND dlg, UINT msg, WPARAM wparam, LPARAM lparam) {
+    static char *out_buf;
+    switch (msg) {
+    case WM_INITDIALOG:
+        out_buf = (char *)lparam;
+        if (out_buf) {
+            SetDlgItemTextA(dlg, IDC_EDITPROMPT_TEXT, out_buf);
+            // Select all so the user can just start typing to replace,
+            // or Shift+End / arrow to extend the selection.
+            SendDlgItemMessageA(dlg, IDC_EDITPROMPT_TEXT, EM_SETSEL, 0, -1);
+        }
+        SetFocus(GetDlgItem(dlg, IDC_EDITPROMPT_TEXT));
+        return FALSE;  // we set focus manually
+
+    case WM_COMMAND:
+        switch (LOWORD(wparam)) {
+        case IDOK: {
+            if (out_buf) {
+                GetDlgItemTextA(dlg, IDC_EDITPROMPT_TEXT, out_buf, PROMPT_MAX);
+            }
+            EndDialog(dlg, IDOK);
+            return TRUE;
+        }
+        case IDCANCEL:
+            EndDialog(dlg, IDCANCEL);
             return TRUE;
         }
         return FALSE;
@@ -1777,6 +1993,10 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         if (message && *message && tcount > 0) {
             chats_append_turn("ASSISTANT", message);
         }
+        // Lock in the assistant body's end offset before the trailing
+        // newline + stats footer are appended. This is what Copy uses.
+        gLastAsstEnd = rich_end_pos();
+        if (tcount > 0 && gLastAsstEnd > gLastAsstStart) gHasAsstTurn = 1;
         rich_append_color("\r\n", RGB(0, 0, 0), FALSE);
         // Stats footer + timestamp.
         {
@@ -1825,6 +2045,86 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         case IDM_CLEAR:
             clear_transcript();
             return 0;
+        case IDC_COPY_LAST: {
+            // Pull just the body of the most recent assistant turn out of
+            // the RichEdit — no "Assistant — h:mm" header, no stats footer.
+            // The range was snapshotted in WM_RUN_DONE.
+            if (!gHasAsstTurn || gLastAsstEnd <= gLastAsstStart) {
+                MessageBeep(MB_ICONWARNING);
+                return 0;
+            }
+            char *body = rich_get_range(gLastAsstStart, gLastAsstEnd);
+            if (!body) {
+                MessageBeep(MB_ICONWARNING);
+                return 0;
+            }
+            // Trim a single trailing CRLF (the streaming token loop usually
+            // leaves the cursor at end-of-line; users don't want it pasted).
+            size_t bl = strlen(body);
+            while (bl > 0 && (body[bl - 1] == '\n' || body[bl - 1] == '\r')) {
+                body[--bl] = 0;
+            }
+            if (clipboard_set_text(hwnd, body)) {
+                set_status("Copied last reply to clipboard.");
+            } else {
+                set_status("Could not access clipboard.");
+            }
+            free(body);
+            return 0;
+        }
+        case IDC_REGEN: {
+            // Re-run the last user prompt. We send /reset to the backend
+            // first to drop the just-finished turn from its KV cache, then
+            // re-send gPendingUser through the regular send path. The
+            // transcript gets a fresh "Assistant (regenerated) — h:mm"
+            // header followed by the new body; we do NOT try to in-place
+            // replace the prior body.
+            if (!gHasAsstTurn || gPendingUser[0] == 0) {
+                MessageBeep(MB_ICONWARNING);
+                return 0;
+            }
+            if (!InterlockedCompareExchange(&gBackendReady, 0, 0)) {
+                MessageBeep(MB_ICONWARNING);
+                return 0;
+            }
+            if (InterlockedCompareExchange(&gRunning, 0, 0)) return 0;
+            char prompt_copy[PROMPT_MAX];
+            snprintf(prompt_copy, sizeof(prompt_copy), "%s", gPendingUser);
+            backend_send_line("/reset");
+            // Backend's /reset is synchronous from the GUI's POV in the
+            // sense that the next stdin line we write enters a clean
+            // context. (NC_RUN handles /reset, emits an INFO + EOT, then
+            // returns to the read-line loop.) We don't wait for an event
+            // here — WriteFile ordering on the pipe is enough.
+            gRegenLabel = 1;
+            send_prompt_text(prompt_copy, 0);
+            return 0;
+        }
+        case IDC_EDIT_LAST: {
+            // Pop a modal dialog prefilled with the last user prompt. On
+            // OK we send /reset to drop the prior turn pair from the KV
+            // cache, then re-send the edited prompt through the regular
+            // send path (which appends a fresh "You — h:mm" header).
+            if (gPendingUser[0] == 0) {
+                MessageBeep(MB_ICONWARNING);
+                return 0;
+            }
+            if (!InterlockedCompareExchange(&gBackendReady, 0, 0)) {
+                MessageBeep(MB_ICONWARNING);
+                return 0;
+            }
+            if (InterlockedCompareExchange(&gRunning, 0, 0)) return 0;
+            char edited[PROMPT_MAX];
+            snprintf(edited, sizeof(edited), "%s", gPendingUser);
+            INT_PTR r = DialogBoxParamA(gInstance, MAKEINTRESOURCEA(IDD_EDITPROMPT),
+                                        hwnd, editprompt_dlg_proc, (LPARAM)edited);
+            if (r != IDOK) return 0;
+            sanitize_user(edited);
+            if (!input_has_text(edited)) return 0;
+            backend_send_line("/reset");
+            send_prompt_text(edited, 1);
+            return 0;
+        }
         case IDM_ABOUT:
             MessageBoxA(hwnd,
                 APP_NAME "\n\nReal LLM running natively on Windows XP.\n"
