@@ -20,11 +20,11 @@ DEPLOY="$BUILD/deploy"
 XP_HOST="${XP_HOST:?set XP_HOST to the target XP machine IP}"
 XP_USER="${XP_USER:?set XP_USER to the telnet username}"
 XP_PASS="${XP_PASS:?set XP_PASS to the telnet password}"
-HOST_IP="${HOST_IP:?set HOST_IP to this machine's LAN IP}"
+HOST_IP="${HOST_IP:?set HOST_IP to this machine LAN IP}"
 HTTP_PORT="${HTTP_PORT:-8088}"
 
 # Stage files to a single directory the HTTP server already serves
-STAGE="${STAGE:-/Users/mitchaiet/VMs/WindowsXP/xp-deploy}"
+STAGE="${STAGE:-$DEPLOY}"
 mkdir -p "$STAGE"
 cp -f "$BUILD/NC_RUN.EXE"  "$STAGE/"
 cp -f "$BUILD/XPCHAT.EXE"  "$STAGE/"

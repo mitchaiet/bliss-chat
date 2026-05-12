@@ -17,6 +17,7 @@
 #include <commctrl.h>
 #include <commdlg.h>
 #include <richedit.h>
+#include <shellapi.h>
 #include <shlobj.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,6 +25,9 @@
 #include <string.h>
 
 #define APP_NAME "Bliss Chat"
+#define APP_DISPLAY_NAME "Bliss Chat"
+#define APP_WINDOW_TITLE "Bliss Chat - Local Chat Assistant"
+#define APP_TAGLINE "Local AI conversation utility"
 #define IDI_APP 101
 
 #define IDC_TRANSCRIPT 1001
@@ -40,12 +44,37 @@
 #define IDC_CHATLIST   1015
 #define IDC_NEWCHATBTN 1016
 #define IDC_SEARCH     1017
+#define IDC_DIAGNOSTICS 1018
 #define IDC_TOOLBAR    1020
-// Resource ID for the toolbar bitmap (matches resource.rc).
-#define IDB_TOOLBAR    102
 #define IDC_COPY_LAST  1030
 #define IDC_REGEN      1031
 #define IDC_EDIT_LAST  1032
+#define IDC_TASK_SAVE   1040
+#define IDC_TASK_EXPORT 1041
+#define IDC_TASK_IMPORT 1042
+#define IDC_TASK_CLEAR  1043
+#define IDC_TASKLIST    1044
+#define IDC_BTN_BOLD    1050
+#define IDC_BTN_ITALIC  1051
+#define IDC_BTN_SMILE   1052
+#define IDC_BTN_ATTACH  1053
+#define IDC_BTN_PROMPTS 1054
+#define IDC_IDENTITY_FRAME 1060
+#define IDC_CPU_LABEL      1061
+#define IDC_CPU_VALUE      1062
+#define IDC_MEMORY_LABEL   1063
+#define IDC_MEMORY_VALUE   1064
+#define IDC_THREADS_LABEL  1065
+#define IDC_THREADS_VALUE  1066
+#define IDC_MODEL_GROUP    1067
+#define IDC_MODEL_STATE    1068
+#define IDC_TASKPANE_TASKS 1070
+#define IDC_TASKPANE_RECENT 1071
+#define IDC_CONV_GROUP     1072
+#define IDC_DIAG_GROUP     1073
+#define IDC_INPUT_GROUP    1074
+#define IDC_INPUT_LABEL    1075
+#define IDC_INPUT_HINT     1076
 
 #define IDM_EXIT       2001
 #define IDM_CLEAR      2002
@@ -64,6 +93,13 @@
 #define IDM_FIND       2023
 #define IDM_SHORTCUTS  2024
 #define IDM_SLASHHELP  2025
+#define IDM_OPEN       2026
+#define IDM_EXPORT     2027
+#define IDM_PRINT      2028
+#define IDM_MODELINFO  2029
+#define IDM_PERF       2030
+#define IDM_TEMPLATES  2031
+#define IDM_HELPTOPICS 2032
 
 // Resource IDs from resource.rc — must stay in sync.
 #define IDD_SETTINGS         200
@@ -93,10 +129,10 @@
 #define IDC_SHORTCUTS_TEXT   231
 
 // Defaults that match nc_run.c's CLI defaults.
-#define DEFAULT_TEMP   0.8f
+#define DEFAULT_TEMP   0.0f
 #define DEFAULT_SEED   0  /* 0 = "use clock" */
 #define DEFAULT_TOPP   0.95f
-#define DEFAULT_MAXTOK 0  /* 0 = "no cap, use context budget" */
+#define DEFAULT_MAXTOK 128
 
 #define WM_APPEND_TEXT    (WM_APP + 1)
 #define WM_RUN_DONE       (WM_APP + 2)   // wparam = generated_token_count, lparam = response text
@@ -111,7 +147,7 @@
 #define BACKEND_EXE    "NC_RUN.EXE"
 #define MODEL_FILE     "MODEL.NCB"
 #define TOKENIZER_FILE "TOKENIZER.NCT"
-#define MODEL_LABEL    "Model: (loading...)"
+#define MODEL_LABEL    "(loading...)"
 #define APP_SUBTITLE   ""  /* set at startup from get_pc_specs() */
 
 typedef struct {
@@ -129,13 +165,40 @@ static HWND gStop;
 static HWND gClear;
 static HWND gStatus;
 static HWND gModel;
+static HWND gModelState;
 static HWND gTitle;
 static HWND gSubtitle;
 static HWND gIcon;
 static HWND gProgress;
+static HWND gIdentityFrame;
+static HWND gCpuLabel;
+static HWND gCpuValue;
+static HWND gMemoryLabel;
+static HWND gMemoryValue;
+static HWND gThreadsLabel;
+static HWND gThreadsValue;
+static HWND gModelGroup;
+static HWND gTaskPane;
+static HWND gRecentPane;
+static HWND gConversationGroup;
+static HWND gDiagnosticsGroup;
+static HWND gInputGroup;
+static HWND gInputLabel;
+static HWND gInputHint;
 static HWND gChatList;     // sidebar listbox of saved chats
 static HWND gNewChatBtn;   // "+ New Chat" button under the listbox
 static HWND gSearch;       // search/filter EDIT above the listbox
+static HWND gDiagnostics;  // lower diagnostics log pane
+static HWND gTaskSaveBtn;
+static HWND gTaskExportBtn;
+static HWND gTaskImportBtn;
+static HWND gTaskClearBtn;
+static HWND gTaskList;
+static HWND gBoldBtn;
+static HWND gItalicBtn;
+static HWND gSmileBtn;
+static HWND gAttachBtn;
+static HWND gPromptToolsBtn;
 static WNDPROC gOldChatListProc;  // original listbox WNDPROC (for subclass)
 static char gSearchText[128];     // current filter; "" = show all
 static HWND gToolbar;      // COMCTL32 toolbar below the title strip
@@ -144,9 +207,28 @@ static HWND gRegenBtn;
 static HWND gEditLastBtn;
 static HFONT gUiFont;
 static HFONT gTitleFont;
+static HFONT gPaneFont;
 static HFONT gMonoFont;
+static HICON gSendIcon;
+static HICON gStopIcon;
+static HIMAGELIST gToolbarImages;
 static HMODULE gRichEdit;
 static WNDPROC gOldInputProc;
+
+static RECT gRcToolbarBand;
+static RECT gRcIdentityBand;
+static RECT gRcModelBox;
+static RECT gRcTaskPane;
+static RECT gRcRecentPane;
+static RECT gRcConversationPane;
+static RECT gRcDiagnosticsPane;
+static RECT gRcInputPane;
+static RECT gRcStatusBar;
+static char gPcCpu[160] = "Intel(R) Pentium(R) 4 CPU 3.00GHz";
+static char gPcMemory[64] = "512 MB RAM";
+static char gPcThreads[32] = "1";
+static char gModelName[160] = "(loading...)";
+static char gStatusText[160] = "Loading model...";
 
 static char gAppDir[MAX_PATH];
 static char gPendingUser[PROMPT_MAX];
@@ -351,8 +433,48 @@ static int file_exists_in_app_dir(const char *name) {
 }
 
 // ---------- transcript helpers ----------
+static void update_status_bar(void) {
+    char model_part[220];
+    char thread_part[64];
+    if (!gStatus) return;
+    snprintf(model_part, sizeof(model_part), "Model: %s", gModelName);
+    snprintf(thread_part, sizeof(thread_part), "%s thread", gPcThreads);
+    SendMessageA(gStatus, SB_SETTEXTA, 0, (LPARAM)gStatusText);
+    SendMessageA(gStatus, SB_SETTEXTA, 1, (LPARAM)model_part);
+    SendMessageA(gStatus, SB_SETTEXTA, 2, (LPARAM)thread_part);
+    SendMessageA(gStatus, SB_SETTEXTA, 3, (LPARAM)"0.0 tok/s");
+    SendMessageA(gStatus, SB_SETTEXTA, 4, (LPARAM)gPcMemory);
+}
+
+static void update_model_box(void) {
+    BOOL ready = InterlockedCompareExchange(&gBackendReady, 0, 0) != 0;
+    BOOL named = strcmp(gModelName, "(loading...)") != 0;
+    if (gModelState) SetWindowTextA(gModelState, ready ? "Model loaded" : "Loading model");
+    if (gModel) SetWindowTextA(gModel, named ? gModelName : MODEL_LABEL);
+    if (gProgress) ShowWindow(gProgress, (ready || named) ? SW_HIDE : SW_SHOW);
+    update_status_bar();
+}
+
 static void set_status(const char *text) {
-    if (gStatus) SetWindowTextA(gStatus, text);
+    snprintf(gStatusText, sizeof(gStatusText), "%s", text ? text : "");
+    update_status_bar();
+}
+
+static void diagnostics_appendf(const char *fmt, ...) {
+    char body[512];
+    char line[640];
+    SYSTEMTIME st;
+    va_list ap;
+    if (!gDiagnostics || !fmt) return;
+    va_start(ap, fmt);
+    vsnprintf(body, sizeof(body), fmt, ap);
+    va_end(ap);
+    GetLocalTime(&st);
+    snprintf(line, sizeof(line), "[%02d:%02d:%02d]  %s\r\n",
+             st.wHour, st.wMinute, st.wSecond, body);
+    SendMessageA(gDiagnostics, EM_SETSEL, (WPARAM)-1, (LPARAM)-1);
+    SendMessageA(gDiagnostics, EM_REPLACESEL, FALSE, (LPARAM)line);
+    SendMessageA(gDiagnostics, WM_VSCROLL, SB_BOTTOM, 0);
 }
 
 static void rich_set_format(COLORREF color, BOOL bold) {
@@ -447,6 +569,26 @@ static int clipboard_set_text(HWND owner, const char *text) {
     }
     CloseClipboard();
     return 1;
+}
+
+static void input_toggle_charformat(DWORD mask, DWORD effect) {
+    CHARFORMAT2A cf;
+    if (!gInput) return;
+    ZeroMemory(&cf, sizeof(cf));
+    cf.cbSize = sizeof(cf);
+    cf.dwMask = mask;
+    SendMessageA(gInput, EM_GETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+    cf.cbSize = sizeof(cf);
+    cf.dwMask = mask;
+    cf.dwEffects = (cf.dwEffects & effect) ? 0 : effect;
+    SendMessageA(gInput, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+    SetFocus(gInput);
+}
+
+static void input_insert_text(const char *text) {
+    if (!gInput || !text) return;
+    SendMessageA(gInput, EM_REPLACESEL, TRUE, (LPARAM)text);
+    SetFocus(gInput);
 }
 
 // Enable/disable the three per-message action buttons based on whether
@@ -796,6 +938,7 @@ static void send_prompt_text(const char *user_prompt, int show_user_header) {
     gRunStarted = GetTickCount();
     set_running(TRUE);
     set_status("Generating...");
+    diagnostics_appendf("Generating response...");
 
     dbg_log("USER", "%s", user_prompt);
     snprintf(with_newline, sizeof(with_newline), "%s\n", user_prompt);
@@ -823,9 +966,16 @@ static void make_menu(HWND hwnd) {
     HMENU file = CreatePopupMenu();
     HMENU edit = CreatePopupMenu();
     HMENU convo = CreatePopupMenu();
+    HMENU model = CreatePopupMenu();
+    HMENU tools = CreatePopupMenu();
     HMENU help = CreatePopupMenu();
 
+    AppendMenuA(file, MF_STRING, IDM_NEWCHAT, "New Chat\tCtrl+N");
+    AppendMenuA(file, MF_STRING, IDM_OPEN, "Open...");
+    AppendMenuA(file, MF_SEPARATOR, 0, NULL);
     AppendMenuA(file, MF_STRING, IDM_SAVE, "Save Transcript...\tCtrl+S");
+    AppendMenuA(file, MF_STRING, IDM_EXPORT, "Export Transcript...");
+    AppendMenuA(file, MF_STRING, IDM_PRINT, "Print...");
     AppendMenuA(file, MF_SEPARATOR, 0, NULL);
     AppendMenuA(file, MF_STRING, IDM_EXIT, "Exit");
 
@@ -840,16 +990,27 @@ static void make_menu(HWND hwnd) {
     AppendMenuA(convo, MF_SEPARATOR, 0, NULL);
     AppendMenuA(convo, MF_STRING, IDM_SETTINGS, "Settings...");
     AppendMenuA(convo, MF_SEPARATOR, 0, NULL);
-    AppendMenuA(convo, MF_STRING, IDM_CLEAR,   "Clear transcript");
+    AppendMenuA(convo, MF_STRING, IDM_CLEAR,   "Clear Conversation");
 
+    AppendMenuA(model, MF_STRING, IDM_MODELINFO, "Model Info");
+    AppendMenuA(model, MF_STRING, IDM_PERF, "Performance");
+    AppendMenuA(model, MF_SEPARATOR, 0, NULL);
+    AppendMenuA(model, MF_STRING, IDM_SETTINGS, "Model Settings...");
+
+    AppendMenuA(tools, MF_STRING, IDM_TEMPLATES, "Templates");
+    AppendMenuA(tools, MF_STRING, IDM_FIND, "Find...\tCtrl+F");
+
+    AppendMenuA(help, MF_STRING, IDM_HELPTOPICS, "Help Topics");
     AppendMenuA(help, MF_STRING, IDM_SHORTCUTS, "Keyboard Shortcuts...");
     AppendMenuA(help, MF_STRING, IDM_SLASHHELP, "Slash Commands...");
     AppendMenuA(help, MF_SEPARATOR, 0, NULL);
-    AppendMenuA(help, MF_STRING, IDM_ABOUT, "About Bliss Chat");
+    AppendMenuA(help, MF_STRING, IDM_ABOUT, "About");
 
     AppendMenuA(menu, MF_POPUP, (UINT_PTR)file, "File");
     AppendMenuA(menu, MF_POPUP, (UINT_PTR)edit, "Edit");
     AppendMenuA(menu, MF_POPUP, (UINT_PTR)convo, "Conversation");
+    AppendMenuA(menu, MF_POPUP, (UINT_PTR)model, "Model");
+    AppendMenuA(menu, MF_POPUP, (UINT_PTR)tools, "Tools");
     AppendMenuA(menu, MF_POPUP, (UINT_PTR)help, "Help");
     SetMenu(hwnd, menu);
 }
@@ -870,10 +1031,17 @@ static void create_fonts(void) {
     gTitleFont = CreateFontIndirectA(&lf);
 
     lf = ncm.lfMessageFont;
+    lf.lfHeight = -13;
+    lf.lfWeight = FW_BOLD;
+    strcpy(lf.lfFaceName, "Tahoma");
+    gPaneFont = CreateFontIndirectA(&lf);
+
+    lf = ncm.lfMessageFont;
     lf.lfHeight = -14;
     lf.lfWeight = FW_NORMAL;
     strcpy(lf.lfFaceName, "Tahoma");
     gMonoFont = CreateFontIndirectA(&lf);
+
 }
 
 static HWND make_control(const char *klass, const char *text, DWORD style, DWORD exstyle, int id, HWND parent) {
@@ -883,9 +1051,189 @@ static HWND make_control(const char *klass, const char *text, DWORD style, DWORD
     return hwnd;
 }
 
-// Pull a one-line PC-spec banner: "<CPU name> | <RAM> MB". Falls back to
-// generic strings if the registry/system call fails.
-static void get_pc_specs(char *out, int outsz) {
+static int add_toolbar_icon(HIMAGELIST hil, const char *dll_name, int icon_index, LPCSTR stock_icon) {
+    HICON icon = NULL;
+    int shared = 0;
+    int slot = -1;
+    if (dll_name && *dll_name) {
+        ExtractIconExA(dll_name, icon_index, &icon, NULL, 1);
+    }
+    if (!icon && stock_icon) {
+        icon = (HICON)LoadImageA(NULL, stock_icon, IMAGE_ICON, 32, 32,
+                                 LR_DEFAULTCOLOR | LR_SHARED);
+        shared = icon ? 1 : 0;
+    }
+    if (!icon) {
+        icon = (HICON)LoadImageA(gInstance, MAKEINTRESOURCEA(IDI_APP),
+                                 IMAGE_ICON, 32, 32, LR_DEFAULTCOLOR);
+    }
+    if (icon) {
+        slot = ImageList_AddIcon(hil, icon);
+        if (!shared) DestroyIcon(icon);
+    }
+    return slot;
+}
+
+static HICON load_extracted_icon(const char *dll_name, int icon_index, int size) {
+    HICON large = NULL, small = NULL, icon = NULL;
+    if (!dll_name || !*dll_name) return NULL;
+    ExtractIconExA(dll_name, icon_index, &large, &small, 1);
+    icon = small ? small : large;
+    if (icon && size != 16) {
+        HICON copy = (HICON)CopyImage(icon, IMAGE_ICON, size, size, LR_COPYFROMRESOURCE);
+        if (copy) {
+            if (small && small != copy) DestroyIcon(small);
+            if (large && large != small && large != copy) DestroyIcon(large);
+            return copy;
+        }
+    }
+    if (large && large != icon) DestroyIcon(large);
+    return icon;
+}
+
+static HICON make_fallback_command_icon(int stop_icon, int size) {
+    HDC screen = GetDC(NULL);
+    HDC color_dc = CreateCompatibleDC(screen);
+    HDC mask_dc = CreateCompatibleDC(screen);
+    HBITMAP color_bmp = CreateCompatibleBitmap(screen, size, size);
+    HBITMAP mask_bmp = CreateBitmap(size, size, 1, 1, NULL);
+    HBITMAP old_color = NULL;
+    HBITMAP old_mask = NULL;
+    HICON icon = NULL;
+    ICONINFO ii;
+    RECT rc;
+
+    if (!screen || !color_dc || !mask_dc || !color_bmp || !mask_bmp) goto done;
+
+    old_color = (HBITMAP)SelectObject(color_dc, color_bmp);
+    old_mask = (HBITMAP)SelectObject(mask_dc, mask_bmp);
+    SetRect(&rc, 0, 0, size, size);
+    FillRect(color_dc, &rc, GetSysColorBrush(COLOR_BTNFACE));
+    FillRect(mask_dc, &rc, (HBRUSH)GetStockObject(BLACK_BRUSH));
+
+    if (stop_icon) {
+        HPEN red = CreatePen(PS_SOLID, size >= 24 ? 5 : 3, RGB(190, 0, 0));
+        HPEN dark = CreatePen(PS_SOLID, 1, RGB(96, 0, 0));
+        HPEN old = (HPEN)SelectObject(color_dc, dark);
+        MoveToEx(color_dc, size / 4, size / 4, NULL);
+        LineTo(color_dc, size - size / 4, size - size / 4);
+        MoveToEx(color_dc, size - size / 4, size / 4, NULL);
+        LineTo(color_dc, size / 4, size - size / 4);
+        SelectObject(color_dc, red);
+        MoveToEx(color_dc, size / 4 + 1, size / 4 + 1, NULL);
+        LineTo(color_dc, size - size / 4 - 1, size - size / 4 - 1);
+        MoveToEx(color_dc, size - size / 4 - 1, size / 4 + 1, NULL);
+        LineTo(color_dc, size / 4 + 1, size - size / 4 - 1);
+        SelectObject(color_dc, old);
+        DeleteObject(red);
+        DeleteObject(dark);
+    } else {
+        POINT pts[7];
+        HBRUSH green = CreateSolidBrush(RGB(31, 168, 38));
+        HPEN outline = CreatePen(PS_SOLID, 1, RGB(0, 102, 0));
+        HGDIOBJ old_brush = SelectObject(color_dc, green);
+        HGDIOBJ old_pen = SelectObject(color_dc, outline);
+        pts[0].x = size / 6;     pts[0].y = size / 3;
+        pts[1].x = size / 2;     pts[1].y = size / 3;
+        pts[2].x = size / 2;     pts[2].y = size / 6;
+        pts[3].x = size - 3;     pts[3].y = size / 2;
+        pts[4].x = size / 2;     pts[4].y = size - size / 6;
+        pts[5].x = size / 2;     pts[5].y = size - size / 3;
+        pts[6].x = size / 6;     pts[6].y = size - size / 3;
+        Polygon(color_dc, pts, 7);
+        SelectObject(color_dc, old_pen);
+        SelectObject(color_dc, old_brush);
+        DeleteObject(outline);
+        DeleteObject(green);
+    }
+
+    ZeroMemory(&ii, sizeof(ii));
+    ii.fIcon = TRUE;
+    ii.hbmColor = color_bmp;
+    ii.hbmMask = mask_bmp;
+    icon = CreateIconIndirect(&ii);
+
+done:
+    if (old_color) SelectObject(color_dc, old_color);
+    if (old_mask) SelectObject(mask_dc, old_mask);
+    if (color_bmp) DeleteObject(color_bmp);
+    if (mask_bmp) DeleteObject(mask_bmp);
+    if (color_dc) DeleteDC(color_dc);
+    if (mask_dc) DeleteDC(mask_dc);
+    if (screen) ReleaseDC(NULL, screen);
+    return icon;
+}
+
+static HICON load_command_button_icon(int stop_icon) {
+    static const struct { const char *dll_name; int index; } send_icons[] = {
+        { "browseui.dll", 32 }, { "browseui.dll", 33 },
+        { "shdocvw.dll", 32 },  { "shell32.dll", 138 },
+        { "shell32.dll", 146 }
+    };
+    static const struct { const char *dll_name; int index; } stop_icons[] = {
+        { "browseui.dll", 26 }, { "browseui.dll", 27 },
+        { "shdocvw.dll", 26 },  { "shell32.dll", 131 },
+        { "shell32.dll", 109 }
+    };
+    int i;
+    const int size = 24;
+    if (stop_icon) {
+        for (i = 0; i < (int)(sizeof(stop_icons) / sizeof(stop_icons[0])); i++) {
+            HICON icon = load_extracted_icon(stop_icons[i].dll_name, stop_icons[i].index, size);
+            if (icon) return icon;
+        }
+        {
+            HICON shared = (HICON)LoadImageA(NULL, IDI_ERROR, IMAGE_ICON, size, size,
+                                             LR_DEFAULTCOLOR | LR_SHARED);
+            if (shared) {
+                HICON icon = (HICON)CopyImage(shared, IMAGE_ICON, size, size, 0);
+                if (icon) return icon;
+            }
+        }
+    } else {
+        for (i = 0; i < (int)(sizeof(send_icons) / sizeof(send_icons[0])); i++) {
+            HICON icon = load_extracted_icon(send_icons[i].dll_name, send_icons[i].index, size);
+            if (icon) return icon;
+        }
+    }
+    return make_fallback_command_icon(stop_icon, size);
+}
+
+static HIMAGELIST load_builtin_toolbar_imagelist(void) {
+    static const struct {
+        const char *dll_name;
+        int icon_index;
+        LPCSTR stock_icon;
+    } icons[] = {
+        { "shell32.dll",  1,  IDI_APPLICATION }, // document
+        { "shell32.dll",  4,  IDI_APPLICATION }, // open folder
+        { "shell32.dll",  6,  IDI_APPLICATION }, // floppy disk
+        { "shell32.dll",  1,  IDI_APPLICATION }, // document/export
+        { "shell32.dll", 15,  IDI_APPLICATION }, // printer
+        { "shell32.dll", 21,  IDI_APPLICATION }, // settings/properties
+        { "shell32.dll", 16,  IDI_INFORMATION }, // computer/info
+        { "shell32.dll", 22,  IDI_APPLICATION }, // search/performance
+        { "shell32.dll",  1,  IDI_APPLICATION }, // template document
+        { NULL,           0,  IDI_QUESTION    }, // help
+        { NULL,           0,  IDI_INFORMATION }  // about
+    };
+    HIMAGELIST hil = ImageList_Create(32, 32, ILC_COLOR32 | ILC_MASK,
+                                      (int)(sizeof(icons) / sizeof(icons[0])), 0);
+    int i;
+    if (!hil) return NULL;
+    for (i = 0; i < (int)(sizeof(icons) / sizeof(icons[0])); i++) {
+        if (add_toolbar_icon(hil, icons[i].dll_name, icons[i].icon_index,
+                             icons[i].stock_icon) < 0) {
+            ImageList_Destroy(hil);
+            return NULL;
+        }
+    }
+    return hil;
+}
+
+static void get_pc_specs_detail(char *cpu_out, int cpu_sz,
+                                char *mem_out, int mem_sz,
+                                char *threads_out, int threads_sz) {
     char cpu[128] = "Unknown CPU";
     HKEY key;
     if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
@@ -922,31 +1270,70 @@ static void get_pc_specs(char *out, int outsz) {
     GetSystemInfo(&si);
     unsigned int cores = (unsigned int)si.dwNumberOfProcessors;
 
+    snprintf(cpu_out, cpu_sz, "%s", cpu);
     if (ram_mb > 0) {
-        snprintf(out, outsz, "%s   %ux core   %u MB RAM",
-                 cpu, cores, ram_mb);
+        snprintf(mem_out, mem_sz, "%u MB RAM", ram_mb);
     } else {
-        snprintf(out, outsz, "%s   %ux core", cpu, cores);
+        snprintf(mem_out, mem_sz, "Memory unknown");
     }
+    snprintf(threads_out, threads_sz, "%u", cores);
+    cpu_out[cpu_sz - 1] = 0;
+    mem_out[mem_sz - 1] = 0;
+    threads_out[threads_sz - 1] = 0;
+}
+
+// Pull a one-line PC-spec banner. Falls back to generic strings if the
+// registry/system call fails.
+static void get_pc_specs(char *out, int outsz) {
+    char cpu[160], mem[64], threads[32];
+    get_pc_specs_detail(cpu, sizeof(cpu), mem, sizeof(mem),
+                        threads, sizeof(threads));
+    snprintf(out, outsz, "%s   %s thread   %s", cpu, threads, mem);
     out[outsz - 1] = 0;
 }
 
 static void create_controls(HWND hwnd) {
     HICON icon;
+    INITCOMMONCONTROLSEX icc;
+
+    icc.dwSize = sizeof(icc);
+    icc.dwICC  = ICC_BAR_CLASSES | ICC_LISTVIEW_CLASSES |
+                 ICC_PROGRESS_CLASS | ICC_LINK_CLASS;
+    InitCommonControlsEx(&icc);
+
+    gIdentityFrame = make_control("STATIC", "", SS_ETCHEDFRAME, 0, IDC_IDENTITY_FRAME, hwnd);
+    gModelGroup = make_control("BUTTON", "System", BS_GROUPBOX, 0, IDC_MODEL_GROUP, hwnd);
+    gConversationGroup = make_control("BUTTON", "Conversation", BS_GROUPBOX, 0, IDC_CONV_GROUP, hwnd);
+    gDiagnosticsGroup = make_control("BUTTON", "Diagnostics", BS_GROUPBOX, 0, IDC_DIAG_GROUP, hwnd);
+    gInputGroup = make_control("BUTTON", "Message", BS_GROUPBOX, 0, IDC_INPUT_GROUP, hwnd);
+    if (gModelGroup) SendMessageA(gModelGroup, WM_SETFONT, (WPARAM)gPaneFont, TRUE);
+    if (gConversationGroup) SendMessageA(gConversationGroup, WM_SETFONT, (WPARAM)gPaneFont, TRUE);
+    if (gDiagnosticsGroup) SendMessageA(gDiagnosticsGroup, WM_SETFONT, (WPARAM)gPaneFont, TRUE);
+    if (gInputGroup) SendMessageA(gInputGroup, WM_SETFONT, (WPARAM)gPaneFont, TRUE);
+
+    gTaskPane = make_control("BUTTON", "Chat Tasks", BS_GROUPBOX, 0, IDC_TASKPANE_TASKS, hwnd);
+    gRecentPane = make_control("BUTTON", "Recent Chats", BS_GROUPBOX, 0, IDC_TASKPANE_RECENT, hwnd);
+    if (gTaskPane) SendMessageA(gTaskPane, WM_SETFONT, (WPARAM)gPaneFont, TRUE);
+    if (gRecentPane) SendMessageA(gRecentPane, WM_SETFONT, (WPARAM)gPaneFont, TRUE);
 
     gIcon = make_control("STATIC", "", SS_ICON, 0, IDC_APPICON, hwnd);
-    icon = (HICON)LoadImageA(gInstance, MAKEINTRESOURCEA(IDI_APP), IMAGE_ICON, 32, 32, LR_DEFAULTCOLOR);
+    icon = (HICON)LoadImageA(gInstance, MAKEINTRESOURCEA(IDI_APP), IMAGE_ICON, 48, 48, LR_DEFAULTCOLOR);
     if (icon) SendMessageA(gIcon, STM_SETICON, (WPARAM)icon, 0);
-
-    gTitle = make_control("STATIC", APP_NAME, SS_LEFT, 0, IDC_TITLE, hwnd);
+    gTitle = make_control("STATIC", APP_DISPLAY_NAME, SS_LEFT, 0, IDC_TITLE, hwnd);
     SendMessageA(gTitle, WM_SETFONT, (WPARAM)gTitleFont, TRUE);
-
-    // Subtitle = host PC specs (CPU + cores + RAM), discovered at startup.
-    {
-        char specs[192];
-        get_pc_specs(specs, sizeof(specs));
-        gSubtitle = make_control("STATIC", specs, SS_LEFT, 0, IDC_SUBTITLE, hwnd);
-    }
+    gSubtitle = make_control("STATIC", APP_TAGLINE, SS_LEFT, 0, IDC_SUBTITLE, hwnd);
+    get_pc_specs_detail(gPcCpu, sizeof(gPcCpu), gPcMemory, sizeof(gPcMemory),
+                        gPcThreads, sizeof(gPcThreads));
+    gCpuLabel = make_control("STATIC", "Computer:", SS_LEFT, 0, IDC_CPU_LABEL, hwnd);
+    gCpuValue = make_control("STATIC", gPcCpu, SS_LEFT, 0, IDC_CPU_VALUE, hwnd);
+    gMemoryLabel = make_control("STATIC", "Memory:", SS_LEFT, 0, IDC_MEMORY_LABEL, hwnd);
+    gMemoryValue = make_control("STATIC", gPcMemory, SS_LEFT, 0, IDC_MEMORY_VALUE, hwnd);
+    gThreadsLabel = make_control("STATIC", "Threads:", SS_LEFT, 0, IDC_THREADS_LABEL, hwnd);
+    gThreadsValue = make_control("STATIC", gPcThreads, SS_LEFT, 0, IDC_THREADS_VALUE, hwnd);
+    if (gCpuLabel) SendMessageA(gCpuLabel, WM_SETFONT, (WPARAM)gPaneFont, TRUE);
+    if (gMemoryLabel) SendMessageA(gMemoryLabel, WM_SETFONT, (WPARAM)gPaneFont, TRUE);
+    if (gThreadsLabel) SendMessageA(gThreadsLabel, WM_SETFONT, (WPARAM)gPaneFont, TRUE);
+    gModelState = make_control("STATIC", "Loading model", SS_LEFT, 0, IDC_MODEL_STATE, hwnd);
     gModel = make_control("STATIC", MODEL_LABEL, SS_LEFT, 0, IDC_MODEL, hwnd);
 
     gTranscript = make_control("RichEdit20A", "",
@@ -956,68 +1343,69 @@ static void create_controls(HWND hwnd) {
     SendMessageA(gTranscript, EM_SETBKGNDCOLOR, 0, RGB(255, 255, 255));
     SendMessageA(gTranscript, EM_EXLIMITTEXT, 0, 524288);
 
-    gInput = make_control("EDIT", "",
+    gInput = make_control("RichEdit20A", "",
         ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_TABSTOP,
         WS_EX_CLIENTEDGE, IDC_INPUT, hwnd);
     SendMessageA(gInput, EM_SETLIMITTEXT, PROMPT_MAX - 1, 0);
+    SendMessageA(gInput, EM_SETBKGNDCOLOR, 0, RGB(255, 255, 255));
 
-    gSend  = make_control("BUTTON", "Send",  BS_DEFPUSHBUTTON | WS_TABSTOP, 0, IDC_SEND, hwnd);
-    gStop  = make_control("BUTTON", "Stop",  BS_PUSHBUTTON | WS_TABSTOP,    0, IDC_STOP, hwnd);
+    gSend  = make_control("BUTTON", "", BS_DEFPUSHBUTTON | BS_ICON | WS_TABSTOP, 0, IDC_SEND, hwnd);
+    gStop  = make_control("BUTTON", "", BS_PUSHBUTTON | BS_ICON | WS_TABSTOP,    0, IDC_STOP, hwnd);
+    gSendIcon = load_command_button_icon(0);
+    gStopIcon = load_command_button_icon(1);
+    if (gSendIcon) SendMessageA(gSend, BM_SETIMAGE, IMAGE_ICON, (LPARAM)gSendIcon);
+    if (gStopIcon) SendMessageA(gStop, BM_SETIMAGE, IMAGE_ICON, (LPARAM)gStopIcon);
     gClear = make_control("BUTTON", "Clear", BS_PUSHBUTTON | WS_TABSTOP,    0, IDC_CLEAR, hwnd);
-    gStatus = make_control("STATIC", "Loading model...", SS_LEFT, 0, IDC_STATUS, hwnd);
+    ShowWindow(gClear, SW_HIDE);
+    gStatus = CreateWindowExA(0, STATUSCLASSNAMEA, "",
+        WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
+        0, 0, 10, 10, hwnd, (HMENU)(INT_PTR)IDC_STATUS, gInstance, NULL);
 
+    gDiagnostics = make_control("EDIT", "",
+        ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL,
+        WS_EX_CLIENTEDGE, IDC_DIAGNOSTICS, hwnd);
+    SendMessageA(gDiagnostics, WM_SETFONT, (WPARAM)gMonoFont, TRUE);
+    SendMessageA(gDiagnostics, EM_SETLIMITTEXT, 32768, 0);
+    SendMessageA(gDiagnostics, EM_SETBKGNDCOLOR, 0, RGB(255, 255, 255));
+
+    // Standard segmented XP progress bar. The v6 manifest gives it Luna skin.
+    gProgress = CreateWindowExA(0, PROGRESS_CLASSA, NULL,
+        WS_CHILD | WS_VISIBLE,
+        0, 0, 10, 16, hwnd, (HMENU)(INT_PTR)IDC_PROGRESS, gInstance, NULL);
+    SendMessageA(gProgress, PBM_SETRANGE32, 0, 100);
+    SendMessageA(gProgress, PBM_SETSTEP, 4, 0);
+    SendMessageA(gProgress, PBM_SETPOS, 0, 0);
+
+    // Built-in XP shell icons. These are OS-owned icon resources loaded from
+    // system DLLs into a toolbar image list; no app-generated bitmap strip.
     {
-        INITCOMMONCONTROLSEX icc;
-        icc.dwSize = sizeof(icc);
-        icc.dwICC  = ICC_PROGRESS_CLASS;
-        InitCommonControlsEx(&icc);
-        // Use the standard segmented bar (works on classic-themed XP without
-        // a COMCTL32 v6 manifest — PBS_MARQUEE silently no-ops without themes).
-        // We animate it manually via TIMER_PROGRESS sweeping 0->100 repeatedly.
-        gProgress = CreateWindowExA(0, PROGRESS_CLASSA, NULL,
-            WS_CHILD | WS_VISIBLE,
-            0, 0, 10, 16, hwnd, (HMENU)(INT_PTR)IDC_PROGRESS, gInstance, NULL);
-        SendMessageA(gProgress, PBM_SETRANGE32, 0, 100);
-        SendMessageA(gProgress, PBM_SETSTEP, 4, 0);
-        SendMessageA(gProgress, PBM_SETPOS, 0, 0);
-    }
-
-    // XP Explorer-style toolbar below the title strip. Icons live in a
-    // single 5x1 BMP (assets/toolbar_icons.bmp); magenta is the transparency
-    // mask. Labels under each icon. Themed by the comctl32 v6 manifest.
-    {
-        INITCOMMONCONTROLSEX icc2;
-        icc2.dwSize = sizeof(icc2);
-        icc2.dwICC  = ICC_BAR_CLASSES;
-        InitCommonControlsEx(&icc2);
-
         gToolbar = CreateWindowExA(0, TOOLBARCLASSNAMEA, NULL,
             WS_CHILD | WS_VISIBLE
-              | TBSTYLE_FLAT | TBSTYLE_TOOLTIPS | TBSTYLE_LIST
+              | TBSTYLE_FLAT | TBSTYLE_TOOLTIPS
               | CCS_TOP | CCS_NODIVIDER,
             0, 0, 0, 0, hwnd, (HMENU)(INT_PTR)IDC_TOOLBAR, gInstance, NULL);
         SendMessageA(gToolbar, TB_BUTTONSTRUCTSIZE, sizeof(TBBUTTON), 0);
-        SendMessageA(gToolbar, TB_SETBITMAPSIZE, 0, MAKELPARAM(24, 24));
-        SendMessageA(gToolbar, TB_SETBUTTONSIZE, 0, MAKELPARAM(76, 50));
-
-        // Load BMP -> imagelist with magenta as mask color.
-        HBITMAP hbm = (HBITMAP)LoadImageA(gInstance, MAKEINTRESOURCEA(IDB_TOOLBAR),
-            IMAGE_BITMAP, 0, 0, LR_DEFAULTCOLOR);
-        if (hbm) {
-            HIMAGELIST hil = ImageList_Create(24, 24, ILC_COLOR24 | ILC_MASK, 5, 0);
-            ImageList_AddMasked(hil, hbm, RGB(255, 0, 255));
-            DeleteObject(hbm);
-            SendMessageA(gToolbar, TB_SETIMAGELIST, 0, (LPARAM)hil);
+        SendMessageA(gToolbar, TB_SETBITMAPSIZE, 0, MAKELPARAM(32, 32));
+        SendMessageA(gToolbar, TB_SETBUTTONSIZE, 0, MAKELPARAM(86, 62));
+        if (!gToolbarImages) gToolbarImages = load_builtin_toolbar_imagelist();
+        if (gToolbarImages) {
+            SendMessageA(gToolbar, TB_SETIMAGELIST, 0, (LPARAM)gToolbarImages);
         }
 
         TBBUTTON tb_btns[] = {
             { 0, IDM_NEWCHAT,  TBSTATE_ENABLED, BTNS_AUTOSIZE | BTNS_SHOWTEXT, {0}, 0, (INT_PTR)"New Chat" },
-            { 1, IDM_SAVE,     TBSTATE_ENABLED, BTNS_AUTOSIZE | BTNS_SHOWTEXT, {0}, 0, (INT_PTR)"Save"     },
-            { 0, 0,            TBSTATE_ENABLED, BTNS_SEP,                       {0}, 0, 0                  },
-            { 2, IDM_STOP,     0,               BTNS_AUTOSIZE | BTNS_SHOWTEXT, {0}, 0, (INT_PTR)"Stop"     },
-            { 0, 0,            TBSTATE_ENABLED, BTNS_SEP,                       {0}, 0, 0                  },
-            { 3, IDM_SETTINGS, TBSTATE_ENABLED, BTNS_AUTOSIZE | BTNS_SHOWTEXT, {0}, 0, (INT_PTR)"Settings" },
-            { 4, IDM_SHORTCUTS,TBSTATE_ENABLED, BTNS_AUTOSIZE | BTNS_SHOWTEXT, {0}, 0, (INT_PTR)"Help"     },
+            { 1, IDM_OPEN,     TBSTATE_ENABLED, BTNS_AUTOSIZE | BTNS_SHOWTEXT, {0}, 0, (INT_PTR)"Open"     },
+            { 2, IDM_SAVE,     TBSTATE_ENABLED, BTNS_AUTOSIZE | BTNS_SHOWTEXT, {0}, 0, (INT_PTR)"Save"     },
+            { 3, IDM_EXPORT,   TBSTATE_ENABLED, BTNS_AUTOSIZE | BTNS_SHOWTEXT, {0}, 0, (INT_PTR)"Export"   },
+            { 4, IDM_PRINT,    TBSTATE_ENABLED, BTNS_AUTOSIZE | BTNS_SHOWTEXT, {0}, 0, (INT_PTR)"Print"    },
+            { 0, 0,           TBSTATE_ENABLED, BTNS_SEP,                       {0}, 0, 0                  },
+            { 5, IDM_SETTINGS, TBSTATE_ENABLED, BTNS_AUTOSIZE | BTNS_SHOWTEXT, {0}, 0, (INT_PTR)"Settings" },
+            { 6, IDM_MODELINFO,TBSTATE_ENABLED, BTNS_AUTOSIZE | BTNS_SHOWTEXT, {0}, 0, (INT_PTR)"Model Info" },
+            { 7, IDM_PERF,     TBSTATE_ENABLED, BTNS_AUTOSIZE | BTNS_SHOWTEXT, {0}, 0, (INT_PTR)"Performance" },
+            { 8, IDM_TEMPLATES,TBSTATE_ENABLED, BTNS_AUTOSIZE | BTNS_SHOWTEXT, {0}, 0, (INT_PTR)"Templates" },
+            { 0, 0,           TBSTATE_ENABLED, BTNS_SEP,                       {0}, 0, 0                  },
+            { 9, IDM_HELPTOPICS,TBSTATE_ENABLED,BTNS_AUTOSIZE | BTNS_SHOWTEXT, {0}, 0, (INT_PTR)"Help Topics" },
+            {10, IDM_ABOUT,    TBSTATE_ENABLED, BTNS_AUTOSIZE | BTNS_SHOWTEXT, {0}, 0, (INT_PTR)"About"    },
         };
         SendMessageA(gToolbar, TB_ADDBUTTONS,
                      (WPARAM)(sizeof(tb_btns) / sizeof(tb_btns[0])),
@@ -1033,6 +1421,9 @@ static void create_controls(HWND hwnd) {
     EnableWindow(gCopyLastBtn, FALSE);
     EnableWindow(gRegenBtn,    FALSE);
     EnableWindow(gEditLastBtn, FALSE);
+    ShowWindow(gCopyLastBtn, SW_HIDE);
+    ShowWindow(gRegenBtn, SW_HIDE);
+    ShowWindow(gEditLastBtn, SW_HIDE);
 
     // Chat history sidebar. Layout (top -> bottom):
     //   [search edit]    <- filter; placeholder cue banner
@@ -1051,121 +1442,250 @@ static void create_controls(HWND hwnd) {
         SendMessageW(gSearch, EM_SETCUEBANNER, (WPARAM)TRUE, (LPARAM)cue);
     }
     gChatList   = make_control("LISTBOX", "",
-        LBS_NOTIFY | WS_VSCROLL | WS_BORDER | WS_TABSTOP,
+        LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_BORDER | WS_TABSTOP,
         0, IDC_CHATLIST, hwnd);
-    gNewChatBtn = make_control("BUTTON", "+ New Chat",
-        BS_PUSHBUTTON | WS_TABSTOP,
-        0, IDC_NEWCHATBTN, hwnd);
+    gNewChatBtn = make_control("BUTTON", "New Chat", BS_PUSHBUTTON | WS_TABSTOP, 0, IDC_NEWCHATBTN, hwnd);
+    gTaskSaveBtn = make_control("BUTTON", "Save Conversation", BS_PUSHBUTTON | WS_TABSTOP, 0, IDC_TASK_SAVE, hwnd);
+    gTaskExportBtn = make_control("BUTTON", "Export Transcript...", BS_PUSHBUTTON | WS_TABSTOP, 0, IDC_TASK_EXPORT, hwnd);
+    gTaskImportBtn = make_control("BUTTON", "Import Conversation...", BS_PUSHBUTTON | WS_TABSTOP, 0, IDC_TASK_IMPORT, hwnd);
+    gTaskClearBtn = make_control("BUTTON", "Clear Conversation", BS_PUSHBUTTON | WS_TABSTOP, 0, IDC_TASK_CLEAR, hwnd);
+
+    gBoldBtn = make_control("BUTTON", "B", BS_PUSHBUTTON | WS_TABSTOP, 0, IDC_BTN_BOLD, hwnd);
+    gItalicBtn = make_control("BUTTON", "I", BS_PUSHBUTTON | WS_TABSTOP, 0, IDC_BTN_ITALIC, hwnd);
+    gSmileBtn = make_control("BUTTON", ":)", BS_PUSHBUTTON | WS_TABSTOP, 0, IDC_BTN_SMILE, hwnd);
+    gAttachBtn = make_control("BUTTON", "Attach...", BS_PUSHBUTTON | WS_TABSTOP, 0, IDC_BTN_ATTACH, hwnd);
+    gPromptToolsBtn = make_control("BUTTON", "Prompt Tools  v", BS_PUSHBUTTON | WS_TABSTOP, 0, IDC_BTN_PROMPTS, hwnd);
+    ShowWindow(gBoldBtn, SW_HIDE);
+    ShowWindow(gItalicBtn, SW_HIDE);
+    ShowWindow(gSmileBtn, SW_HIDE);
+    ShowWindow(gAttachBtn, SW_HIDE);
+    ShowWindow(gPromptToolsBtn, SW_HIDE);
+    gInputLabel = make_control("STATIC", "Type your message below:", SS_LEFT, 0, IDC_INPUT_LABEL, hwnd);
+    gInputHint = make_control("STATIC", "Press Enter to send.  Press Shift+Enter for a new line.",
+        SS_LEFT, 0, IDC_INPUT_HINT, hwnd);
+    if (gInputLabel) SendMessageA(gInputLabel, WM_SETFONT, (WPARAM)gPaneFont, TRUE);
 
     EnableWindow(gSend,  FALSE);
     EnableWindow(gInput, FALSE);
     EnableWindow(gStop,  FALSE);
+    update_model_box();
+    update_status_bar();
 }
 
 static void layout_controls(HWND hwnd) {
     RECT rc;
     int w, h;
-    int pad = 12;
-    int header_h = 62;
-    int inner_x;
-    int inner_w;
-    int action_w = 92;
-    int transcript_y;
-    int transcript_h;
-    int input_y;
+    int pad = 8;
+    int compact;
+    int toolbar_h;
+    int main_top;
+    int status_h = 23;
     int input_h;
-    int status_y;
-    int clear_y;
+    int gap = 8;
+    int left_w;
+    int content_x;
+    int main_bottom;
+    int diag_h;
+    int info_w;
+    int task_h;
+    int parts[5];
 
     GetClientRect(hwnd, &rc);
     w = rc.right - rc.left;
     h = rc.bottom - rc.top;
-    if (w < 720) w = 720;
-    if (h < 480) h = 480;
+    if (w < 900) w = 900;
+    compact = h < 650;
+    toolbar_h = compact ? 58 : 64;
+    input_h = compact ? 86 : 96;
+    diag_h = compact ? 104 : 112;
+    task_h = compact ? 172 : 186;
+    left_w = (w < 1040) ? 248 : 270;
+    info_w = (w < 1040) ? 292 : 340;
 
-    MoveWindow(gIcon,     pad,         pad,       36,  36, TRUE);
-    MoveWindow(gTitle,    pad + 48,    pad - 2,  300,  28, TRUE);
-    MoveWindow(gSubtitle, pad + 50,    pad + 28, 480,  20, TRUE);
-    MoveWindow(gModel,    w - pad - 320, pad + 6, 320, 20, TRUE);
+    SetRect(&gRcToolbarBand, 0, 0, w, toolbar_h);
+    SetRect(&gRcIdentityBand, 0, 0, 0, 0);
+
+    main_top = toolbar_h + gap;
+    main_bottom = h - status_h - pad;
+    SetRect(&gRcStatusBar, 0, h - status_h, w, h);
+
+    content_x = pad + left_w + 16;
+
+    SetRect(&gRcTaskPane, pad, main_top, pad + left_w, main_top + task_h);
+    SetRect(&gRcRecentPane, pad, gRcTaskPane.bottom + gap,
+            pad + left_w, main_bottom);
+
+    SetRect(&gRcInputPane, content_x, main_bottom - input_h,
+            w - pad, main_bottom);
+    SetRect(&gRcModelBox, content_x, gRcInputPane.top - gap - diag_h,
+            content_x + info_w, gRcInputPane.top - gap);
+    SetRect(&gRcDiagnosticsPane, gRcModelBox.right + gap, gRcModelBox.top,
+            w - pad, gRcModelBox.bottom);
+    SetRect(&gRcConversationPane, content_x, main_top,
+            w - pad, gRcModelBox.top - gap);
+    if (gRcConversationPane.bottom < gRcConversationPane.top + 138) {
+        gRcConversationPane.bottom = gRcConversationPane.top + 138;
+        gRcModelBox.top = gRcConversationPane.bottom + gap;
+        gRcModelBox.bottom = gRcModelBox.top + diag_h;
+        gRcModelBox.right = gRcModelBox.left + info_w;
+        gRcDiagnosticsPane.left = gRcModelBox.right + gap;
+        gRcDiagnosticsPane.top = gRcModelBox.top;
+        gRcDiagnosticsPane.right = w - pad;
+        gRcDiagnosticsPane.bottom = gRcModelBox.bottom;
+        gRcInputPane.top = gRcDiagnosticsPane.bottom + gap;
+        gRcInputPane.bottom = main_bottom;
+    }
+
+    ShowWindow(gIdentityFrame, SW_HIDE);
+    ShowWindow(gIcon, SW_HIDE);
+    ShowWindow(gTitle, SW_HIDE);
+    ShowWindow(gSubtitle, SW_HIDE);
+
+    MoveWindow(gModelGroup, gRcModelBox.left, gRcModelBox.top,
+               gRcModelBox.right - gRcModelBox.left,
+               gRcModelBox.bottom - gRcModelBox.top, TRUE);
+    {
+        int label_x = gRcModelBox.left + 12;
+        int value_x = gRcModelBox.left + 86;
+        int row_y = gRcModelBox.top + 22;
+        int value_w = gRcModelBox.right - value_x - 12;
+        MoveWindow(gCpuLabel, label_x, row_y, 68, 18, TRUE);
+        MoveWindow(gCpuValue, value_x, row_y, value_w, 18, TRUE);
+        row_y += 20;
+        MoveWindow(gMemoryLabel, label_x, row_y, 68, 18, TRUE);
+        MoveWindow(gMemoryValue, value_x, row_y, value_w, 18, TRUE);
+        row_y += 20;
+        MoveWindow(gThreadsLabel, label_x, row_y, 68, 18, TRUE);
+        MoveWindow(gThreadsValue, value_x, row_y, value_w, 18, TRUE);
+        row_y += 20;
+        MoveWindow(gModelState, label_x, row_y, 86, 18, TRUE);
+        MoveWindow(gModel, value_x, row_y, value_w, 18, TRUE);
+        MoveWindow(gProgress, value_x, row_y + 1, value_w, 16, TRUE);
+    }
+    update_model_box();
 
     // COMCTL32 toolbar handles its own sizing; we just place + autosize it.
-    int tb_y = pad + header_h - 6;
-    int tb_h = 56;  // 24 px icons + label below + chrome
     if (gToolbar) {
-        MoveWindow(gToolbar, 0, tb_y, w, tb_h, TRUE);
+        MoveWindow(gToolbar, 0, 0, w, toolbar_h, TRUE);
         SendMessageA(gToolbar, TB_AUTOSIZE, 0, 0);
     }
 
-    // Sidebar carves out the left 180px (below the header + toolbar).
-    int sidebar_w = 180;
-    int sidebar_x = pad;
-    int sidebar_y = tb_y + tb_h + 8;
-    int new_btn_h = 28;
-
-    inner_x = sidebar_x + sidebar_w + 12;
-    inner_w = w - inner_x - pad;
-    status_y = h - pad - 20;
-    input_h = h < 560 ? 62 : 96;
-    input_y = status_y - input_h - 10;
-
-    // Per-message action strip sits just above the transcript and below
-    // the toolbar row, aligned with the transcript's left edge.
-    int msg_strip_h = 24;
-    int msg_strip_y = sidebar_y;
+    MoveWindow(gTaskPane, gRcTaskPane.left, gRcTaskPane.top,
+               gRcTaskPane.right - gRcTaskPane.left,
+               gRcTaskPane.bottom - gRcTaskPane.top, TRUE);
     {
-        int bw = 130;
-        int bh = msg_strip_h;
-        int gap = 6;
-        int x0 = inner_x;
-        MoveWindow(gCopyLastBtn, x0,                       msg_strip_y, bw, bh, TRUE);
-        MoveWindow(gRegenBtn,    x0 + (bw + gap),          msg_strip_y, bw, bh, TRUE);
-        MoveWindow(gEditLastBtn, x0 + (bw + gap) * 2,      msg_strip_y, bw, bh, TRUE);
+        int x = gRcTaskPane.left + 12;
+        int y = gRcTaskPane.top + 24;
+        int bw = gRcTaskPane.right - gRcTaskPane.left - 24;
+        MoveWindow(gNewChatBtn, x, y, bw, 24, TRUE);
+        y += 28;
+        MoveWindow(gTaskSaveBtn, x, y, bw, 24, TRUE);
+        y += 28;
+        MoveWindow(gTaskExportBtn, x, y, bw, 24, TRUE);
+        y += 28;
+        MoveWindow(gTaskImportBtn, x, y, bw, 24, TRUE);
+        y += 28;
+        MoveWindow(gTaskClearBtn, x, y, bw, 24, TRUE);
     }
 
-    transcript_y = sidebar_y + msg_strip_h + 6;
-    transcript_h = input_y - transcript_y - 10;
-    if (transcript_h < 160) transcript_h = 160;
-
-    // Sidebar spans from its original top to the transcript bottom.
-    // Layout inside: [search edit] [chat list] [+ New Chat].
-    int sidebar_h = (transcript_y + transcript_h) - sidebar_y;
-    int search_h = 22;
-    int list_top = sidebar_y + search_h + 4;
-    int list_bot = sidebar_y + sidebar_h - new_btn_h - 6;
-    if (list_bot < list_top + 40) list_bot = list_top + 40;
-    MoveWindow(gSearch,     sidebar_x, sidebar_y, sidebar_w, search_h, TRUE);
-    MoveWindow(gChatList,   sidebar_x, list_top,
-               sidebar_w, list_bot - list_top, TRUE);
-    MoveWindow(gNewChatBtn, sidebar_x, sidebar_y + sidebar_h - new_btn_h,
-               sidebar_w, new_btn_h, TRUE);
-
-    // Per-message action strip sits right above the transcript area.
-    int msg_action_h = 22;
-    int msg_action_y = transcript_y;
-    int btn_w = 120;
-    MoveWindow(gCopyLastBtn, inner_x,                      msg_action_y, btn_w, msg_action_h, TRUE);
-    MoveWindow(gRegenBtn,    inner_x + btn_w + 6,          msg_action_y, btn_w, msg_action_h, TRUE);
-    MoveWindow(gEditLastBtn, inner_x + (btn_w + 6) * 2,    msg_action_y, btn_w, msg_action_h, TRUE);
-    transcript_y += msg_action_h + 6;
-    transcript_h -= msg_action_h + 6;
-
-    MoveWindow(gTranscript, inner_x, transcript_y, inner_w, transcript_h, TRUE);
-    MoveWindow(gInput,      inner_x, input_y, inner_w - action_w - 14, input_h, TRUE);
-    MoveWindow(gSend,       inner_x + inner_w - action_w, input_y,        action_w, 28, TRUE);
-    MoveWindow(gStop,       inner_x + inner_w - action_w, input_y + 34,   action_w, 28, TRUE);
-    clear_y = input_y + 68;
-    MoveWindow(gClear,      inner_x + inner_w - action_w, clear_y,        action_w, 28, TRUE);
-    // Status text on the left, progress bar on the right of the same row
     {
-        int prog_w = 220;
-        int status_w = inner_w - prog_w - 10;
-        if (status_w < 100) status_w = 100;
-        MoveWindow(gStatus,   inner_x,                    status_y, status_w, 20, TRUE);
-        MoveWindow(gProgress, inner_x + status_w + 10,    status_y, prog_w,   16, TRUE);
+        int y = gRcRecentPane.top + 24;
+        int x = gRcRecentPane.left + 12;
+        int bw = gRcRecentPane.right - gRcRecentPane.left - 24;
+        int search_h = 24;
+        MoveWindow(gRecentPane, gRcRecentPane.left, gRcRecentPane.top,
+                   gRcRecentPane.right - gRcRecentPane.left,
+                   gRcRecentPane.bottom - gRcRecentPane.top, TRUE);
+        MoveWindow(gSearch, x, y, bw, search_h, TRUE);
+        y += search_h + 8;
+        MoveWindow(gChatList, x, y, bw,
+                   gRcRecentPane.bottom - y - 12, TRUE);
     }
 
-    if (input_h < 96) ShowWindow(gClear, SW_HIDE);
-    else ShowWindow(gClear, SW_SHOW);
+    MoveWindow(gConversationGroup, gRcConversationPane.left, gRcConversationPane.top,
+               gRcConversationPane.right - gRcConversationPane.left,
+               gRcConversationPane.bottom - gRcConversationPane.top, TRUE);
+    {
+        int action_y = gRcConversationPane.top + 21;
+        int action_x = gRcConversationPane.left + 10;
+        int action_h = 24;
+        int action_gap = 6;
+        int transcript_y = action_y + action_h + 7;
+        MoveWindow(gCopyLastBtn, action_x, action_y, 104, action_h, TRUE);
+        action_x += 104 + action_gap;
+        MoveWindow(gRegenBtn, action_x, action_y, 92, action_h, TRUE);
+        action_x += 92 + action_gap;
+        MoveWindow(gEditLastBtn, action_x, action_y, 104, action_h, TRUE);
+        ShowWindow(gCopyLastBtn, SW_SHOW);
+        ShowWindow(gRegenBtn, SW_SHOW);
+        ShowWindow(gEditLastBtn, SW_SHOW);
+        MoveWindow(gTranscript,
+            gRcConversationPane.left + 10, transcript_y,
+            gRcConversationPane.right - gRcConversationPane.left - 20,
+            gRcConversationPane.bottom - transcript_y - 10, TRUE);
+    }
+
+    MoveWindow(gDiagnosticsGroup, gRcDiagnosticsPane.left, gRcDiagnosticsPane.top,
+               gRcDiagnosticsPane.right - gRcDiagnosticsPane.left,
+               gRcDiagnosticsPane.bottom - gRcDiagnosticsPane.top, TRUE);
+    MoveWindow(gDiagnostics,
+        gRcDiagnosticsPane.left + 10, gRcDiagnosticsPane.top + 22,
+        gRcDiagnosticsPane.right - gRcDiagnosticsPane.left - 20,
+        gRcDiagnosticsPane.bottom - gRcDiagnosticsPane.top - 32, TRUE);
+
+    {
+        int input_x = gRcInputPane.left + 12;
+        int input_y = gRcInputPane.top + 39;
+        int input_box_h = compact ? 30 : 34;
+        int icon_sz = input_box_h;
+        int button_gap = 6;
+        int buttons_w = icon_sz * 2 + button_gap;
+        int button_x = gRcInputPane.right - buttons_w - 14;
+        int input_w = button_x - input_x - 12;
+        MoveWindow(gInputGroup, gRcInputPane.left, gRcInputPane.top,
+                   gRcInputPane.right - gRcInputPane.left,
+                   gRcInputPane.bottom - gRcInputPane.top, TRUE);
+        MoveWindow(gInputLabel, gRcInputPane.left + 12, gRcInputPane.top + 19,
+                   220, 18, TRUE);
+        ShowWindow(gBoldBtn, SW_HIDE);
+        ShowWindow(gItalicBtn, SW_HIDE);
+        ShowWindow(gSmileBtn, SW_HIDE);
+        ShowWindow(gAttachBtn, SW_HIDE);
+        ShowWindow(gPromptToolsBtn, SW_HIDE);
+        ShowWindow(gClear, SW_HIDE);
+
+        if (input_w < 160) input_w = 160;
+        MoveWindow(gInput, input_x, input_y, input_w, input_box_h, TRUE);
+        MoveWindow(gSend, button_x, input_y, icon_sz, input_box_h, TRUE);
+        MoveWindow(gStop, button_x + icon_sz + button_gap, input_y,
+                   icon_sz, input_box_h, TRUE);
+        MoveWindow(gInputHint, gRcInputPane.left + 12, input_y + input_box_h + 9,
+                   gRcInputPane.right - gRcInputPane.left - 24, 16, TRUE);
+    }
+
+    SetWindowPos(gIdentityFrame, HWND_BOTTOM, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetWindowPos(gModelGroup, HWND_BOTTOM, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetWindowPos(gConversationGroup, HWND_BOTTOM, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetWindowPos(gDiagnosticsGroup, HWND_BOTTOM, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetWindowPos(gInputGroup, HWND_BOTTOM, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+
+    MoveWindow(gStatus, gRcStatusBar.left, gRcStatusBar.top,
+               gRcStatusBar.right - gRcStatusBar.left,
+               gRcStatusBar.bottom - gRcStatusBar.top, TRUE);
+    parts[0] = 190;
+    parts[1] = (w > 1000) ? 430 : 360;
+    parts[2] = parts[1] + 110;
+    parts[3] = parts[2] + 120;
+    parts[4] = -1;
+    SendMessageA(gStatus, SB_SETPARTS, 5, (LPARAM)parts);
+    update_status_bar();
+
+    RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ALLCHILDREN);
 }
 
 // =============================================================
@@ -1234,6 +1754,20 @@ static void chat_read_title(const char *path, char *out, int outsz) {
     }
     fclose(fp);
     if (!out[0]) snprintf(out, outsz, "(empty chat)");
+}
+
+static int chat_file_has_turns(const char *path) {
+    FILE *fp = fopen(path, "rb");
+    char line[256];
+    if (!fp) return 0;
+    while (fgets(line, sizeof(line), fp)) {
+        if (!strncmp(line, "[USER]", 6) || !strncmp(line, "[ASSISTANT]", 11)) {
+            fclose(fp);
+            return 1;
+        }
+    }
+    fclose(fp);
+    return 0;
 }
 
 // Append "<title>" to the listbox in the conventional "M/D h:mm — title"
@@ -1312,13 +1846,16 @@ static void chats_index_disk(void) {
     HANDLE h = FindFirstFileA(glob, &fd);
     if (h == INVALID_HANDLE_VALUE) goto done;
     do {
+        ChatEntry entry;
         if (gChatCount >= MAX_CHATS) break;
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        ChatEntry *e = &gChats[gChatCount++];
-        snprintf(e->path, sizeof(e->path), "%s\\%s", gChatsDir, fd.cFileName);
-        FileTimeToSystemTime(&fd.ftLastWriteTime, &e->stamp);
-        SystemTimeToTzSpecificLocalTime(NULL, &e->stamp, &e->stamp);
-        chat_read_title(e->path, e->title, sizeof(e->title));
+        ZeroMemory(&entry, sizeof(entry));
+        snprintf(entry.path, sizeof(entry.path), "%s\\%s", gChatsDir, fd.cFileName);
+        FileTimeToSystemTime(&fd.ftLastWriteTime, &entry.stamp);
+        SystemTimeToTzSpecificLocalTime(NULL, &entry.stamp, &entry.stamp);
+        chat_read_title(entry.path, entry.title, sizeof(entry.title));
+        if (!strcmp(entry.title, "(new chat)") && !chat_file_has_turns(entry.path)) continue;
+        gChats[gChatCount++] = entry;
     } while (FindNextFileA(h, &fd));
     FindClose(h);
 done:
@@ -2126,6 +2663,19 @@ static void chatlist_popup_menu(HWND parent, int row, int screen_x, int screen_y
     }
 }
 
+static void run_task_list_item(int item) {
+    UINT command = 0;
+    switch (item) {
+    case 0: command = IDM_NEWCHAT; break;
+    case 1: command = IDM_SAVE; break;
+    case 2: command = IDM_EXPORT; break;
+    case 3: command = IDM_OPEN; break;
+    case 4: command = IDM_CLEAR; break;
+    default: return;
+    }
+    PostMessageA(gMain, WM_COMMAND, MAKEWPARAM(command, 0), 0);
+}
+
 // Listbox subclass: handle F2 (rename), Delete (delete), and right-click
 // (context menu). Everything else falls through to the default listbox
 // behavior (selection, scroll, etc).
@@ -2179,20 +2729,23 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         layout_controls(hwnd);
         chats_resolve_dir();
         chats_index_disk();
-        // Always start a fresh chat so this session has a place to write.
-        chats_create_new();
         clear_transcript();
+        diagnostics_appendf("Waiting for model...");
         if (!file_exists_in_app_dir(BACKEND_EXE) || !file_exists_in_app_dir(MODEL_FILE)
             || !file_exists_in_app_dir(TOKENIZER_FILE)) {
             dbg_log("GUI", "missing files: %s=%d %s=%d %s=%d",
                 BACKEND_EXE, file_exists_in_app_dir(BACKEND_EXE),
                 MODEL_FILE, file_exists_in_app_dir(MODEL_FILE),
                 TOKENIZER_FILE, file_exists_in_app_dir(TOKENIZER_FILE));
+            diagnostics_appendf("Required backend/model/tokenizer files are missing.");
             MessageBoxA(hwnd,
                 BACKEND_EXE ", " MODEL_FILE ", or " TOKENIZER_FILE " is missing from the application folder.",
                 APP_NAME, MB_ICONERROR | MB_OK);
         } else if (!launch_backend()) {
             set_status("Backend failed to start");
+            diagnostics_appendf("Backend failed to start.");
+        } else {
+            diagnostics_appendf("Backend process launched.");
         }
         {
             char msg[MAX_PATH + 64];
@@ -2206,21 +2759,48 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         return 0;
 
     case WM_ERASEBKGND: {
-        RECT fill;
-        GetClientRect(hwnd, &fill);
-        FillRect((HDC)wparam, &fill, GetSysColorBrush(COLOR_BTNFACE));
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        FillRect((HDC)wparam, &rc, GetSysColorBrush(COLOR_BTNFACE));
         return 1;
     }
 
     case WM_CTLCOLORSTATIC:
         SetBkColor((HDC)wparam, GetSysColor(COLOR_BTNFACE));
+        SetTextColor((HDC)wparam, GetSysColor(COLOR_WINDOWTEXT));
         return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
 
     case WM_GETMINMAXINFO: {
         MINMAXINFO *mmi = (MINMAXINFO *)lparam;
-        mmi->ptMinTrackSize.x = 900;  // wider to fit sidebar
-        mmi->ptMinTrackSize.y = 520;
+        mmi->ptMinTrackSize.x = 900;
+        mmi->ptMinTrackSize.y = 560;
         return 0;
+    }
+
+    case WM_NOTIFY: {
+        LPNMHDR hdr = (LPNMHDR)lparam;
+        if (hdr && (hdr->code == NM_CLICK || hdr->code == NM_RETURN)) {
+            int command = 0;
+            if (hdr->hwndFrom == gNewChatBtn) command = IDC_NEWCHATBTN;
+            else if (hdr->hwndFrom == gTaskSaveBtn) command = IDC_TASK_SAVE;
+            else if (hdr->hwndFrom == gTaskExportBtn) command = IDC_TASK_EXPORT;
+            else if (hdr->hwndFrom == gTaskImportBtn) command = IDC_TASK_IMPORT;
+            else if (hdr->hwndFrom == gTaskClearBtn) command = IDC_TASK_CLEAR;
+            if (command) {
+                SendMessageA(hwnd, WM_COMMAND, MAKEWPARAM(command, 0), (LPARAM)hdr->hwndFrom);
+                return 0;
+            }
+        }
+        if (hdr && gTaskList && hdr->hwndFrom == gTaskList &&
+            (hdr->code == NM_CLICK || hdr->code == NM_DBLCLK || hdr->code == LVN_ITEMACTIVATE)) {
+            LPNMITEMACTIVATE act = (LPNMITEMACTIVATE)lparam;
+            int item = act && act->iItem >= 0
+                ? act->iItem
+                : ListView_GetNextItem(gTaskList, -1, LVNI_SELECTED);
+            if (item >= 0) run_task_list_item(item);
+            return 0;
+        }
+        break;
     }
 
     case WM_TIMER:
@@ -2252,6 +2832,10 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         InterlockedExchange(&gBackendReady, 1);
         set_running(FALSE);
         set_status("Ready");
+        diagnostics_appendf("Backend ready.");
+        layout_controls(hwnd);
+        InvalidateRect(hwnd, &gRcModelBox, TRUE);
+        InvalidateRect(hwnd, &gRcStatusBar, TRUE);
         rich_append_color("Backend ready. Type a message and press Enter.\r\n\r\n", RGB(0, 128, 0), TRUE);
         // Push the persisted Settings down to the new backend.
         settings_apply_to_backend();
@@ -2267,15 +2851,21 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         char *info = (char *)lparam;
         if (info && *info) {
             // Only update the "Model: ..." header for actual model-name
-            // banners (start with "nanochat-"). Other INFO events — temp
-            // changes, /reset notices, etc. — flash through the status
-            // bar instead so the model identity stays visible.
-            if (!strncmp(info, "nanochat-", 9)) {
+            // banners. Other INFO events — temp changes, /reset notices,
+            // etc. — flash through the status bar instead so the model
+            // identity stays visible.
+            if (!strncmp(info, "Bliss ", 6) || !strncmp(info, "nanochat-", 9)) {
                 char label[256];
-                snprintf(label, sizeof(label), "Model: %s", info);
+                snprintf(label, sizeof(label), "%s", info);
+                snprintf(gModelName, sizeof(gModelName), "%s", info);
                 SetWindowTextA(gModel, label);
+                diagnostics_appendf("Model loaded: %s", info);
+                layout_controls(hwnd);
+                InvalidateRect(hwnd, &gRcModelBox, TRUE);
+                InvalidateRect(hwnd, &gRcStatusBar, TRUE);
             } else {
                 set_status(info);
+                diagnostics_appendf("%s", info);
             }
         }
         if (info) free(info);
@@ -2287,6 +2877,9 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         InterlockedExchange(&gRunning, 0);
         set_running(FALSE);
         set_status("Backend exited");
+        diagnostics_appendf("Backend exited.");
+        InvalidateRect(hwnd, &gRcModelBox, TRUE);
+        InvalidateRect(hwnd, &gRcStatusBar, TRUE);
         rich_append_color("\r\n[backend process exited]\r\n", RGB(192, 0, 0), TRUE);
         return 0;
 
@@ -2309,6 +2902,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         }
         if (message) free(message);
         set_status("Error");
+        diagnostics_appendf("Backend error.");
         SetFocus(gInput);
         return 0;
     }
@@ -2318,8 +2912,14 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         int  tcount   = (int)wparam;
         DWORD elapsed_ms = GetTickCount() - gRunStarted;
         double elapsed_s = elapsed_ms / 1000.0;
+        BOOL was_running = InterlockedCompareExchange(&gRunning, 0, 0) != 0;
         InterlockedExchange(&gRunning, 0);
         set_running(FALSE);
+        if (!was_running) {
+            if (message) free(message);
+            if (InterlockedCompareExchange(&gBackendReady, 0, 0) != 0) set_status("Ready");
+            return 0;
+        }
         // Persist the assistant turn to the active chat file (skip if the
         // user just sent a slash command — backend may emit an empty EOT).
         if (message && *message && tcount > 0) {
@@ -2349,6 +2949,9 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         }
         if (message) free(message);
         set_status("Ready");
+        update_msg_actions();
+        if (tcount > 0) diagnostics_appendf("%d tokens generated.", tcount);
+        else diagnostics_appendf("No tokens generated.");
         SetFocus(gInput);
         return 0;
     }
@@ -2375,6 +2978,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         }
         case IDC_CLEAR:
         case IDM_CLEAR:
+        case IDC_TASK_CLEAR:
             clear_transcript();
             return 0;
         case IDC_COPY_LAST: {
@@ -2473,7 +3077,24 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
             PostMessageA(hwnd, WM_CLOSE, 0, 0);
             return 0;
         case IDM_SAVE:
+        case IDC_TASK_SAVE:
             save_transcript_dialog(hwnd);
+            return 0;
+        case IDM_EXPORT:
+        case IDC_TASK_EXPORT:
+            save_transcript_dialog(hwnd);
+            return 0;
+        case IDM_OPEN:
+        case IDC_TASK_IMPORT:
+            MessageBoxA(hwnd,
+                "Import is reserved for saved bliss-chat conversation files.\n\n"
+                "For now, use Recent Chats to reopen conversations already stored on this XP profile.",
+                APP_NAME, MB_ICONINFORMATION | MB_OK);
+            return 0;
+        case IDM_PRINT:
+            MessageBoxA(hwnd,
+                "Printing will be wired to the transcript view in a later pass.",
+                APP_NAME, MB_ICONINFORMATION | MB_OK);
             return 0;
         case IDM_NEWCHAT:
         case IDC_NEWCHATBTN:
@@ -2516,6 +3137,48 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
             DialogBoxParamA(gInstance, MAKEINTRESOURCEA(IDD_SETTINGS), hwnd,
                             settings_dlg_proc, 0);
             return 0;
+        case IDM_MODELINFO: {
+            char msg[640];
+            snprintf(msg, sizeof(msg),
+                "Model: %s\n"
+                "Backend: NC_RUN.EXE\n"
+                "Tokenizer: TOKENIZER.NCT\n"
+                "Computer: %s\n"
+                "Memory: %s\n"
+                "Threads: %s",
+                gModelName, gPcCpu, gPcMemory, gPcThreads);
+            MessageBoxA(hwnd, msg, APP_NAME " - Model Info",
+                        MB_ICONINFORMATION | MB_OK);
+            return 0;
+        }
+        case IDM_PERF:
+            MessageBoxA(hwnd,
+                "Performance telemetry is shown in the status bar while tokens stream.\n\n"
+                "The backend also writes profiler lines to stderr when built with profiling enabled.",
+                APP_NAME " - Performance", MB_ICONINFORMATION | MB_OK);
+            return 0;
+        case IDM_TEMPLATES:
+        case IDC_BTN_PROMPTS:
+            if (InterlockedCompareExchange(&gBackendReady, 0, 0)) {
+                backend_send_line("/help");
+                diagnostics_appendf("Prompt tools requested slash-command help.");
+            } else {
+                MessageBoxA(hwnd, "Backend not ready yet.", APP_NAME,
+                            MB_ICONINFORMATION | MB_OK);
+            }
+            return 0;
+        case IDC_BTN_BOLD:
+            input_toggle_charformat(CFM_BOLD, CFE_BOLD);
+            return 0;
+        case IDC_BTN_ITALIC:
+            input_toggle_charformat(CFM_ITALIC, CFE_ITALIC);
+            return 0;
+        case IDC_BTN_SMILE:
+            input_insert_text(":)");
+            return 0;
+        case IDC_BTN_ATTACH:
+            set_status("Plain-text prompt mode");
+            return 0;
         case IDM_COPY:
             do_copy();
             return 0;
@@ -2530,6 +3193,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
                             find_dlg_proc, 0);
             return 0;
         case IDM_SHORTCUTS:
+        case IDM_HELPTOPICS:
             DialogBoxParamA(gInstance, MAKEINTRESOURCEA(IDD_SHORTCUTS), hwnd,
                             shortcuts_dlg_proc, 0);
             return 0;
@@ -2556,7 +3220,11 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         shutdown_backend();
         if (gUiFont)    DeleteObject(gUiFont);
         if (gTitleFont) DeleteObject(gTitleFont);
+        if (gPaneFont)  DeleteObject(gPaneFont);
         if (gMonoFont)  DeleteObject(gMonoFont);
+        if (gSendIcon)  DestroyIcon(gSendIcon);
+        if (gStopIcon)  DestroyIcon(gStopIcon);
+        if (gToolbarImages) ImageList_Destroy(gToolbarImages);
         if (gRichEdit)  FreeLibrary(gRichEdit);
         log_close();
         PostQuitMessage(0);
@@ -2598,7 +3266,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE prev, LPSTR cmdline, int show) 
     // Restore last window placement if we have one in the registry,
     // otherwise fall back to a sensible default size centered by Windows.
     int win_x = CW_USEDEFAULT, win_y = CW_USEDEFAULT;
-    int win_w = 940, win_h = 660;
+    int win_w = 1180, win_h = 760;
     {
         RECT saved;
         if (win_load_placement(&saved)) {
@@ -2608,8 +3276,8 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE prev, LPSTR cmdline, int show) 
             win_h = (int)(saved.bottom - saved.top);
         }
     }
-    hwnd = CreateWindowExA(0, wc.lpszClassName, APP_NAME,
-        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+    hwnd = CreateWindowExA(0, wc.lpszClassName, APP_WINDOW_TITLE,
+        WS_OVERLAPPEDWINDOW,
         win_x, win_y, win_w, win_h,
         NULL, NULL, instance, NULL);
     if (!hwnd) return 1;
