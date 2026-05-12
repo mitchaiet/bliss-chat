@@ -4,10 +4,6 @@
 
 IDI_APP ICON "bliss_chat.ico"
 
-// Toolbar icon strip — 5 icons x 24x24, magenta = transparency key.
-#define IDB_TOOLBAR 102
-IDB_TOOLBAR BITMAP "toolbar_icons.bmp"
-
 // Comctl32 v6 manifest — opts the process into the XP "Luna" theme so
 // the progress bar gets the green segmented look (and buttons / edits
 // pick up theming too) instead of the classic Win9x chrome.

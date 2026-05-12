@@ -967,7 +967,7 @@ int main(int argc, char **argv) {
     }
     const char *model_path = argv[1];
     const char *tok_path   = argv[2];
-    float temp = 0.8f, top_p = 0.95f;
+    float temp = 0.0f, top_p = 0.95f;
     // Default to the model's full sequence length so multi-turn has
     // room. Overridable via -c.
     int   ctx_max = -1;
@@ -1000,7 +1000,7 @@ int main(int argc, char **argv) {
     // Report model info to GUI
     {
         char info[128];
-        snprintf(info, sizeof(info), "nanochat-d%d %dM (fp32 %s)",
+        snprintf(info, sizeof(info), "Bliss d%d %dM (fp32 %s)",
                  M.n_layer,
                  (int)((double)((size_t)M.pad_vocab_size * M.n_embd * 2
                                 + (size_t)M.n_layer * 6 * M.n_embd * M.n_embd) / 1e6 + 0.5),
@@ -1011,36 +1011,22 @@ int main(int argc, char **argv) {
     char line[8192];
     int   prompt_ids[1024];
 
-    // Few-shot Q&A prompt prefix. The base LM is most coherent when given
-    // a pattern to follow. We prefill the prefix ONCE at startup, snapshot
-    // the KV cache, and restore it at the top of each turn — so the cost
-    // of the prefix is paid only on the very first model load, not per
-    // user message.
+    // Q&A prompt prefix. The base LM is most coherent with a terse identity
+    // instruction followed by "Q: ...\nA:" with no space after A:. We prefill
+    // the prefix ONCE at startup, snapshot the KV cache, and restore it at the
+    // top of each turn, so the prefix cost is paid only on model load.
     //
     // The prefix can be replaced at runtime via the `/system <text>` slash
     // command, which re-prefills and re-snapshots with the new text.
     static const char *FEWSHOT_PREFIX =
-        "The following is a conversation between a curious user and a helpful assistant.\n"
-        "The assistant gives short, accurate, polite answers.\n"
-        "\n"
-        "Q: What is the capital of France?\n"
-        "A: The capital of France is Paris.\n"
-        "\n"
-        "Q: What are the planets of the solar system?\n"
-        "A: The planets are Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus, and Neptune.\n"
-        "\n"
-        "Q: What is 7 plus 5?\n"
-        "A: 7 plus 5 equals 12.\n"
-        "\n"
-        "Q: Tell me a joke.\n"
-        "A: Why did the scarecrow win an award? Because he was outstanding in his field.\n"
-        "\n"
+        "You are Bliss, a small local chat assistant on Windows XP. "
+        "Answer in one short factual sentence.\n"
         "Q: ";
     static const char *PROMPT_SUFFIX  = "\nA:";
 
     // Per-turn token cap. 0 = no cap (use the model's remaining context).
     // Settable via `/maxtok <int>` at runtime; clamped to [0, 2048].
-    int max_tokens = 0;
+    int max_tokens = 128;
 
     // Helper to prefill an arbitrary prefix string and snapshot it as the
     // restorable prefix. Resets the state first. Emits PROG sentinels as
@@ -1193,7 +1179,7 @@ int main(int argc, char **argv) {
         if (!strcmp(line, "/info")) {
             char info[224];
             snprintf(info, sizeof(info),
-                "nanochat-d%d %dM (%s) | seq=%d | turn=%d | pos=%d/%d | temp=%.2f",
+                "Bliss d%d %dM (%s) | seq=%d | turn=%d | pos=%d/%d | temp=%.2f",
                 M.n_layer,
                 (int)((size_t)M.n_layer * M.n_embd * M.n_embd * 12 / 1000000),
                 (M.dtype_code == 1 ? "int8" : "fp32"),
@@ -1235,6 +1221,8 @@ int main(int argc, char **argv) {
 
         // Generate. Stop on:
         //  - eos / assistant_end
+        //  - a newline, which the base model uses as its natural answer stop
+        //  - first sentence punctuation after a short answer has started
         //  - "\nQ:" appearing in the recent output (next user turn starts)
         //  - "\nA:" appearing in the recent output (model trying to keep
         //    talking as itself — happens when a short answer doesn't have
@@ -1246,7 +1234,9 @@ int main(int argc, char **argv) {
         char hold[3] = {0,0,0};
         int  hold_n = 0;
         int  hit_stop = 0;
+        int  flush_hold_on_stop = 0;
         int  gen_count = 0;
+        int  answer_chars = 0;
         (void)tail_match;
 
         int budget = ctx_max - S.seq_pos;
@@ -1268,6 +1258,12 @@ int main(int argc, char **argv) {
             gen_count++;
             if (pn > 0) {
                 for (int k = 0; k < pn; k++) {
+                    if (piece[k] == '\r' || piece[k] == '\n') {
+                        hit_stop = 1;
+                        flush_hold_on_stop = 1;
+                        break;
+                    }
+                    answer_chars++;
                     if (hold_n < 3) {
                         hold[hold_n++] = piece[k];
                     } else {
@@ -1279,6 +1275,12 @@ int main(int argc, char **argv) {
                     if (hold_n == 3 && hold[0] == '\n' && hold[2] == ':' &&
                         (hold[1] == 'Q' || hold[1] == 'A')) {
                         hit_stop = 1;
+                        break;
+                    }
+                    if ((piece[k] == '.' || piece[k] == '!' || piece[k] == '?') &&
+                        answer_chars >= 12) {
+                        hit_stop = 1;
+                        flush_hold_on_stop = 1;
                         break;
                     }
                 }
@@ -1297,6 +1299,9 @@ int main(int argc, char **argv) {
             // Flush whatever the model had partially produced.
             if (hold_n > 0) emit_text(hold, hold_n);
             emit_sentinel_str("INFO", "stopped by user");
+        } else if (hit_stop && flush_hold_on_stop) {
+            // Newline stop: emit any held answer bytes, but strip the newline.
+            if (hold_n > 0) emit_text(hold, hold_n);
         } else if (!hit_stop && hold_n > 0) {
             // If hold contains a partial stop pattern ("\nQ" or "\nA"
             // — model wanted to start a new turn but generation ended

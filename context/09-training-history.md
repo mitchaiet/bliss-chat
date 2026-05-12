@@ -185,8 +185,125 @@ than d12** (which is at 213.6 ms/forward = 4.68 tok/s). Linear is
 less coherent on free-form prompts; d12 is slower but produces fuller
 multi-sentence answers.
 
+## Run 7: Bliss d12 Chinchilla — **shipped to XP**
+
+**Goal**: d12 base trained at Chinchilla-optimal ratio 20 instead of
+the original Run 3's effective ratio ~6. Same architecture, same int8
+file size, same Pentium 4 performance — just ~3.4× more training tokens.
+Drop-in MODEL.NCB replacement.
+
+**Config** (`scripts/train-d12-chinchilla.sh`):
+
+```
+--depth=12 --max-seq-len=1024
+--device-batch-size=32 --total-batch-size=65536
+--target-param-data-ratio=20
+```
+
+nanochat auto-derives `num_iterations=33600` from the ratio (3.36× the
+original 10K-iter Run 3).
+
+**Numbers**:
+- Total params: **~110M** (same architecture and int8 size as Run 3).
+- Tokens trained: 65536 × 33600 = **2.2B tokens** (~3.36× Run 3).
+- Final checkpoint: `model_033600.pt`.
+- Final val_bpb: **0.81964** (vs Run 3's 0.862).
+- Export: `bliss-d12-c20.ncb`, SHA-256
+  `eca9074ccee517fb3ff36107d14da5924d47635bc8bf23b9ec97c99753bf9b8f`.
+
+**Bench** (`bench/run_bench.py`, temp 0.3, seed 42):
+- Correct: **64%** (old d12 baseline: 56%).
+- Coherent: **94%** (old d12 baseline: 77%).
+- Format: **100%**.
+- Weak spots remain: arithmetic, yes/no truthfulness, and occasional
+  repetition/runaway generations if uncapped.
+
+**Deployment**:
+- Shipped to XP as active `C:\xp-llm\MODEL.NCB`.
+- Old local d12 backup:
+  `build/model-backups/MODEL-d12-old-20260511-pre-c20.NCB`.
+- Runtime default changed to `MaxTok=128` in both `NC_RUN.EXE` and
+  `XPCHAT.EXE`; XP user registry also set to
+  `HKCU\Software\bliss-chat\Settings\MaxTok = 0x80`.
+- Backend model info now reports `Bliss d12 93M (fp32 int8)`.
+- XP smoke test loaded the deployed model, reached `READY`, emitted the
+  `Bliss d12` info string, and stopped at `EOT 128`.
+
+## Run 8: Bliss d12 SFT sweep — **not deployed**
+
+**Goal**: increase instruction/chat quality and lock identity to "Bliss"
+without losing the d12 Chinchilla base model's factual behavior.
+
+**Tooling added**:
+- `tools/repair_special_rows.py` — initializes untrained chat-special rows
+  near `<|bos|>` with distinct directions.
+- `tools/build_bliss_sft_v1_data.py`, `v2`, `v3` — small single-turn
+  Bliss datasets.
+- `tools/patch_nanochat_bliss_sft.py` — reversible `chat_sft.py` patch for
+  custom JSONL, loss guards, gradient clipping, first-token/end-token
+  weighting, and plain text render styles.
+- `tools/diagnose_bliss_sft.py` — prompt probes for first-token ranks,
+  stop-token ranks, and greedy generated text.
+- `scripts/sft-d12-v*.sh`, `scripts/sft-d12-plain-v1.sh`,
+  `scripts/sft-d12-qa-v1.sh` — GPU-side experiment wrappers.
+
+**Special-token attempts**:
+- `d12_c20_special_v1` through `v7`.
+- Validation loss often improved, best special run reached roughly
+  `0.87` bpb, but behavior stayed bad: prompt echoing, generic answers,
+  missing/overweighted stop, or loops.
+- Root problem is still likely that the base model never pretrained on
+  chat-special tokens; repairing rows avoided NaNs but did not make the
+  format natural.
+
+**Plain-text attempts**:
+- `d12_plain_v1` (`User: ...\nAssistant: ...`) reached `0.7299` bpb but
+  mostly echoed prompts and loops.
+- `d12_qa_v1` (`Q: ...\nA: ` with a space) reached `0.7494` bpb but
+  collapsed into list/number and repeated-token patterns.
+- `d12_qa_low_v1` lowered LRs and raised newline weight; behavior worsened
+  into spaces/`1`s despite some stop learning.
+- `d12_qa_nospace_v1` used `Q: ...\nA:` with no space, matching the base
+  model's best prompt style, but still regressed behavior and looped.
+- `d12_qa_gentle_v1` lowered full-model LRs by roughly 10-25x and removed
+  first-token/newline over-weighting. It reached `1.0792` bpb in 25 optimizer
+  steps but still looped and was worse than the base runtime.
+- `d12_runtime_v1` trained on the exact runtime prefix plus no-space Q/A. It
+  reached `0.9480` bpb in 100 optimizer steps, but behavior probes still
+  repeated on jokes, definitions, fish, and capability prompts.
+- `d12_runtime_v2` used the broader v4 hand-built dataset
+  (`885` train / `221` val rows). It reached `0.8491` bpb, but behavior still
+  regressed versus the base runtime.
+- `d12_runtime_head_v1` froze the transformer and trained only `lm_head.weight`.
+  It barely moved validation (`1.1798` -> `1.1752`) and behaved essentially
+  like the base model.
+
+**Decision**: none of these SFT checkpoints are deployable. The active XP
+deployment remains the Run 7 base `MODEL.NCB`.
+
+**Runtime fix shipped instead**:
+- `src/nc_run.c` now uses the tested prompt prefix:
+  `You are Bliss, a small local chat assistant on Windows XP. Answer in one short factual sentence.`
+- The runtime asks turns as `Q: <user>\nA:` with no space after `A:`.
+- Default temperature is now greedy (`0.0`) in both backend and GUI defaults.
+- Generation stops on the first newline and strips it, matching the base
+  model's natural answer terminator.
+- Generation also stops on first-sentence punctuation after at least 12 answer
+  characters. This is a runtime guardrail for the base model's rambling and is
+  deployed in `NC_RUN.EXE` as of 2026-05-11 11:27.
+- XP console smoke test after deployment:
+  `What is your name?` -> `I am Bliss.`
+- XP smoke test after first-sentence stop:
+  `What is a computer?` -> `A computer is a device that can perform a series of tasks, such as calculations, logical operations, and data storage.`
+
 ## Future runs to consider
 
+- **Distill a larger Bliss dataset**: many short, one-sentence, XP-friendly
+  answers from a stronger teacher, plus adversarial prompts for identity,
+  yes/no truthfulness, refusal, and anti-loop behavior. Train with a much
+  lighter objective or adapter.
+- **LoRA/adapters** before more full-model SFT: every full-model SFT damaged
+  base behavior despite lower validation loss.
 - **d20** for "real GPT-2-grade" coherence. Would take ~2 hours on the RTX 6000.
   280 MB → ~700 MB int8. Would NOT fit on the Dell's 512 MB RAM.
 - **d8 / d10 at Chinchilla ratio 20** — somewhere between d6's speed

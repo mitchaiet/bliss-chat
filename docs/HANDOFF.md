@@ -25,15 +25,15 @@ self-extracting EXEs in the v1.0.0 release.
 
 ---
 
-## 2. Live state (as of 2026-05-10 22:33)
+## 2. Live state (as of 2026-05-11 11:40)
 
 | Surface | State |
 |---|---|
 | GitHub repo `master` | `27050b7` ("chore: gitignore .claude/ worktree cache") |
 | GitHub release `v1.0.0` | Live, both portable EXEs current |
-| XP machine (`192.168.1.31`, `xpt`/`xpt-dimension`) | Latest XPCHAT.EXE + NC_RUN.EXE deployed, desktop shortcut "Bliss Chat" with new icon |
-| GPU box (`100.106.68.91`, ssh `mitch`/`experiential`) | **`systemd --user` unit `d12-chinchilla.service` is RUNNING**, step 9611/33600 (28.6%), ETA 2 h 9 min, finishes ~00:42 |
-| Working tree | clean |
+| XP machine (`192.168.1.31`, `xpt`/`xpt-dimension`) | Bliss d12 Chinchilla remains deployed as `C:\xp-llm\MODEL.NCB`; rebuilt `NC_RUN.EXE` + `XPCHAT.EXE` pushed at 11:27 with Bliss Q/A runtime prompt, newline stop, first-sentence stop, and greedy default; console smoke tests showed `What is a computer?` now stops after one sentence |
+| GPU box (`100.106.68.91`, ssh `mitch`/`experiential`) | `d12-chinchilla.service` completed; final checkpoint `model_033600.pt`; exported `~/bliss-d12-c20.ncb`; SFT experiments through `d12_runtime_v2` and `d12_runtime_head_v1` are **not deployable**; `~/nanochat/scripts/chat_sft.py` restored from `.blissbak` |
+| Working tree | dirty with current UI/tooling/model-deploy changes; do not assume clean |
 
 `mitch@100.106.68.91` SSH has flaked on Tailscale auth a few times during this session — if it hangs, just retry; do **not** modify the user's tailscale config.
 
@@ -50,17 +50,18 @@ The repo log is the authoritative answer. Highlights:
 - Profiler instrumentation via `QueryPerformanceCounter`; `[prof turn]` lines in stderr
 
 ### Model files on disk
-- `MODEL.NCB`     d12 (110 M, web data, ratio ~6), 280 MB int8, deployed default
+- `MODEL.NCB`     Bliss d12 Chinchilla (110 M, ratio 20), 280 MB int8, deployed default
 - `MODEL_D6.NCB`  d6 chinchilla (30 M, ratio 20), 75 MB int8 — **~27 tok/s on P4**, less coherent
-- New: **d12 chinchilla** (110 M, ratio 20) — training right now
+- Old d12 ratio ~6 is backed up locally at `build/model-backups/MODEL-d12-old-20260511-pre-c20.NCB`
 
 ### Backend (`src/nc_run.c`)
 - Multi-turn KV cache, `/reset` slash command, auto-reset near `ctx_max`
 - Slash commands: `/help`, `/info`, `/reset`, `/temp <f>`, `/seed <int>`, `/topp <f>` (stored but sampler is still temp-only), `/maxtok <int>`, `/system <text-with-\n-escapes>` (rewires few-shot prefix + re-prefills)
 - Sentinel I/O on stdout: `\x01READY\n`, `\x01INFO ...\n`, `\x01PROG N\n`, `\x01EOT <count>\n`, `\x01ERR ...\n`
 - Sentinel I/O on stdin: line-of-text turns, `\x01STOP\n` for mid-turn abort
-- Few-shot prefix (4 examples now: capital/list/math/joke) prefilled once, snapshotted, restored each turn
-- Hold-back buffer strips trailing "\nQ:" / "\nA:" stop patterns from emitted output
+- Bliss identity Q/A prefix (`You are Bliss...` then `Q: ...\nA:` with no space after `A:`) prefilled once, snapshotted, restored each turn
+- Greedy default (`temp=0`) for coherence; GUI Settings can still change temperature
+- Newline stop strips the model's natural answer terminator; first-sentence stop cuts off rambling after `.`, `!`, or `?` once a short answer has started; hold-back buffer also strips trailing "\nQ:" / "\nA:" stop patterns
 
 ### GUI (`src/xpchat.c` ~ 2200 LOC, Win32)
 - COMCTL32 v6 manifest embedded (Luna theme; green segmented progress bar)
@@ -83,7 +84,8 @@ The repo log is the authoritative answer. Highlights:
 - `scripts/build-xp.sh` — Linux mingw cross-compile to two EXEs + NSIS portable builds
 - `scripts/push-to-xp.sh` — telnet+HTTP push (configure via env vars; never write a password into the script)
 - `scripts/train-{d6,d12,d6-chinchilla,d8-chinchilla,d12-chinchilla}.sh` — every training recipe used
-- `scripts/sft-fp32.sh` + `scripts/sft-adamw.sh` — SFT graveyard (both NaN; see § 4)
+- `scripts/sft-fp32.sh` + `scripts/sft-adamw.sh` — original SFT graveyard (both NaN; see § 4)
+- `tools/build_bliss_sft_v*_data.py`, `tools/repair_special_rows.py`, `tools/patch_nanochat_bliss_sft.py`, `tools/diagnose_bliss_sft.py`, `scripts/sft-d12-*.sh` — newer SFT experiments; no deployable checkpoint yet
 - `assets/make_icon.py` — generates `bliss_chat.ico` (BMP-format multi-res ICO; **do not use Pillow's default ICO writer**, XP can't read its PNG-in-ICO output)
 - `assets/make_toolbar_icons.py` — generates the toolbar BMP strip with magenta transparency key
 - `installer/portable.nsi` — single-EXE self-extract installer
@@ -122,44 +124,35 @@ The byte-identical AdamW/Muon trajectories **rule out the optimizer** as the cau
 
 | Thread | Owner | State |
 |---|---|---|
-| `d12-chinchilla` training | `systemd-run --user` on GPU box | 28.6 % done, ETA ~00:42 local |
 | Three abandoned agent worktrees | `.claude/worktrees/agent-*` | Already merged via cherry-pick; locked by agent PIDs; will auto-clean. `git worktree list` shows them. |
-| `nanochat` repo on GPU box | `~/nanochat/scripts/chat_sft.py` | **Reverted to original** (the v2 / v3 SFT patches were applied in-place and rolled back via `cp /tmp/chat_sft.py.orig`). Untouched on disk. |
+| `nanochat` repo on GPU box | `~/nanochat/scripts/chat_sft.py` | Restored to original from `chat_sft.py.blissbak` after the latest SFT pass. |
+| SFT checkpoints | `~/.cache/nanochat/chatsft_checkpoints/*` | Multiple candidates exist (`d12_c20_special_v1`...`v7`, `d12_plain_v1`, `d12_qa_v1`, `d12_qa_low_v1`, `d12_qa_nospace_v1`, `d12_qa_gentle_v1`, `d12_runtime_v1`, `d12_runtime_v2`, `d12_runtime_head_v1`), but all failed behavior probes. Do **not** export/deploy them. |
 
-### When d12-chinchilla finishes (~00:42)
+### Bliss d12 Chinchilla result
 
-```bash
-# On GPU box:
-ssh mitch@100.106.68.91 'cd ~/nanochat && source .venv/bin/activate && \
-  python ~/export_ncb.py --src ~/.cache/nanochat/base_checkpoints/d12 \
-                         --out ~/d12-chinchilla.ncb --int8'
+Exported from GPU as `~/bliss-d12-c20.ncb`, copied to
+`build/deploy/MODEL.NCB` and `build/deploy/MODEL_BLISS_D12_C20.NCB`.
+SHA-256:
+`eca9074ccee517fb3ff36107d14da5924d47635bc8bf23b9ec97c99753bf9b8f`.
 
-# On Mac:
-scp mitch@100.106.68.91:~/d12-chinchilla.ncb /tmp/
-cp /tmp/d12-chinchilla.ncb build/deploy/MODEL.NCB   # replaces deployed d12
-
-# Re-bench:
-python3 bench/run_bench.py
-python3 bench/score.py
-
-# If numbers go up materially, push to XP via the usual flow.
-# If not, the d12 size is the bottleneck — go to Section 6's "next moves".
-```
-
-There's a risk the chinchilla checkpoint **overwrites** the legacy d12 in `~/.cache/nanochat/base_checkpoints/d12/`. Confirm the model file you copy out is `model_033600.pt`, not the old `model_010000.pt`. The exporter defaults to highest step; should pick the new one.
+Bench result: **64% correct / 94% coherent / 100% format**. This beats
+the old d12 baseline (56% / 77% / 100%). The active runtime now uses a
+Bliss identity prefix, `Q: ...\nA:` no-space prompting, greedy default,
+newline stopping, and first-sentence stopping; XP console smoke tests on
+2026-05-11 answered `What is your name?` with `I am Bliss.` and
+`What is a computer?` with a single-sentence answer.
 
 ---
 
 ## 6. Concrete next moves, ranked
 
-1. **Bench the new d12-chinchilla** when training lands (1 h work after it finishes; deterministic value)
-2. **Re-init special-token rows orthogonally and retry SFT** — the embedding-collapse theory is the most plausible un-ruled-out one. ~30 min of Python.
-3. **Speculative decoding (d6 → d12 verify)** — 2–4× speed on d12, zero training risk. ~half a day in `nc_run.c`. Architecturally clean: d6 generates K tokens, d12 verifies in one batched forward, accept the longest matching prefix.
-4. **LoRA adapter** for SFT — never touches base weights; loss landscape changes; might dodge the collapse pattern.
-5. **Wire `top_p` sampling in `nc_run.c`** — backend already accepts `/topp` and persists it; sampler still ignores. Partial sort over top-K candidates needed; ~100 LOC.
-6. **Train d14 or d16 chinchilla** — middle size class between d12 and d20. Estimate 400–500 MB int8, **just barely fits** in the Dell's 512 MB RAM. Worth a careful size check first.
+1. **Do not deploy current SFTs** — special-token, `User:/Assistant:`, spaced `Q:/A:`, no-space `Q:/A:`, exact-runtime full-model, and lm-head-only SFTs all reduced or failed to improve real prompt behavior despite lower validation loss.
+2. **Use the runtime guardrails for v1** — the base d12 plus Bliss prefix, greedy sampling, newline stop, and first-sentence stop is the current best XP behavior.
+3. **Distill a cleaner Bliss dataset from a stronger teacher** — generate many short, XP-friendly one-sentence answers, include hard negatives for persona drift/list loops, and avoid repeated tiny hand-written rows.
+4. **Try real LoRA/adapters** — mergeable adapter deltas may avoid the full-model behavior damage seen in every current SFT.
+5. **Speculative decoding (d6 → d12 verify)** — 2–4× speed on d12, zero training risk. ~half a day in `nc_run.c`.
+6. **Wire `top_p` sampling in `nc_run.c`** — backend already accepts `/topp` and persists it; sampler still ignores. Partial sort over top-K candidates needed; ~100 LOC.
 7. **Stricter bench scoring** — current `correct%` rubric is keyword-presence only. "Fire is colder than ice" scores correct because "ice" appears. LLM-as-judge or per-question regex would tighten this before using the number for serious tracking.
-8. **Launch / write-up** — explicitly DEFERRED at the user's request. Don't do this without permission.
 
 ---
 
@@ -197,7 +190,7 @@ There's a risk the chinchilla checkpoint **overwrites** the legacy d12 in `~/.ca
 
 **Comctl32 v6 manifest is embedded.** `Edit_SetCueBannerText`, themed buttons, segmented progress bar, themed toolbar all rely on it. The manifest file is `assets/xpchat.manifest`, packed via `1 RT_MANIFEST` in `resource.rc`.
 
-**The `nanochat` repo on the GPU box was patched in-place several times** during SFT attempts (`scripts/chat_sft.py`). The original was preserved at `/tmp/chat_sft.py.orig` and restored at session end. If `/tmp` is wiped, the original lives in the upstream nanochat repo.
+**The `nanochat` repo on the GPU box was patched in-place several times** during SFT attempts (`scripts/chat_sft.py`). The original is preserved at `~/nanochat/scripts/chat_sft.py.blissbak`; the active file was restored from that backup after the latest run.
 
 **`tools/patch_specials.py` was referenced in `09-training-history.md` Run 5 but only ever existed at `/tmp/patch_specials.py`** on the GPU box. If you need to reproduce the `d12_patched` checkpoint, that script is gone — `d12_patched/` itself still has the snapshot but the production-recipe isn't in version control. Worth re-creating if you want to revisit.
 
