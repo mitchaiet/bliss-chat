@@ -14,6 +14,7 @@ Updated 2026-05-13 for the v1.2.0 packaging/release pass. Older dated sections b
 - Coherence behavior: backend restores the clean prefixed KV snapshot for every user turn and applies tiny-model prompt assist for known fragile prompts.
 - GUI: native Win32 UI with `Speak last reply` wired to XP's built-in Microsoft Sam/SAPI.
 - Development harness: `server/bliss_xp_web_chat.py` provides a mobile-friendly Mac-hosted web UI for phone testing before baking defaults into the EXE.
+- Positioning: v1.2.0 is a complete offline Windows XP tiny-LLM demo/milestone, not a modern assistant replacement. Expect short, simple, sometimes generic answers; next milestone is answer quality.
 
 Pair this with `context/00-overview.md` (project pitch + arch),
 `context/02-inference-engine.md` (NC_RUN internals), and
