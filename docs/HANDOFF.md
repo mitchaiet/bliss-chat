@@ -2,7 +2,18 @@
 
 Snapshot for whoever is picking this up cold. Captures **what's live**,
 **what's running**, **what's tried**, and **what's worth trying next**.
-Written 2026-05-10 22:33 local.
+Updated 2026-05-13 for the v1.2.0 packaging/release pass. Older dated sections below are historical unless contradicted here.
+
+## Current release snapshot
+
+- Public release target: `v1.2.0`.
+- Primary artifact: `bliss-chat-xp-v1.2.0-bliss-d12-curated-c20-v1-portable.exe`.
+- Release shape: one self-contained portable `.exe`; no zip and no loose model/tokenizer files for users.
+- Runtime/model label: `Bliss d12 293M (int8)` / `bliss-d12-curated-c20-v1`.
+- Defaults: `ctx=256`, `temp=0.0`, `top_p=0.95`, `max_tokens=128`.
+- Coherence behavior: backend restores the clean prefixed KV snapshot for every user turn and applies tiny-model prompt assist for known fragile prompts.
+- GUI: native Win32 UI with `Speak last reply` wired to XP's built-in Microsoft Sam/SAPI.
+- Development harness: `server/bliss_xp_web_chat.py` provides a mobile-friendly Mac-hosted web UI for phone testing before baking defaults into the EXE.
 
 Pair this with `context/00-overview.md` (project pitch + arch),
 `context/02-inference-engine.md` (NC_RUN internals), and

@@ -1,4 +1,8 @@
-# xp-llm architecture
+# Bliss Chat XP architecture
+
+Current public release: **v1.2.0**, distributed as one self-contained portable
+Windows XP `.exe` that embeds `XPCHAT.EXE`, `NC_RUN.EXE`, `MODEL.NCB`,
+`TOKENIZER.NCT`, `MODEL_VERSION.txt`, and `release-manifest.json`.
 
 A complete, end-to-end mapping from a fresh PyTorch checkpoint to live
 inference on a Pentium 4. Each layer of the system, what it does, and why
@@ -19,19 +23,21 @@ Practical RAM budget after OS: **~250–300 MB free**.
 ## Process & wire layout at runtime
 
 ```
-+-------------------------------+      stdin pipe       +---------------------+
-|  XPCHAT.EXE  (Win32 GUI)      | --------------------> |   NC_RUN.EXE        |
-|  - RichEdit transcript        |                       |   (inference)       |
-|  - PBS_MARQUEE progress bar   |   stdout pipe         |                     |
-|  - per-session log file       | <-------------------- | sentinels + tokens  |
-+-------------------------------+                       +---------------------+
-                                                              |
-                                                              | mmap-style read
-                                                              v
-                                               +------------------------------+
-                                               | C:\xp-llm\MODEL.NCB    75 MB |
-                                               | C:\xp-llm\TOKENIZER.NCT 0.5MB|
-                                               +------------------------------+
++--------------------------------------------------------------------------+
+| bliss-chat-xp-v1.2.0-...-portable.exe (NSIS self-extracting wrapper)     |
+|  - visible extraction/progress UI                                         |
+|  - temp payload cleaned up when the GUI exits                             |
+|                                                                          |
+|  +-------------------------------+    stdin pipe    +------------------+ |
+|  | XPCHAT.EXE  (Win32 GUI)       | ---------------> | NC_RUN.EXE       | |
+|  | - RichEdit transcript         |                  | (inference)      | |
+|  | - live progress/status        |    stdout pipe   |                  | |
+|  | - Speak last reply via SAPI   | <--------------- | sentinels+tokens | |
+|  +-------------------------------+                  +------------------+ |
+|                                                         | read from temp   |
+|                                                         v                  |
+|                                          MODEL.NCB (279 MB) + TOKENIZER.NCT|
++--------------------------------------------------------------------------+
 ```
 
 `XPCHAT.EXE` spawns `NC_RUN.EXE` once at startup with anonymous pipes. The
@@ -47,7 +53,12 @@ Anything else on stdout is response text, streamed token-by-token to the GUI
 (which appends it to the transcript on the UI thread).
 
 The GUI sends one user message per line on stdin. EOF on stdin makes the
-backend exit cleanly.
+backend exit cleanly. v1.2.0 restores the prefixed KV snapshot before each user
+turn so a bad answer does not contaminate the next prompt.
+
+The GUI's **Speak last reply** button uses XP's built-in `SAPI.SpVoice` COM
+automation asynchronously, so the release does not bundle a separate audio or
+TTS engine.
 
 ## Inference engine: `src/nc_run.c`
 
@@ -156,8 +167,8 @@ Critical flags:
 | `-static -static-libgcc` | No DLL deps for libgcc. |
 | `-O2` | Aggressive optimization, but **not** `-O3 -ffast-math` — we hit precision issues on the model output. |
 
-Verify the produced `.exe` only depends on KERNEL32, USER32, GDI32, MSVCRT,
-ADVAPI32, and (for XPCHAT) COMCTL32:
+Verify the produced `.exe` only depends on XP-era system DLLs. For v1.2.0,
+`XPCHAT.EXE` also imports `ole32.dll` and `OLEAUT32.dll` for SAPI/Microsoft Sam:
 
 ```
 i686-w64-mingw32-objdump -p NC_RUN.EXE | grep "DLL Name"
