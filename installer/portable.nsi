@@ -1,7 +1,8 @@
 ; bliss-chat portable build.
-; Produces ONE self-contained .exe. User double-clicks, it extracts XPCHAT.EXE,
-; NC_RUN.EXE, MODEL.NCB and TOKENIZER.NCT into a temp directory, runs the GUI,
-; and cleans the temp dir up when the GUI exits.
+; Produces ONE self-contained .exe. User double-clicks it, sees a small
+; extraction/progress window, then Bliss Chat launches from a temp directory.
+; The temp payload contains XPCHAT.EXE, NC_RUN.EXE, MODEL.NCB and TOKENIZER.NCT
+; and is cleaned up when the GUI exits.
 ;
 ; Build with:  makensis -DMODEL=path/to/MODEL.NCB installer/portable.nsi
 ;
@@ -9,7 +10,7 @@
 ; the Pentium 4) or the bigger d12 model (~280 MB, more coherent).
 
 !ifndef OUTFILE
-  !define OUTFILE "bliss-chat-xp-v1.1.0-bliss-d12-curated-c20-v1-portable.exe"
+  !define OUTFILE "bliss-chat-xp-v1.2.0-bliss-d12-curated-c20-v1-portable.exe"
 !endif
 
 !ifndef MODEL
@@ -24,25 +25,36 @@
   !define DEPLOYDIR "..\build\deploy"
 !endif
 
-Name "bliss-chat"
-OutFile "${OUTFILE}"
+!ifndef ICON
+  !define ICON "..\assets\bliss_chat.ico"
+!endif
 
-; ----- Self-extract-and-run-with-no-UI mode -----
-SilentInstall silent
+Name "Bliss Chat XP"
+Caption "Bliss Chat XP"
+OutFile "${OUTFILE}"
+Icon "${ICON}"
+
+; ----- Self-extract-and-run portable mode -----
+; Do not use SilentInstall: the embedded model is large, and XP users need an
+; immediate visible progress window instead of a long no-window pause.
+AutoCloseWindow true
+ShowInstDetails nevershow
 RequestExecutionLevel user           ; no admin needed (XP runs as Admin by default anyway)
-SetCompressor /SOLID lzma            ; tightest single-pass compression
-SetCompressorDictSize 96             ; 96 MB dict — fine for the 280 MB model
+; LZMA is required here: the uncompressed NSIS payload extracts MODEL.NCB
+; incorrectly on Windows XP. Showing progress prevents the “nothing happened” UX.
+SetCompressor /SOLID lzma
+SetCompressorDictSize 64
 
 ; Minimum target: Windows XP SP2 (5.1)
 ; (NSIS itself runs fine on XP/2000/Win9x; we only need our payload there.)
 
 ; The XP About dialog uses these via VerInfoKey
-VIProductVersion "1.1.0.0"
+VIProductVersion "1.2.0.0"
 VIAddVersionKey "ProductName"     "Bliss Chat XP"
-VIAddVersionKey "FileDescription" "Bliss Chat XP portable - bliss-d12-curated-c20-v1"
+VIAddVersionKey "FileDescription" "Bliss Chat XP portable - coherent defaults + Microsoft Sam TTS"
 VIAddVersionKey "LegalCopyright"  ""
-VIAddVersionKey "FileVersion"     "1.1.0"
-VIAddVersionKey "ProductVersion"  "1.1.0"
+VIAddVersionKey "FileVersion"     "1.2.0"
+VIAddVersionKey "ProductVersion"  "1.2.0"
 VIAddVersionKey "ModelName"       "bliss-d12-curated-c20-v1"
 
 Section

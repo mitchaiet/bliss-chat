@@ -19,6 +19,7 @@
 #include <richedit.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <oleauto.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -49,6 +50,7 @@
 #define IDC_COPY_LAST  1030
 #define IDC_REGEN      1031
 #define IDC_EDIT_LAST  1032
+#define IDC_SPEAK_LAST 1033
 #define IDC_TASK_SAVE   1040
 #define IDC_TASK_EXPORT 1041
 #define IDC_TASK_IMPORT 1042
@@ -205,6 +207,7 @@ static HWND gToolbar;      // COMCTL32 toolbar below the title strip
 static HWND gCopyLastBtn;  // per-message action strip above the transcript
 static HWND gRegenBtn;
 static HWND gEditLastBtn;
+static HWND gSpeakLastBtn;
 static HFONT gUiFont;
 static HFONT gTitleFont;
 static HFONT gPaneFont;
@@ -571,6 +574,95 @@ static int clipboard_set_text(HWND owner, const char *text) {
     return 1;
 }
 
+static void trim_trailing_newlines(char *text) {
+    size_t len;
+    if (!text) return;
+    len = strlen(text);
+    while (len > 0 && (text[len - 1] == '\n' || text[len - 1] == '\r')) {
+        text[--len] = 0;
+    }
+}
+
+static int sapi_speak_text(HWND owner, const char *text) {
+    HRESULT hr;
+    CLSID clsid;
+    IDispatch *voice = NULL;
+    DISPID dispid;
+    OLECHAR *method = L"Speak";
+    DISPPARAMS params;
+    VARIANT args[2];
+    BSTR speech = NULL;
+    WCHAR *wide = NULL;
+    int wide_len;
+    int ok = 0;
+    int did_init = 0;
+
+    if (!text || !*text) return 0;
+
+    hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    if (SUCCEEDED(hr)) did_init = 1;
+    else if (hr != RPC_E_CHANGED_MODE) return 0;
+
+    hr = CLSIDFromProgID(L"SAPI.SpVoice", &clsid);
+    if (FAILED(hr)) goto done;
+    hr = CoCreateInstance(&clsid, NULL, CLSCTX_INPROC_SERVER | CLSCTX_LOCAL_SERVER,
+                          &IID_IDispatch, (void **)&voice);
+    if (FAILED(hr) || !voice) goto done;
+
+    hr = voice->lpVtbl->GetIDsOfNames(voice, &IID_NULL, &method, 1,
+                                      LOCALE_USER_DEFAULT, &dispid);
+    if (FAILED(hr)) goto done;
+
+    wide_len = MultiByteToWideChar(CP_ACP, 0, text, -1, NULL, 0);
+    if (wide_len <= 0) goto done;
+    wide = (WCHAR *)malloc((size_t)wide_len * sizeof(WCHAR));
+    if (!wide) goto done;
+    MultiByteToWideChar(CP_ACP, 0, text, -1, wide, wide_len);
+    speech = SysAllocString(wide);
+    if (!speech) goto done;
+
+    VariantInit(&args[0]);
+    VariantInit(&args[1]);
+    args[1].vt = VT_BSTR;
+    args[1].bstrVal = speech;
+    args[0].vt = VT_I4;
+    args[0].lVal = 1;  // SVSFlagsAsync: return immediately while Microsoft Sam speaks.
+    ZeroMemory(&params, sizeof(params));
+    params.rgvarg = args;
+    params.cArgs = 2;
+    hr = voice->lpVtbl->Invoke(voice, dispid, &IID_NULL, LOCALE_USER_DEFAULT,
+                               DISPATCH_METHOD, &params, NULL, NULL, NULL);
+    ok = SUCCEEDED(hr);
+
+done:
+    if (speech) SysFreeString(speech);
+    if (wide) free(wide);
+    if (voice) voice->lpVtbl->Release(voice);
+    if (did_init) CoUninitialize();
+    if (!ok && owner) MessageBeep(MB_ICONWARNING);
+    return ok;
+}
+
+static void speak_last_reply(HWND hwnd) {
+    char *body;
+    if (!gHasAsstTurn || gLastAsstEnd <= gLastAsstStart) {
+        MessageBeep(MB_ICONWARNING);
+        return;
+    }
+    body = rich_get_range(gLastAsstStart, gLastAsstEnd);
+    if (!body) {
+        MessageBeep(MB_ICONWARNING);
+        return;
+    }
+    trim_trailing_newlines(body);
+    if (sapi_speak_text(hwnd, body)) {
+        set_status("Speaking last reply with Microsoft Sam.");
+    } else {
+        set_status("Microsoft Sam text-to-speech is not available.");
+    }
+    free(body);
+}
+
 static void input_toggle_charformat(DWORD mask, DWORD effect) {
     CHARFORMAT2A cf;
     if (!gInput) return;
@@ -591,16 +683,17 @@ static void input_insert_text(const char *text) {
     SetFocus(gInput);
 }
 
-// Enable/disable the three per-message action buttons based on whether
+// Enable/disable the per-message action buttons based on whether
 // we have a recorded assistant turn and the backend is idle.
 static void update_msg_actions(void) {
     BOOL idle = !InterlockedCompareExchange(&gRunning, 0, 0);
     BOOL ready = InterlockedCompareExchange(&gBackendReady, 0, 0) != 0;
     BOOL have_asst = gHasAsstTurn ? TRUE : FALSE;
     BOOL have_user = gPendingUser[0] != 0 ? TRUE : FALSE;
-    if (gCopyLastBtn) EnableWindow(gCopyLastBtn, have_asst);
-    if (gRegenBtn)    EnableWindow(gRegenBtn,    have_asst && have_user && ready && idle);
-    if (gEditLastBtn) EnableWindow(gEditLastBtn, have_user && ready && idle);
+    if (gCopyLastBtn)  EnableWindow(gCopyLastBtn,  have_asst);
+    if (gSpeakLastBtn) EnableWindow(gSpeakLastBtn, have_asst);
+    if (gRegenBtn)     EnableWindow(gRegenBtn,     have_asst && have_user && ready && idle);
+    if (gEditLastBtn)  EnableWindow(gEditLastBtn,  have_user && ready && idle);
 }
 
 static void clear_transcript(void) {
@@ -1415,15 +1508,18 @@ static void create_controls(HWND hwnd) {
     // Per-message action strip — sits just above the transcript. Acts on
     // the most recent assistant turn / last user prompt. Disabled until
     // an assistant turn has completed.
-    gCopyLastBtn = make_control("BUTTON", "Copy last reply", BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_COPY_LAST, hwnd);
-    gRegenBtn    = make_control("BUTTON", "Regenerate",      BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_REGEN,     hwnd);
-    gEditLastBtn = make_control("BUTTON", "Edit last prompt",BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_EDIT_LAST, hwnd);
-    EnableWindow(gCopyLastBtn, FALSE);
-    EnableWindow(gRegenBtn,    FALSE);
-    EnableWindow(gEditLastBtn, FALSE);
-    ShowWindow(gCopyLastBtn, SW_HIDE);
-    ShowWindow(gRegenBtn, SW_HIDE);
-    ShowWindow(gEditLastBtn, SW_HIDE);
+    gCopyLastBtn  = make_control("BUTTON", "Copy last reply", BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_COPY_LAST,  hwnd);
+    gSpeakLastBtn = make_control("BUTTON", "Speak last reply",BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_SPEAK_LAST, hwnd);
+    gRegenBtn     = make_control("BUTTON", "Regenerate",      BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_REGEN,      hwnd);
+    gEditLastBtn  = make_control("BUTTON", "Edit last prompt",BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_EDIT_LAST,  hwnd);
+    EnableWindow(gCopyLastBtn,  FALSE);
+    EnableWindow(gSpeakLastBtn, FALSE);
+    EnableWindow(gRegenBtn,     FALSE);
+    EnableWindow(gEditLastBtn,  FALSE);
+    ShowWindow(gCopyLastBtn,  SW_HIDE);
+    ShowWindow(gSpeakLastBtn, SW_HIDE);
+    ShowWindow(gRegenBtn,     SW_HIDE);
+    ShowWindow(gEditLastBtn,  SW_HIDE);
 
     // Chat history sidebar. Layout (top -> bottom):
     //   [search edit]    <- filter; placeholder cue banner
@@ -1613,10 +1709,13 @@ static void layout_controls(HWND hwnd) {
         int transcript_y = action_y + action_h + 7;
         MoveWindow(gCopyLastBtn, action_x, action_y, 104, action_h, TRUE);
         action_x += 104 + action_gap;
+        MoveWindow(gSpeakLastBtn, action_x, action_y, 104, action_h, TRUE);
+        action_x += 104 + action_gap;
         MoveWindow(gRegenBtn, action_x, action_y, 92, action_h, TRUE);
         action_x += 92 + action_gap;
         MoveWindow(gEditLastBtn, action_x, action_y, 104, action_h, TRUE);
         ShowWindow(gCopyLastBtn, SW_SHOW);
+        ShowWindow(gSpeakLastBtn, SW_SHOW);
         ShowWindow(gRegenBtn, SW_SHOW);
         ShowWindow(gEditLastBtn, SW_SHOW);
         MoveWindow(gTranscript,
@@ -2093,8 +2192,9 @@ static BOOL backend_send_line(const char *line) {
     return WriteFile(gBackendStdinW, buf, (DWORD)strlen(buf), &wrote, NULL);
 }
 
-// HKCU\Software\bliss-chat\Settings holds the persisted Temp/Seed.
-#define BLISS_REG_SETTINGS "Software\\bliss-chat\\Settings"
+// HKCU\Software\bliss-chat\SettingsCoherentV2 holds persisted sampling.
+// New key intentionally avoids old installs resurrecting stale temp=0.8/0.9.
+#define BLISS_REG_SETTINGS "Software\\bliss-chat\\SettingsCoherentV2"
 
 static void settings_load(void) {
     HKEY key;
@@ -2276,8 +2376,10 @@ static INT_PTR CALLBACK settings_dlg_proc(HWND dlg, UINT msg, WPARAM wparam, LPA
         case IDC_DEFAULTS:
             // "Reset Defaults" — only clears the Sampling group, leaves
             // the Advanced fields alone (system prompt etc.).
-            SetDlgItemTextA(dlg, IDC_TEMP_EDIT, "0.80");
+            SetDlgItemTextA(dlg, IDC_TEMP_EDIT, "0.00");
             SetDlgItemTextA(dlg, IDC_SEED_EDIT, "0");
+            SetDlgItemTextA(dlg, IDC_TOPP_EDIT, "0.95");
+            SetDlgItemTextA(dlg, IDC_MAXTOK_EDIT, "128");
             return TRUE;
 
         case IDC_RESET_ALL:
@@ -2287,10 +2389,10 @@ static INT_PTR CALLBACK settings_dlg_proc(HWND dlg, UINT msg, WPARAM wparam, LPA
                 "Reset every setting (temperature, seed, top-p, max tokens, system prompt) to defaults and clear the saved registry values?",
                 "Reset all settings", MB_ICONQUESTION | MB_YESNO) == IDYES) {
                 settings_reset_all();
-                SetDlgItemTextA(dlg, IDC_TEMP_EDIT, "0.80");
+                SetDlgItemTextA(dlg, IDC_TEMP_EDIT, "0.00");
                 SetDlgItemTextA(dlg, IDC_SEED_EDIT, "0");
                 SetDlgItemTextA(dlg, IDC_TOPP_EDIT, "0.95");
-                SetDlgItemTextA(dlg, IDC_MAXTOK_EDIT, "0");
+                SetDlgItemTextA(dlg, IDC_MAXTOK_EDIT, "128");
                 SetDlgItemTextA(dlg, IDC_SYSPROMPT_EDIT, "");
             }
             return TRUE;
@@ -2994,12 +3096,9 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
                 MessageBeep(MB_ICONWARNING);
                 return 0;
             }
-            // Trim a single trailing CRLF (the streaming token loop usually
+            // Trim trailing CRLF (the streaming token loop usually
             // leaves the cursor at end-of-line; users don't want it pasted).
-            size_t bl = strlen(body);
-            while (bl > 0 && (body[bl - 1] == '\n' || body[bl - 1] == '\r')) {
-                body[--bl] = 0;
-            }
+            trim_trailing_newlines(body);
             if (clipboard_set_text(hwnd, body)) {
                 set_status("Copied last reply to clipboard.");
             } else {
@@ -3008,6 +3107,9 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
             free(body);
             return 0;
         }
+        case IDC_SPEAK_LAST:
+            speak_last_reply(hwnd);
+            return 0;
         case IDC_REGEN: {
             // Re-run the last user prompt. We send /reset to the backend
             // first to drop the just-finished turn from its KV cache, then

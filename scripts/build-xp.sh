@@ -33,7 +33,7 @@ echo "[build] XPCHAT.EXE (Win32 GUI)"
 $CC $CFLAGS_COMMON -mwindows \
    "$SRC/xpchat.c" "$BUILD/resource.o" \
    -o "$BUILD/XPCHAT.EXE" \
-   -lcomctl32 -lcomdlg32 -ladvapi32
+   -lcomctl32 -lcomdlg32 -ladvapi32 -lole32 -loleaut32 -luuid
 
 ls -lh "$BUILD/"NC_RUN.EXE "$BUILD/"XPCHAT.EXE
 

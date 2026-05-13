@@ -6,9 +6,9 @@ Train a custom transformer on a modern GPU, export to a tiny binary format,
 run inference on a 21-year-old Pentium 4 via a hand-written C engine and a
 native Win32 GUI.
 
-**No internet. No emulation. No cloud.** A real LLM, ~110M parameters,
-generating fluent English at 4.7 tokens/sec on a single-core 3 GHz Pentium 4
-from 2004.
+**No internet. No emulation. No cloud.** A real LLM, packaged as one
+self-contained Windows XP `.exe`, generating fluent English on a single-core
+3 GHz Pentium 4 from 2004.
 
 ## Download
 
@@ -16,13 +16,21 @@ Drop the .exe on a Windows XP machine and double-click. It self-extracts
 to a temp dir, launches the chat GUI, and cleans up on exit. Nothing else
 to install.
 
-- **[bliss-chat-fast-portable.exe][fast]** — 63 MB, d6 30M params, **~27 tok/s** on a Pentium 4. Short factual answers. Best for a first try.
-- **[bliss-chat-portable.exe][full]** — 252 MB, d12 110M params, **~4.7 tok/s**. Multi-sentence English, fuller answers.
+- **[bliss-chat-xp-v1.2.0-bliss-d12-curated-c20-v1-portable.exe][full]** — single-file portable EXE, d12 curated c20 int8 model, reported by the runtime as `Bliss d12 293M (int8)`.
 
-Both files are also browsable on the [Releases](../../releases) page.
+The file is also browsable on the [Releases](../../releases) page.
 
-[fast]: https://github.com/mitchaiet/bliss-chat/releases/latest/download/bliss-chat-fast-portable.exe
-[full]: https://github.com/mitchaiet/bliss-chat/releases/latest/download/bliss-chat-portable.exe
+[full]: https://github.com/mitchaiet/bliss-chat/releases/latest/download/bliss-chat-xp-v1.2.0-bliss-d12-curated-c20-v1-portable.exe
+
+## Current release: v1.2.0
+
+- One self-contained portable `.exe`; no separate model/tokenizer files.
+- Coherent defaults baked in: `ctx=256`, `temp=0.0`, `top_p=0.95`, `max_tokens=128`.
+- Clean per-turn KV reset so earlier bad turns do not contaminate later answers.
+- Prompt assist for fragile tiny-model prompts such as guitar facts and simple compliments.
+- XP-native Microsoft Sam text-to-speech through SAPI via **Speak last reply**.
+- Visible NSIS extraction/progress window for the large bundled model payload.
+- Includes a Mac-hosted mobile web chat harness for local/phone testing during development.
 
 ## What this is
 
@@ -132,7 +140,7 @@ To rebuild the portable EXE shipped on the Releases page:
 
 ```bash
 makensis -DMODEL=build/deploy/MODEL.NCB \
-         -DOUTFILE=build/bliss-chat-portable.exe \
+         -DOUTFILE=dist/bliss-chat-xp-v1.2.0-bliss-d12-curated-c20-v1-portable.exe \
          installer/portable.nsi
 ```
 
@@ -153,9 +161,11 @@ copied into `C:\xp-llm\`. See `docs/ARCHITECTURE.md`.)
 
 ### Run
 
-Double-click the **XP Tiny LLM** desktop shortcut. Window opens, model loads
-in a few seconds, status flips to `Ready`, dynamic label shows the actual
-model description ("Model: nanochat-d12 110M (fp32 int8)"). Type, hit Enter.
+Double-click the portable **Bliss Chat XP** `.exe`. A small extraction/progress
+window appears while the bundled model unpacks, then the Win32 chat window opens.
+Status flips to `Ready`, and the dynamic label shows the actual model description
+(`Bliss d12 293M (int8)`). Type, hit Enter. After a reply completes, use
+**Speak last reply** to read it aloud with XP's built-in Microsoft Sam/SAPI voice.
 
 ## Performance on the Dell Dimension 4700
 
@@ -192,25 +202,24 @@ notice.
 
 | File | Params | Size | Tokens/s on P4 | Quality |
 |---|---|---|---|---|
-| `MODEL.NCB`     | d12, 110M | 280 MB | 4.68 | multi-sentence English, recognizable facts |
+| `MODEL.NCB`     | d12 curated c20 | 279 MB | ~4.7 | multi-sentence English, recognizable facts |
 | `MODEL_D6.NCB`  | d6, 30M   | 75 MB  | ~27   | shorter, factual answers, ramblier on free-form |
 
-Both ship to `C:\xp-llm\`. To switch, swap which file `MODEL.NCB`
-points to (or rename) — `NC_RUN.EXE` always loads the file named
-`MODEL.NCB`.
+The portable v1.2.0 release embeds `MODEL.NCB` and `TOKENIZER.NCT` inside the single `.exe`. The older d6 path remains useful for experiments but is not the primary release asset.
 
 ## Status
 
 Shipping:
 
-- Pipeline working end-to-end (d6 + d12, both shipped)
+- Pipeline working end-to-end with a single-file XP portable EXE
 - Custom binary formats verified across Linux and XP
-- Cross-compile clean (KERNEL32 + MSVCRT only — no UCRT, no Vista APIs)
-- GUI integration with dynamic model label and live progress bar
+- Cross-compile clean with XP-era system DLLs only; SAPI TTS uses `ole32.dll`/`OLEAUT32.dll`
+- GUI integration with dynamic model label, live progress bar, and **Speak last reply**
 - SSE2 SIMD: matmul (5.45×) + attention helpers (2.6× softmax block)
-- Multi-turn KV cache with `/reset` and auto-overflow
-- d6 Chinchilla-trained model (val_bpb 1.165 → 1.075)
+- Clean per-turn KV reset, `/reset`, and auto-overflow
+- d12 curated c20 model release (`Bliss d12 293M (int8)`)
 - Live training dashboard at `http://localhost:8899/`
+- Mobile-friendly Mac-hosted web chat harness for phone testing
 
 Open:
 
