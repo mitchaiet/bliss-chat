@@ -6,9 +6,9 @@ Train a custom transformer on a modern GPU, export to a tiny binary format,
 run inference on a 21-year-old Pentium 4 via a hand-written C engine and a
 native Win32 GUI.
 
-**No internet. No emulation. No cloud.** A real LLM, packaged as one
-self-contained Windows XP `.exe`, generating fluent English on a single-core
-3 GHz Pentium 4 from 2004.
+**No internet. No emulation. No cloud.** A real tiny LLM, packaged as one
+self-contained Windows XP `.exe`, generating short local responses on a
+single-core 3 GHz Pentium 4 from 2004.
 
 ## Download
 
@@ -24,6 +24,9 @@ The file is also browsable on the [Releases](../../releases) page.
 
 ## Current release: v1.2.0
 
+v1.2.0 is a milestone/demo release: the point is the complete offline XP
+pipeline, not state-of-the-art assistant quality. Expect short, simple answers.
+
 - One self-contained portable `.exe`; no separate model/tokenizer files.
 - Coherent defaults baked in: `ctx=256`, `temp=0.0`, `top_p=0.95`, `max_tokens=128`.
 - Clean per-turn KV reset so earlier bad turns do not contaminate later answers.
@@ -31,6 +34,12 @@ The file is also browsable on the [Releases](../../releases) page.
 - XP-native Microsoft Sam text-to-speech through SAPI via **Speak last reply**.
 - Visible NSIS extraction/progress window for the large bundled model payload.
 - Includes a Mac-hosted mobile web chat harness for local/phone testing during development.
+
+Known limitations:
+
+- The model is tiny by modern standards and is not a general-purpose assistant.
+- Best results come from short factual prompts and deterministic settings.
+- Answers can be overly terse or generic; quality work is the next milestone.
 
 ## What this is
 
@@ -202,7 +211,7 @@ notice.
 
 | File | Params | Size | Tokens/s on P4 | Quality |
 |---|---|---|---|---|
-| `MODEL.NCB`     | d12 curated c20 | 279 MB | ~4.7 | multi-sentence English, recognizable facts |
+| `MODEL.NCB`     | d12 curated c20 | 279 MB | ~4.7 | short coherent answers, recognizable facts |
 | `MODEL_D6.NCB`  | d6, 30M   | 75 MB  | ~27   | shorter, factual answers, ramblier on free-form |
 
 The portable v1.2.0 release embeds `MODEL.NCB` and `TOKENIZER.NCT` inside the single `.exe`. The older d6 path remains useful for experiments but is not the primary release asset.
@@ -223,4 +232,5 @@ Shipping:
 
 Open:
 
+- Improve answer quality beyond terse/demo responses while keeping XP-era hardware viable.
 - SFT chat-tuning still diverges to NaN; bf16-overflow falsified. Next experiment: gradient clipping. See `context/10-known-issues.md`.

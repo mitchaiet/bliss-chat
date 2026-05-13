@@ -1,6 +1,7 @@
 # Bliss Chat XP v1.2.0
 
-Single-file portable Windows XP release for the `bliss-d12-curated-c20-v1` model.
+Single-file portable Windows XP milestone/demo release for the
+`bliss-d12-curated-c20-v1` model.
 
 ## Download
 
@@ -9,6 +10,10 @@ Use the release asset:
 - `bliss-chat-xp-v1.2.0-bliss-d12-curated-c20-v1-portable.exe`
 
 Drop it on a Windows XP machine and double-click. The EXE self-extracts its bundled runtime/model/tokenizer to a temporary directory, launches the native Win32 chat UI, and cleans up when the app exits. No installer, no Python, no internet, and no separate model files are required.
+
+This release is meant to show the complete offline XP pipeline working on real
+legacy hardware. It is not a modern assistant replacement: expect short, simple
+answers, with best results on terse factual prompts.
 
 ## What changed since v1.1.0
 
@@ -21,6 +26,14 @@ Drop it on a Windows XP machine and double-click. The EXE self-extracts its bund
 - Shows NSIS extraction/progress instead of silently unpacking the large model payload.
 - Embeds the Bliss Chat icon and refreshed version metadata.
 - Includes the Mac-hosted mobile web chat harness for local/phone testing during development.
+
+## Known limitations
+
+- The model is tiny by modern standards and can be overly terse or generic.
+- Coherence is improved by deterministic decoding, prompt shaping, and per-turn
+  cache reset; answer quality is still the next major milestone.
+- The “cool guitar fact” local smoke test currently returns a coherent but plain
+  answer: `The guitar is a very old instrument.`
 
 ## Verification
 
