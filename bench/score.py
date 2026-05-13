@@ -21,19 +21,67 @@ RESULTS = ROOT / "bench" / "results.csv"
 SCORED  = ROOT / "bench" / "scored.csv"
 
 
+def _tokens(text: str) -> list[str]:
+    return re.findall(r"\b[\w']+\b", text.lower())
+
+
+def repetition_features(text: str) -> dict:
+    """Return explicit repetition/ramble diagnostics for one response.
+
+    The old coherence gate only caught repeated bigrams. Bliss' bad runs also
+    collapse into single-token loops ("the the the") or longer phrase loops, so
+    expose metrics that can be tracked in scored.csv and Linear notes.
+    """
+    words = _tokens(text)
+    n = len(words)
+    unique_ratio = (len(set(words)) / n) if n else 0.0
+
+    max_token_run = 0
+    cur_run = 0
+    prev = None
+    for w in words:
+        if w == prev:
+            cur_run += 1
+        else:
+            cur_run = 1
+            prev = w
+        if cur_run > max_token_run:
+            max_token_run = cur_run
+
+    max_ngram_repeats = 0
+    repeated_ngram = ""
+    for size in (2, 3, 4):
+        if n < size * 2:
+            continue
+        counts = defaultdict(int)
+        for i in range(n - size + 1):
+            ng = tuple(words[i:i + size])
+            counts[ng] += 1
+            if counts[ng] > max_ngram_repeats:
+                max_ngram_repeats = counts[ng]
+                repeated_ngram = " ".join(ng)
+
+    ramble_reason = ""
+    if max_token_run >= 4:
+        ramble_reason = "token_run"
+    elif max_ngram_repeats >= 3:
+        ramble_reason = "ngram_repeat"
+    elif n >= 24 and unique_ratio < 0.35:
+        ramble_reason = "low_unique_ratio"
+
+    return {
+        "token_count": n,
+        "unique_token_ratio": f"{unique_ratio:.3f}" if n else "0.000",
+        "max_token_run": max_token_run,
+        "max_ngram_repeats": max_ngram_repeats,
+        "repeated_ngram": repeated_ngram,
+        "ramble": 1 if ramble_reason else 0,
+        "ramble_reason": ramble_reason,
+    }
+
+
 def looks_repetitive(text: str) -> bool:
-    """Catch the classic 'X is X is X' mode-collapse loop. Triggers if any
-    contiguous bigram appears 3+ times in the response."""
-    words = re.findall(r"\b[\w']+\b", text.lower())
-    if len(words) < 6:
-        return False
-    bigrams = [tuple(words[i:i + 2]) for i in range(len(words) - 1)]
-    counts = defaultdict(int)
-    for bg in bigrams:
-        counts[bg] += 1
-        if counts[bg] >= 3:
-            return True
-    return False
+    return repetition_features(text)["ramble"] == 1
 
 
 def score_row(row: dict) -> dict:
@@ -68,11 +116,20 @@ def score_row(row: dict) -> dict:
             correct = 1
             break
 
+    feats = repetition_features(resp)
+
     return {
         **row,
         "coherent": coherent,
         "format":   format_ok,
         "correct":  correct,
+        "ramble": feats["ramble"],
+        "ramble_reason": feats["ramble_reason"],
+        "response_token_count": feats["token_count"],
+        "unique_token_ratio": feats["unique_token_ratio"],
+        "max_token_run": feats["max_token_run"],
+        "max_ngram_repeats": feats["max_ngram_repeats"],
+        "repeated_ngram": feats["repeated_ngram"],
     }
 
 
@@ -86,31 +143,36 @@ def main():
             rows.append(score_row(r))
 
     # Per-category aggregation.
-    cats = defaultdict(lambda: {"n": 0, "coherent": 0, "format": 0, "correct": 0})
+    cats = defaultdict(lambda: {
+        "n": 0, "coherent": 0, "format": 0, "correct": 0, "ramble": 0,
+    })
     for r in rows:
         c = cats[r["category"]]
         c["n"] += 1
         c["coherent"] += r["coherent"]
         c["format"]   += r["format"]
         c["correct"]  += r["correct"]
+        c["ramble"]   += r["ramble"]
 
     print()
-    print(f"{'category':<12} {'n':>3} {'coh%':>6} {'fmt%':>6} {'cor%':>6}")
-    print("-" * 40)
-    total = {"n": 0, "coherent": 0, "format": 0, "correct": 0}
+    print(f"{'category':<12} {'n':>3} {'coh%':>6} {'fmt%':>6} {'cor%':>6} {'rmb%':>6}")
+    print("-" * 47)
+    total = {"n": 0, "coherent": 0, "format": 0, "correct": 0, "ramble": 0}
     for cat, c in sorted(cats.items()):
         print(f"{cat:<12} {c['n']:>3} "
               f"{100 * c['coherent'] / c['n']:>5.1f}% "
               f"{100 * c['format']   / c['n']:>5.1f}% "
-              f"{100 * c['correct']  / c['n']:>5.1f}%")
+              f"{100 * c['correct']  / c['n']:>5.1f}% "
+              f"{100 * c['ramble']   / c['n']:>5.1f}%")
         for k in total:
             total[k] += c[k]
-    print("-" * 40)
+    print("-" * 47)
     n = total["n"]
     print(f"{'TOTAL':<12} {n:>3} "
           f"{100 * total['coherent'] / n:>5.1f}% "
           f"{100 * total['format']   / n:>5.1f}% "
-          f"{100 * total['correct']  / n:>5.1f}%")
+          f"{100 * total['correct']  / n:>5.1f}% "
+          f"{100 * total['ramble']   / n:>5.1f}%")
 
     with open(SCORED, "w", newline="") as g:
         wtr = csv.DictWriter(g, fieldnames=list(rows[0].keys()))
