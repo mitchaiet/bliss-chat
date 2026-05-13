@@ -9,7 +9,7 @@
 ; the Pentium 4) or the bigger d12 model (~280 MB, more coherent).
 
 !ifndef OUTFILE
-  !define OUTFILE "bliss-chat-portable.exe"
+  !define OUTFILE "bliss-chat-xp-v1.1.0-bliss-d12-curated-c20-v1-portable.exe"
 !endif
 
 !ifndef MODEL
@@ -37,11 +37,13 @@ SetCompressorDictSize 96             ; 96 MB dict — fine for the 280 MB model
 ; (NSIS itself runs fine on XP/2000/Win9x; we only need our payload there.)
 
 ; The XP About dialog uses these via VerInfoKey
-VIProductVersion "1.0.0.0"
-VIAddVersionKey "ProductName"     "bliss-chat"
-VIAddVersionKey "FileDescription" "Portable XP-native LLM chat"
+VIProductVersion "1.1.0.0"
+VIAddVersionKey "ProductName"     "Bliss Chat XP"
+VIAddVersionKey "FileDescription" "Bliss Chat XP portable - bliss-d12-curated-c20-v1"
 VIAddVersionKey "LegalCopyright"  ""
-VIAddVersionKey "FileVersion"     "1.0"
+VIAddVersionKey "FileVersion"     "1.1.0"
+VIAddVersionKey "ProductVersion"  "1.1.0"
+VIAddVersionKey "ModelName"       "bliss-d12-curated-c20-v1"
 
 Section
   ; $PLUGINSDIR is a per-invocation temp dir that NSIS cleans up on exit.
@@ -54,6 +56,8 @@ Section
   File "${BUILDDIR}\XPCHAT.EXE"
   File "${BUILDDIR}\NC_RUN.EXE"
   File "${DEPLOYDIR}\TOKENIZER.NCT"
+  File "${DEPLOYDIR}\MODEL_VERSION.txt"
+  File "${DEPLOYDIR}\release-manifest.json"
 
   ; Model file gets renamed to MODEL.NCB at extract time (the GUI is
   ; hardcoded to that name; this lets a single .nsi build either flavor).
