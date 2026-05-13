@@ -1,0 +1,8 @@
+{"prompt": "What is your name?", "expect_contains": "I am Bliss"}
+{"prompt": "Who are you?", "expect_contains": "Bliss"}
+{"prompt": "Where are you running?", "expect_contains": "Windows XP"}
+{"prompt": "What is a computer?", "expect_contains": "machine"}
+{"prompt": "Can you browse the web?", "expect_contains": "No"}
+{"prompt": "What is 2 plus 2?", "expect_contains": "4"}
+{"prompt": "Say the word cat five times.", "expect_contains": "cat"}
+{"prompt": "Tell me a joke.", "expect_contains": ""}

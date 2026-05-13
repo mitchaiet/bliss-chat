@@ -1,0 +1,9 @@
+{
+  "name": "bliss_pretrain_curated_v1",
+  "source": "tools/build_bliss_sft_v5_data.py",
+  "format": "plain Q:/A: runtime text",
+  "count": 10000,
+  "seed": 20260512,
+  "recommended_mix_probability": 0.12,
+  "notes": "Mix into base pretraining from step 1; avoid custom chat special tokens for this experiment."
+}

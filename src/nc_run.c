@@ -864,22 +864,80 @@ static int cmp_desc_w(const void *a, const void *b) {
 }
 #endif
 
-static int sample(nc_state *s, float temperature, float top_p) {
+static void apply_repetition_penalty(nc_state *s, int *recent_ids, int recent_n, float penalty) {
     nc_model *m = s->m;
     int V = m->vocab_size;
+    for (int i = 0; i < V; i++) s->probs[i] = s->logits[i];
+    if (penalty <= 1.0f || recent_n <= 0) return;
+
+    // Penalize unique tokens seen in the recent generated answer only. This
+    // leaves prompt/history logits alone and is cheap enough for XP.
+    int start = recent_n > 64 ? recent_n - 64 : 0;
+    for (int i = start; i < recent_n; i++) {
+        int id = recent_ids[i];
+        if (id < 0 || id >= V) continue;
+        int seen = 0;
+        for (int j = start; j < i; j++) {
+            if (recent_ids[j] == id) { seen = 1; break; }
+        }
+        if (seen) continue;
+        if (s->probs[id] >= 0.0f) s->probs[id] /= penalty;
+        else                      s->probs[id] *= penalty;
+    }
+}
+
+static int guard_should_stop(int *recent_ids, int recent_n, int next) {
+    int window[2048];
+    int n = recent_n;
+    if (n > (int)(sizeof(window) / sizeof(window[0])) - 1) n = (int)(sizeof(window) / sizeof(window[0])) - 1;
+    for (int i = 0; i < n; i++) window[i] = recent_ids[recent_n - n + i];
+    window[n++] = next;
+
+    int max_token_run = 1;
+    int run = 1;
+    for (int i = 1; i < n; i++) {
+        if (window[i] == window[i - 1]) run++;
+        else run = 1;
+        if (run > max_token_run) max_token_run = run;
+    }
+    if (max_token_run >= 4) return 1;
+
+    // Stop if the just-finished 2/3/4-gram has already appeared twice before
+    // in this answer. That catches "foo bar foo bar foo bar" loops.
+    for (int size = 2; size <= 4; size++) {
+        if (n < size * 3) continue;
+        int last = n - size;
+        int repeats = 1;
+        for (int i = 0; i + size <= last; i++) {
+            int same = 1;
+            for (int k = 0; k < size; k++) {
+                if (window[i + k] != window[last + k]) { same = 0; break; }
+            }
+            if (same) repeats++;
+            if (repeats >= 3) return 1;
+        }
+    }
+    return 0;
+}
+
+static int sample(nc_state *s, float temperature, float top_p,
+                  int *recent_ids, int recent_n, float repeat_penalty) {
+    nc_model *m = s->m;
+    int V = m->vocab_size;
+    apply_repetition_penalty(s, recent_ids, recent_n, repeat_penalty);
     if (temperature <= 0.0f) {
-        // greedy
+        // greedy over adjusted logits
         int best = 0;
-        float bv = s->logits[0];
-        for (int i = 1; i < V; i++) if (s->logits[i] > bv) { bv = s->logits[i]; best = i; }
+        float bv = s->probs[0];
+        for (int i = 1; i < V; i++) if (s->probs[i] > bv) { bv = s->probs[i]; best = i; }
         return best;
     }
-    // apply temperature, softmax
-    float maxv = s->logits[0];
-    for (int i = 1; i < V; i++) if (s->logits[i] > maxv) maxv = s->logits[i];
+    // apply temperature, softmax over adjusted logits
+    float maxv = s->probs[0];
+    for (int i = 1; i < V; i++) if (s->probs[i] > maxv) maxv = s->probs[i];
     double ssum = 0.0;
     for (int i = 0; i < V; i++) {
-        s->probs[i] = expf((s->logits[i] - maxv) / temperature);
+        s->probs[i] = expf((s->probs[i] - maxv) / temperature);
         ssum += s->probs[i];
     }
     float inv = (float)(1.0 / ssum);
@@ -1027,6 +1085,11 @@ int main(int argc, char **argv) {
     // Per-turn token cap. 0 = no cap (use the model's remaining context).
     // Settable via `/maxtok <int>` at runtime; clamped to [0, 2048].
     int max_tokens = 128;
+    // Runtime anti-ramble controls. `/rambleguard 0` disables both the hard
+    // repeated-token/phrase stop and the repetition penalty, preserving the
+    // previous deterministic greedy behavior.
+    int ramble_guard = 1;
+    float repeat_penalty = 1.10f;
 
     // Helper to prefill an arbitrary prefix string and snapshot it as the
     // restorable prefix. Resets the state first. Emits PROG sentinels as
@@ -1088,6 +1151,8 @@ int main(int argc, char **argv) {
             emit_sentinel_str("INFO", "/topp <f>      = set top-p nucleus sampling (0..1)");
             emit_sentinel_str("INFO", "/seed <int>    = re-seed the RNG");
             emit_sentinel_str("INFO", "/maxtok <int>  = cap per-turn tokens (0 = no cap)");
+            emit_sentinel_str("INFO", "/rambleguard <0|1> = stop repeated-token/phrase loops");
+            emit_sentinel_str("INFO", "/repeat <f>    = repetition penalty (1.0 = off)");
             emit_sentinel_str("INFO", "/system <text> = replace system prompt (escape newlines as \\n)");
             emit_sentinel_str("EOT", "0");
             continue;
@@ -1143,6 +1208,28 @@ int main(int argc, char **argv) {
             emit_sentinel_str("EOT", "0");
             continue;
         }
+        // /rambleguard <0|1>: enable/disable runtime loop suppression.
+        if (!strncmp(line, "/rambleguard ", 13)) {
+            int v = atoi(line + 13) ? 1 : 0;
+            ramble_guard = v;
+            char info[64];
+            snprintf(info, sizeof(info), "ramble_guard = %d", v);
+            emit_sentinel_str("INFO", info);
+            emit_sentinel_str("EOT", "0");
+            continue;
+        }
+        // /repeat <float>: repetition penalty. 1.0 disables logit adjustment.
+        if (!strncmp(line, "/repeat ", 8)) {
+            float v = (float)atof(line + 8);
+            if (v < 1.0f) v = 1.0f;
+            if (v > 2.0f) v = 2.0f;
+            repeat_penalty = v;
+            char info[64];
+            snprintf(info, sizeof(info), "repeat_penalty = %.3f", v);
+            emit_sentinel_str("INFO", info);
+            emit_sentinel_str("EOT", "0");
+            continue;
+        }
         // /system <text>: replace the prefilled system prompt. The text
         // can contain literal "\n" escapes which we expand to real
         // newlines, since the GUI sends slash commands on a single line.
@@ -1179,12 +1266,12 @@ int main(int argc, char **argv) {
         if (!strcmp(line, "/info")) {
             char info[224];
             snprintf(info, sizeof(info),
-                "Bliss d%d %dM (%s) | seq=%d | turn=%d | pos=%d/%d | temp=%.2f",
+                "Bliss d%d %dM (%s) | seq=%d | turn=%d | pos=%d/%d | temp=%.2f | guard=%d repeat=%.2f",
                 M.n_layer,
                 (int)((size_t)M.n_layer * M.n_embd * M.n_embd * 12 / 1000000),
                 (M.dtype_code == 1 ? "int8" : "fp32"),
                 M.sequence_len, turn_idx, S.seq_pos, ctx_max,
-                temp);
+                temp, ramble_guard, repeat_penalty);
             emit_sentinel_str("INFO", info);
             emit_sentinel_str("EOT", "0");
             continue;
@@ -1237,6 +1324,8 @@ int main(int argc, char **argv) {
         int  flush_hold_on_stop = 0;
         int  gen_count = 0;
         int  answer_chars = 0;
+        int  recent_ids[2048];
+        int  recent_n = 0;
         (void)tail_match;
 
         int budget = ctx_max - S.seq_pos;
@@ -1250,8 +1339,13 @@ int main(int argc, char **argv) {
             // token. PeekNamedPipe is cheap (~few microseconds), so
             // doing it every step is fine even at d6 speeds (~30 tok/s).
             if (check_stop_signal()) { user_stopped = 1; break; }
-            int next = sample(&S, temp, top_p);
+            int next = sample(&S, temp, top_p, recent_ids, recent_n,
+                              ramble_guard ? repeat_penalty : 1.0f);
             if (next == eos_id || next == assistant_end) break;
+            if (ramble_guard && guard_should_stop(recent_ids, recent_n, next)) {
+                emit_sentinel_str("INFO", "guardrail: repetition stopped");
+                break;
+            }
 
             char piece[64];
             int pn = nct_decode_one(T, next, piece, sizeof(piece));
@@ -1285,6 +1379,9 @@ int main(int argc, char **argv) {
                     }
                 }
                 if (hit_stop) break;
+            }
+            if (recent_n < (int)(sizeof(recent_ids) / sizeof(recent_ids[0]))) {
+                recent_ids[recent_n++] = next;
             }
             forward_one(&S, next);
             // Report real generation progress: emitted tokens / token budget.

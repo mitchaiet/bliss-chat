@@ -8,7 +8,15 @@ BUILD="$HERE/build"
 mkdir -p "$BUILD"
 
 CC=i686-w64-mingw32-gcc
-CFLAGS_COMMON="-mcrtdll=msvcrt-os -O2 -msse -msse2 -msse3 -mtune=pentium4 -march=pentium4 \
+# Some MinGW toolchains (e.g. Homebrew) support -mcrtdll=msvcrt-os;
+# Ubuntu's win32 runtime package does not. Default MinGW i686 already links
+# msvcrt.dll, so keep the flag only when the compiler accepts it.
+CRT_FLAG=""
+if echo 'int main(void){return 0;}' | $CC -x c - -mcrtdll=msvcrt-os -o /tmp/nc_crt_probe.exe >/dev/null 2>&1; then
+  CRT_FLAG="-mcrtdll=msvcrt-os"
+fi
+rm -f /tmp/nc_crt_probe.exe
+CFLAGS_COMMON="$CRT_FLAG -O2 -msse -msse2 -msse3 -mtune=pentium4 -march=pentium4 \
   -D_WIN32_WINNT=0x0501 -DWINVER=0x0501 -static -static-libgcc \
   -Wno-implicit-function-declaration"
 
@@ -30,6 +38,6 @@ $CC $CFLAGS_COMMON -mwindows \
 ls -lh "$BUILD/"NC_RUN.EXE "$BUILD/"XPCHAT.EXE
 
 echo
-echo "[build] Verify XP-only DLL imports (must be only KERNEL32/USER32/GDI32/COMCTL32/MSVCRT/ADVAPI32):"
+echo "[build] Verify XP-era DLL imports (should be standard XP system DLLs):"
 i686-w64-mingw32-objdump -p "$BUILD/NC_RUN.EXE"  | grep "DLL Name" || true
 i686-w64-mingw32-objdump -p "$BUILD/XPCHAT.EXE"  | grep "DLL Name" || true
