@@ -2,15 +2,11 @@
 
 Model version: bliss-d12-curated-c20-v1
 
-This release packages the Windows XP chat app with the first explicitly versioned Bliss-native model.
+This release is distributed as one self-contained portable EXE with the first explicitly versioned Bliss-native model embedded.
 
-## Included files
+## Included asset
 
-- XPCHAT.EXE — Windows XP GUI chat app
-- NC_RUN.EXE — Windows XP console/runtime backend
-- MODEL.NCB — int8 Bliss model export
-- TOKENIZER.NCT — tokenizer export
-- MODEL_VERSION.txt — model identity and checksums
+- bliss-chat-xp-v1.1.0-bliss-d12-curated-c20-v1-portable.exe — one portable EXE containing XPCHAT.EXE, NC_RUN.EXE, MODEL.NCB, TOKENIZER.NCT, MODEL_VERSION.txt, and release-manifest.json
 
 ## Model notes
 
@@ -21,8 +17,4 @@ This release packages the Windows XP chat app with the first explicitly versione
 
 ## Install on Windows XP
 
-Copy all included files into:
-
-C:\xp-llm\
-
-Launch XPCHAT.EXE from that folder or from a shortcut pointing there.
+Copy the portable EXE anywhere, such as the Desktop, and double-click it. It extracts to a temporary folder, runs Bliss Chat, and leaves no install folder behind.
