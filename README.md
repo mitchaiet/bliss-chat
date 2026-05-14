@@ -119,8 +119,8 @@ non-ASCII still encodes via byte-level fallback tokens.
 
 ```bash
 # Install nanochat, train a small model
-git clone https://github.com/karpathy/nanochat.git ~/nanochat
-cd ~/nanochat
+git clone https://github.com/karpathy/nanochat.git /path/to/nanochat
+cd /path/to/nanochat
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv && uv sync --extra gpu
 source .venv/bin/activate

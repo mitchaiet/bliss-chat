@@ -88,7 +88,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", required=True, help="source checkpoint dir")
     ap.add_argument("--out", required=True, help="output checkpoint dir")
-    ap.add_argument("--tokenizer", default="~/.cache/nanochat/tokenizer/tokenizer.pkl")
+    ap.add_argument("--tokenizer", default="/path/to/nanochat-cache/tokenizer/tokenizer.pkl")
     ap.add_argument("--step", type=int, default=None, help="checkpoint step, default highest")
     ap.add_argument("--seed", type=int, default=20260511)
     ap.add_argument("--bos-blend", type=float, default=0.25, help="0=random orthogonal, 1=bos copy")

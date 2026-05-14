@@ -174,7 +174,7 @@ Single Python file, stdlib only. HTTP server on `:8899`. Two endpoints:
 
 - `GET /` — static HTML+JS, polls `/api/status` every 3 seconds.
 - `GET /api/status` — JSON: GPU stats from `nvidia-smi`, parsed log files
-  from `~/nanochat-logs/`, list of running processes.
+  from the configured training-log directory, list of running processes.
 
 Runs as a systemd user service (`nc-dashboard.service`) with linger
 enabled so it survives SSH disconnect (remote SSH otherwise reaps

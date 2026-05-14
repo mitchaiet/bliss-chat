@@ -29,3 +29,10 @@ bench/scored.csv
 # OS clutter
 .DS_Store
 .claude/
+
+# local/private deployment scratch scripts
+/private/
+scripts/*credential*.sh
+scripts/xp_*
+scripts/bliss_training_dashboard.py
+scripts/hermes_bliss_deep_research.sh

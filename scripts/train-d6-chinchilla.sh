@@ -3,7 +3,7 @@
 # default 12). Should produce a much better-trained tiny model — same
 # 30M params, but ~5x more tokens. Wall clock ~10-15 min on CUDA workstation.
 #
-# Run on the training box (~/nanochat).
+# Run on the training box (the nanochat checkout).
 set -euo pipefail
 cd "$HOME/nanochat"
 export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-$HOME/.cache/nanochat}"

@@ -24,7 +24,7 @@ def replace_once(text: str, old: str, new: str) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--nanochat", default="~/nanochat")
+    ap.add_argument("--nanochat", default="/path/to/nanochat")
     args = ap.parse_args()
 
     path = Path(args.nanochat).expanduser() / "scripts" / "chat_sft.py"

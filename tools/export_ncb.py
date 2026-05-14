@@ -133,7 +133,7 @@ def write_tensor_int8(f, t: torch.Tensor):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--src", required=True, help="checkpoint dir, e.g. ~/.cache/nanochat/chat_checkpoints/d6")
+    ap.add_argument("--src", required=True, help="checkpoint dir, e.g. /path/to/nanochat-cache/chat_checkpoints/d6")
     ap.add_argument("--step", type=int, default=None, help="checkpoint step (default: highest)")
     ap.add_argument("--out", required=True, help="output .ncb path")
     ap.add_argument("--int8", action="store_true", help="quantize matrix weights to int8 per-row")

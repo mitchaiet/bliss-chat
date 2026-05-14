@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Export a nanochat tiktoken tokenizer (~/.cache/nanochat/tokenizer/tokenizer.pkl)
+Export a nanochat tiktoken tokenizer (for example, /path/to/nanochat-cache/tokenizer/tokenizer.pkl)
 into a custom binary format (.nct) consumable by nc_tokenizer.c.
 
 NCT1 format (little-endian):

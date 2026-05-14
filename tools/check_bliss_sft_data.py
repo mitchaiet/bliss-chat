@@ -13,7 +13,7 @@ from pathlib import Path
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--jsonl", required=True)
-    ap.add_argument("--nanochat", default=os.environ.get("NANOCHAT_DIR", "~/nanochat"))
+    ap.add_argument("--nanochat", default=os.environ.get("NANOCHAT_DIR", "/path/to/nanochat"))
     ap.add_argument("--max-tokens", type=int, default=512)
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--plain", action="store_true", help="validate plain text rendering")
