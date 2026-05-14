@@ -137,8 +137,8 @@ The byte-identical AdamW/Muon trajectories **rule out the optimizer** as the cau
 | Thread | Owner | State |
 |---|---|---|
 | Three abandoned agent worktrees | `.claude/worktrees/agent-*` | Already merged via cherry-pick; locked by agent PIDs; will auto-clean. `git worktree list` shows them. |
-| `nanochat` repo on training host | `~/nanochat/scripts/chat_sft.py` | Restored to original from `chat_sft.py.blissbak` after the latest SFT pass. |
-| SFT checkpoints | `~/.cache/nanochat/chatsft_checkpoints/*` | Multiple candidates exist (`d12_c20_special_v1`...`v7`, `d12_plain_v1`, `d12_qa_v1`, `d12_qa_low_v1`, `d12_qa_nospace_v1`, `d12_qa_gentle_v1`, `d12_runtime_v1`, `d12_runtime_v2`, `d12_runtime_head_v1`), but all failed behavior probes. Do **not** export/deploy them. |
+| `nanochat` repo on training host | `$NANOCHAT_DIR/scripts/chat_sft.py` | Restored to original from `chat_sft.py.blissbak` after the latest SFT pass. |
+| SFT checkpoints | `$NANOCHAT_CACHE/chatsft_checkpoints/*` | Multiple candidates exist (`d12_c20_special_v1`...`v7`, `d12_plain_v1`, `d12_qa_v1`, `d12_qa_low_v1`, `d12_qa_nospace_v1`, `d12_qa_gentle_v1`, `d12_runtime_v1`, `d12_runtime_v2`, `d12_runtime_head_v1`), but all failed behavior probes. Do **not** export/deploy them. |
 
 ### Bliss d12 Chinchilla result
 
@@ -202,7 +202,7 @@ newline stopping, and first-sentence stopping; XP console smoke tests on
 
 **Comctl32 v6 manifest is embedded.** `Edit_SetCueBannerText`, themed buttons, segmented progress bar, themed toolbar all rely on it. The manifest file is `assets/xpchat.manifest`, packed via `1 RT_MANIFEST` in `resource.rc`.
 
-**The `nanochat` repo on the training host was patched in-place several times** during SFT attempts (`scripts/chat_sft.py`). The original is preserved at `~/nanochat/scripts/chat_sft.py.blissbak`; the active file was restored from that backup after the latest run.
+**The `nanochat` repo on the training host was patched in-place several times** during SFT attempts (`scripts/chat_sft.py`). The original is preserved at `$NANOCHAT_DIR/scripts/chat_sft.py.blissbak`; the active file was restored from that backup after the latest run.
 
 **`tools/patch_specials.py` was referenced in `09-training-history.md` Run 5 but only ever existed at `/tmp/patch_specials.py`** on the training host. If you need to reproduce the `d12_patched` checkpoint, that script is gone — `d12_patched/` itself still has the snapshot but the production-recipe isn't in version control. Worth re-creating if you want to revisit.
 

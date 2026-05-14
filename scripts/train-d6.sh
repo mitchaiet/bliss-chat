@@ -1,6 +1,6 @@
 #!/bin/bash
 # Train a tiny d6 nanochat model on a CUDA box (~1-2 min on CUDA workstation).
-# Run this on the training machine (Ubuntu / training host) inside ~/nanochat .
+# Run this on the training machine (Ubuntu / training host) inside the nanochat checkout .
 set -euo pipefail
 export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-$HOME/.cache/nanochat}"
 mkdir -p "$NANOCHAT_BASE_DIR"

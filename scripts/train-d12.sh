@@ -1,6 +1,6 @@
 #!/bin/bash
 # Train a d12 nanochat model (~110M params) — 50 min on CUDA workstation.
-# Run this on the training machine inside ~/nanochat .
+# Run this on the training machine inside the nanochat checkout .
 set -euo pipefail
 export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-$HOME/.cache/nanochat}"
 source .venv/bin/activate

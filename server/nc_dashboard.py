@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 nanochat training dashboard.
-- Parses ~/nanochat-logs/*.log to extract step/loss/eta
+- Parses the configured training-log directory to extract step/loss/eta
 - Queries nvidia-smi for GPU stats
 - Serves a single-page web UI at http://localhost:8899/
 """
@@ -159,7 +159,7 @@ HTML = """<!doctype html>
   <h1>nanochat dashboard <span id="now" class="muted"></span></h1>
 </header>
 <div id="root" class="grid"></div>
-<footer>auto-refresh every 3s · log dir: ~/nanochat-logs</footer>
+<footer>auto-refresh every 3s · log dir: configured training-log directory</footer>
 
 <script>
 function fmt(x, digits) { if (x === null || x === undefined) return '—';
