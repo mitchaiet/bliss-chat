@@ -147,6 +147,8 @@
 
 #define PROMPT_MAX     8192
 #define BACKEND_EXE    "NC_RUN.EXE"
+#define BACKEND_SSE2_EXE "NC_RUN_SSE2.EXE"
+#define BACKEND_SSE3_EXE "NC_RUN_SSE3.EXE"
 #define MODEL_FILE     "MODEL.NCB"
 #define TOKENIZER_FILE "TOKENIZER.NCT"
 #define MODEL_LABEL    "(loading...)"
@@ -234,6 +236,8 @@ static char gModelName[160] = "(loading...)";
 static char gStatusText[160] = "Loading model...";
 
 static char gAppDir[MAX_PATH];
+static char gBackendExe[MAX_PATH] = BACKEND_EXE;
+static char gBackendFlavor[32] = "generic";
 static char gPendingUser[PROMPT_MAX];
 static char gLogPath[MAX_PATH];
 static FILE * gLogFile = NULL;
@@ -433,6 +437,35 @@ static int file_exists_in_app_dir(const char *name) {
     snprintf(path, sizeof(path), "%s\\%s", gAppDir, name);
     attr = GetFileAttributesA(path);
     return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+static int cpu_has_sse3(void) {
+#if defined(_M_IX86) || defined(__i386__) || defined(_M_X64) || defined(__x86_64__)
+    int regs[4] = {0, 0, 0, 0};
+    __asm__ __volatile__(
+        "xorl %%ecx, %%ecx\n\t"
+        "cpuid"
+        : "=a" (regs[0]), "=b" (regs[1]), "=c" (regs[2]), "=d" (regs[3])
+        : "a" (1)
+    );
+    return (regs[2] & 0x1) != 0;
+#else
+    return 0;
+#endif
+}
+
+static void select_backend_exe(void) {
+    int has_sse3 = cpu_has_sse3();
+    if (has_sse3 && file_exists_in_app_dir(BACKEND_SSE3_EXE)) {
+        snprintf(gBackendExe, sizeof(gBackendExe), "%s", BACKEND_SSE3_EXE);
+        snprintf(gBackendFlavor, sizeof(gBackendFlavor), "SSE3");
+    } else if (file_exists_in_app_dir(BACKEND_SSE2_EXE)) {
+        snprintf(gBackendExe, sizeof(gBackendExe), "%s", BACKEND_SSE2_EXE);
+        snprintf(gBackendFlavor, sizeof(gBackendFlavor), "SSE2");
+    } else {
+        snprintf(gBackendExe, sizeof(gBackendExe), "%s", BACKEND_EXE);
+        snprintf(gBackendFlavor, sizeof(gBackendFlavor), has_sse3 ? "generic/SSE3 CPU" : "generic/SSE2 CPU");
+    }
 }
 
 // ---------- transcript helpers ----------
@@ -874,8 +907,9 @@ static int launch_backend(void) {
 
     snprintf(command, sizeof(command),
         "\"%s\\%s\" \"%s\\%s\" \"%s\\%s\" -c 256 -t 0.8 -p 0.95",
-        gAppDir, BACKEND_EXE, gAppDir, MODEL_FILE, gAppDir, TOKENIZER_FILE);
+        gAppDir, gBackendExe, gAppDir, MODEL_FILE, gAppDir, TOKENIZER_FILE);
 
+    dbg_log("GUI", "selected backend: %s (%s)", gBackendExe, gBackendFlavor);
     dbg_log("GUI", "spawning backend: %s", command);
     dbg_log("GUI", "backend stderr -> %s", err_log_path);
 
@@ -890,7 +924,7 @@ static int launch_backend(void) {
 
     if (!CreateProcessA(NULL, command, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, gAppDir, &si, &pi)) {
         DWORD err = GetLastError();
-        snprintf(err_buf, sizeof(err_buf), "Could not start " BACKEND_EXE ". Windows error %lu.", (unsigned long)err);
+        snprintf(err_buf, sizeof(err_buf), "Could not start %s. Windows error %lu.", gBackendExe, (unsigned long)err);
         dbg_log("GUI", "CreateProcess failed: %lu", (unsigned long)err);
         MessageBoxA(gMain, err_buf, APP_NAME, MB_ICONERROR | MB_OK);
         goto fail;
@@ -2833,15 +2867,18 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         chats_index_disk();
         clear_transcript();
         diagnostics_appendf("Waiting for model...");
-        if (!file_exists_in_app_dir(BACKEND_EXE) || !file_exists_in_app_dir(MODEL_FILE)
+        select_backend_exe();
+        dbg_log("GUI", "backend selection = %s (%s)", gBackendExe, gBackendFlavor);
+        diagnostics_appendf("Selected %s backend (%s).", gBackendExe, gBackendFlavor);
+        if (!file_exists_in_app_dir(gBackendExe) || !file_exists_in_app_dir(MODEL_FILE)
             || !file_exists_in_app_dir(TOKENIZER_FILE)) {
             dbg_log("GUI", "missing files: %s=%d %s=%d %s=%d",
-                BACKEND_EXE, file_exists_in_app_dir(BACKEND_EXE),
+                gBackendExe, file_exists_in_app_dir(gBackendExe),
                 MODEL_FILE, file_exists_in_app_dir(MODEL_FILE),
                 TOKENIZER_FILE, file_exists_in_app_dir(TOKENIZER_FILE));
             diagnostics_appendf("Required backend/model/tokenizer files are missing.");
             MessageBoxA(hwnd,
-                BACKEND_EXE ", " MODEL_FILE ", or " TOKENIZER_FILE " is missing from the application folder.",
+                "Backend executable, " MODEL_FILE ", or " TOKENIZER_FILE " is missing from the application folder.",
                 APP_NAME, MB_ICONERROR | MB_OK);
         } else if (!launch_backend()) {
             set_status("Backend failed to start");
