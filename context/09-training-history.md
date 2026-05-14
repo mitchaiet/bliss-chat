@@ -314,7 +314,7 @@ deployment remains the Run 7 base `MODEL.NCB`.
 ## Lessons
 
 - **For tiny demo tier on a laptop**, use `runs/runcpu.sh` config (d6, 30 min
-  on M3 Max). For real coherence, d12+ and ~50 min on a Blackwell.
+  on a laptop-class GPU). For real coherence, d12+ and ~50 min on a Blackwell.
 - **The default nanochat SFT pipeline NaN's on pretrained checkpoints
   whose chat-special-token embeddings are at random init.** This isn't
   documented anywhere in the repo as far as I can tell. The fix is to

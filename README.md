@@ -33,7 +33,7 @@ pipeline, not state-of-the-art assistant quality. Expect short, simple answers.
 - Prompt assist for fragile tiny-model prompts such as guitar facts and simple compliments.
 - XP-native Microsoft Sam text-to-speech through SAPI via **Speak last reply**.
 - Visible NSIS extraction/progress window for the large bundled model payload.
-- Includes a Mac-hosted mobile web chat harness for local/phone testing during development.
+- Includes a local browser web chat harness for pre-packaging testing during development.
 
 Known limitations:
 
@@ -228,7 +228,7 @@ Shipping:
 - Clean per-turn KV reset, `/reset`, and auto-overflow
 - d12 curated c20 model release (`Bliss d12 293M (int8)`)
 - Live training dashboard at `http://localhost:8899/`
-- Mobile-friendly Mac-hosted web chat harness for phone testing
+- Local browser web chat harness for pre-packaging testing
 
 Open:
 

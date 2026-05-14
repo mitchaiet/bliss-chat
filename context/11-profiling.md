@@ -43,7 +43,7 @@ Per-token wall: **1.14 s** end-to-end → **0.88 tok/s**, matching the
 ~0.5–1 tok/s figure observed in the GUI. Each `forward_one` runs 73
 linear ops (12 layers × 6 + lm_head + extras), each averaging 15 ms.
 
-## Run 2 — Mac M3 native (sanity check), d12 int8, 22 forward calls
+## Run 2 — native sanity check, d12 int8, 22 forward calls
 
 ```
 linear:  2625 ms / 2663 ms total  → 98.6 %

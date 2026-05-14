@@ -31,7 +31,7 @@ Conclusion: optimize matmul or nothing matters.
 ### Iter 2 — SSE2 matmul (`09aa226`)
 
 Added SSE2 paths to `matmul_fp32` and `matmul_int8`. Both gated on
-`__SSE2__` so macOS arm64 builds keep the scalar fallback.
+`__SSE2__` so non-SSE2 builds keep the scalar fallback.
 
 - `matmul_fp32`: 8-lane fp32 mul/add with two parallel accumulators,
   horizontal sum at the end.
@@ -404,7 +404,7 @@ ETA ~2 h 9 min → finish ~00:42.
 
 When this lands, the plan is:
 1. Export `d12_028320.pt` → `d12-chinchilla.ncb --int8` on the GPU box.
-2. SCP back to Mac, drop in as `build/deploy/MODEL.NCB`.
+2. SCP back to the build host, drop in as `build/deploy/MODEL.NCB`.
 3. Re-run `bench/run_bench.py` + `bench/score.py`.
 4. If meaningful improvement, push to XP; otherwise pivot to (B) or
    the SFT-with-orthogonal-special-init experiment.

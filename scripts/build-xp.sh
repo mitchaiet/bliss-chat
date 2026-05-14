@@ -8,7 +8,7 @@ BUILD="$HERE/build"
 mkdir -p "$BUILD"
 
 CC=i686-w64-mingw32-gcc
-# Some MinGW toolchains (e.g. Homebrew) support -mcrtdll=msvcrt-os;
+# Some MinGW toolchains support -mcrtdll=msvcrt-os;
 # Ubuntu's win32 runtime package does not. Default MinGW i686 already links
 # msvcrt.dll, so keep the flag only when the compiler accepts it.
 CRT_FLAG=""

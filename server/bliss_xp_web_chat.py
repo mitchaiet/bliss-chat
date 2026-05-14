@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""WinXP-themed web chat UI for testing Bliss locally from phone/browser.
+"""WinXP-themed web chat UI for testing Bliss locally from a browser.
 
-Runs a persistent nc_run_native backend on the Mac and serves a tiny
-mobile-friendly web UI. Intended for LAN/Tailscale testing before packaging.
+Runs a persistent nc_run_native backend and serves a tiny browser UI.
+Intended for LAN/Tailscale testing before packaging.
 """
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ HTML = r"""<!doctype html>
     <span id="status" class="status badge">Connecting...</span>
     <span class="status">defaults: temp 0.0 · top-p 0.95 · ctx 256 · prompt assist</span>
   </div>
-  <div id="chat" class="chat"><div class="empty">Type a message below. This is the Mac-hosted test UI, not a new XP package.</div></div>
+  <div id="chat" class="chat"><div class="empty">Type a message below. This is the local browser test UI, not a new XP package.</div></div>
   <div class="composer">
     <textarea id="prompt" placeholder="Ask Bliss something..." autocomplete="off"></textarea>
     <button id="sendBtn" class="send">Send</button>
@@ -128,9 +128,9 @@ class BlissBackend:
     """Simple one-shot backend runner.
 
     Persistent pipes are faster, but a one-shot process is much more reliable
-    for phone testing because every request starts from a clean KV cache and
+    for browser testing because every request starts from a clean KV cache and
     cannot be contaminated by earlier bad turns/settings. Startup cost is ~12s
-    on this Mac for d12; generation itself is fast.
+    on the build host for d12; generation itself is fast.
     """
     def __init__(self, ctx: int, temp: float, top_p: float, seed: int | None = None):
         self.ctx = ctx
