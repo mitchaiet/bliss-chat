@@ -181,10 +181,10 @@ might be including one extra token at the boundary (or missing one). For
 small contexts this is invisible; for ctx near `long_window` it could
 cause minor scoring drift.
 
-## Memory headroom on the Dell
+## Memory headroom on the XP machine
 
 The d12 int8 model (~280 MB) plus ~36 MB of KV cache plus ~150 MB of OS
-overhead leaves ~50 MB free on the 512 MB Dell. We've seen the system
+overhead leaves limited free RAM on the XP test class. We've seen the system
 function under this pressure but it's tight. Pushing to a `--depth=14`
 or `d20` model would not fit.
 

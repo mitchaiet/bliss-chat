@@ -5,10 +5,10 @@
 #   - XP machine has telnet enabled, get.vbs and XPGET.EXE in C:\xp-llm
 #
 # Configure via env vars (no defaults for the creds — pass them in):
-#   XP_HOST   target XP machine IP        (e.g. 192.168.1.31)
-#   XP_USER   telnet username             (e.g. xpt)
+#   XP_HOST   target XP machine address
+#   XP_USER   telnet username
 #   XP_PASS   telnet password
-#   HOST_IP   this machine's LAN IP        (the XP box pulls files from us)
+#   HOST_IP   build host address reachable by the XP box
 #   HTTP_PORT HTTP server port            (default 8088)
 #
 # Usage: XP_HOST=... XP_USER=... XP_PASS=... HOST_IP=... bash push-to-xp.sh
@@ -20,7 +20,7 @@ DEPLOY="$BUILD/deploy"
 XP_HOST="${XP_HOST:?set XP_HOST to the target XP machine IP}"
 XP_USER="${XP_USER:?set XP_USER to the telnet username}"
 XP_PASS="${XP_PASS:?set XP_PASS to the telnet password}"
-HOST_IP="${HOST_IP:?set HOST_IP to this machine LAN IP}"
+HOST_IP="${HOST_IP:?set HOST_IP to build host address reachable by the XP box}"
 HTTP_PORT="${HTTP_PORT:-8088}"
 
 # Stage files to a single directory the HTTP server already serves

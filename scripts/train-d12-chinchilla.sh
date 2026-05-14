@@ -3,7 +3,7 @@
 # Same architecture, same XP int8 file size — just sees ~3.4x more training
 # tokens. Drop-in replacement for MODEL.NCB.
 #
-# Wall clock estimate: ~80 minutes on RTX 6000 Blackwell.
+# Wall clock estimate: ~80 minutes on CUDA workstation.
 set -euo pipefail
 cd "$HOME/nanochat"
 export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-$HOME/.cache/nanochat}"

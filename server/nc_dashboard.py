@@ -224,7 +224,7 @@ function render(data) {
   const g = data.gpu || {};
   const gpuCard = `
     <section class="card">
-      <h2>GPU · NVIDIA RTX PRO 6000 Blackwell</h2>
+      <h2>GPU · CUDA training workstation</h2>
       <div class="gpu-stats">
         <div class="stat"><div class="v">${fmt(g.util_pct)}%</div><div class="l">util</div></div>
         <div class="stat"><div class="v">${fmt((g.mem_used_mb||0)/1024, 1)} GB</div><div class="l">vram used</div></div>

@@ -2,7 +2,7 @@
 # Train d8 (~57M params) Chinchilla-optimal — middle ground between
 # the small d6 (30M, fast on P4) and d12 (110M, slow but coherent).
 #
-# Run on the GPU box. Should take ~25-35 min depending on
+# Run on the training host. Should take ~25-35 min depending on
 # auto-computed iteration count.
 set -euo pipefail
 cd "$HOME/nanochat"

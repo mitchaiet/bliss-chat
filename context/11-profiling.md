@@ -15,7 +15,7 @@ Counters:
 
 Reset at the top of every turn (after KV-prefix restore).
 
-## Run 1 — XP Pentium 4 @ 3 GHz, d12 int8, 30 generated tokens (2026-05)
+## Run 1 — XP Pentium 4-class machine, d12 int8, 30 generated tokens (2026-05)
 
 Prompt: `Tell me about cats`
 
