@@ -272,7 +272,7 @@ So inference adds ~36 MB on top of the ~280 MB int8 weights.
 
 ## Validation
 
-The native build on Mac generates **identical** output (greedy, fixed seed)
+The native build generates **identical** output (greedy, fixed seed)
 to a PyTorch reference run for the same model. Spot-checked on:
 - `"The capital of France is"` → same exact tokens
 - `"Once upon a time"` → same exact tokens

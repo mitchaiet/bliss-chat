@@ -13,7 +13,7 @@ Updated 2026-05-13 for the v1.2.0 packaging/release pass. Older dated sections b
 - Defaults: `ctx=256`, `temp=0.0`, `top_p=0.95`, `max_tokens=128`.
 - Coherence behavior: backend restores the clean prefixed KV snapshot for every user turn and applies tiny-model prompt assist for known fragile prompts.
 - GUI: native Win32 UI with `Speak last reply` wired to XP's built-in Microsoft Sam/SAPI.
-- Development harness: `server/bliss_xp_web_chat.py` provides a mobile-friendly Mac-hosted web UI for phone testing before baking defaults into the EXE.
+- Development harness: `server/bliss_xp_web_chat.py` provides a local browser web UI for testing before baking defaults into the EXE.
 - Positioning: v1.2.0 is a complete offline Windows XP tiny-LLM demo/milestone, not a modern assistant replacement. Expect short, simple, sometimes generic answers; next milestone is answer quality.
 
 Pair this with `context/00-overview.md` (project pitch + arch),
@@ -172,7 +172,7 @@ newline stopping, and first-sentence stopping; XP console smoke tests on
 
 **Cross-build is the only test surface for `xpchat.c`.** No POSIX build of the GUI. Run `bash scripts/build-xp.sh` to verify — it MUST be zero warnings (the build has been kept warning-clean and we want to keep that bar).
 
-**clang on macOS warns about `'windows.h' file not found` in `xpchat.c`.** Pure false positive from the user's editor; ignore. The mingw cross is the real compile.
+**An editor clang diagnostic may warn about `'windows.h' file not found` in `xpchat.c`.** This is a false positive when the editor is not using the MinGW include path; the mingw cross-compile is authoritative.
 
 **Pillow's default ICO writer uses PNG-encoded entries which Windows XP cannot load** (PNG-in-ICO support is Vista+). `assets/make_icon.py` writes BMP-format entries by hand. Don't switch back to `img.save(..., format="ICO")`.
 
@@ -254,7 +254,7 @@ xp-llm/                           (repo root, GH = mitchaiet/bliss-chat)
 | Resource | Where | Auth |
 |---|---|---|
 | XP machine | `192.168.1.31` on LAN | telnet `xpt` / `xpt-dimension` |
-| Mac (this box) | `192.168.1.43` on LAN | n/a (local) |
+| Build/HTTP host | `192.168.1.43` on LAN | n/a (local) |
 | HTTP server for XP push | `http://192.168.1.43:8088/` | none, LAN only |
 | GPU box | `100.106.68.91` (Tailscale) | ssh `mitch` / `experiential` |
 | Training dashboard | `http://100.106.68.91:8899/` | none |

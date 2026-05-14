@@ -55,7 +55,7 @@ abstraction tax.
 5. **GUI**: `xpchat.c`, native Win32 with RichEdit and a COMCTL32 progress
    bar. Spawns the inference binary once, talks to it over anonymous pipes
    with a tiny sentinel-line protocol.
-6. **Cross-compile**: Mac → XP via Homebrew's `i686-w64-mingw32-gcc`,
+6. **Cross-compile**: build host → XP via `i686-w64-mingw32-gcc`,
    statically linked against legacy `msvcrt.dll` (with several patches to
    work around Vista+ assumptions in libstdc++).
 

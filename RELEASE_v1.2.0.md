@@ -25,7 +25,7 @@ answers, with best results on terse factual prompts.
 - Adds XP-native Microsoft Sam text-to-speech via SAPI: use `Speak last reply` after an assistant answer.
 - Shows NSIS extraction/progress instead of silently unpacking the large model payload.
 - Embeds the Bliss Chat icon and refreshed version metadata.
-- Includes the Mac-hosted mobile web chat harness for local/phone testing during development.
+- Includes the local browser web chat harness for pre-packaging testing during development.
 
 ## Known limitations
 
@@ -37,7 +37,7 @@ answers, with best results on terse factual prompts.
 
 ## Verification
 
-Built on macOS with Homebrew `i686-w64-mingw32-gcc` and `makensis`.
+Built with an `i686-w64-mingw32-gcc` cross-compiler and `makensis`.
 
 - Artifact: `dist/bliss-chat-xp-v1.2.0-bliss-d12-curated-c20-v1-portable.exe`
 - Size: `260,740,046` bytes
