@@ -147,6 +147,8 @@
 
 #define PROMPT_MAX     8192
 #define BACKEND_EXE    "NC_RUN.EXE"
+#define BACKEND_SSE2_EXE "NC_RUN_SSE2.EXE"
+#define BACKEND_SSE3_EXE "NC_RUN_SSE3.EXE"
 #define MODEL_FILE     "MODEL.NCB"
 #define TOKENIZER_FILE "TOKENIZER.NCT"
 #define MODEL_LABEL    "(loading...)"
@@ -234,6 +236,8 @@ static char gModelName[160] = "(loading...)";
 static char gStatusText[160] = "Loading model...";
 
 static char gAppDir[MAX_PATH];
+static char gBackendExe[MAX_PATH] = BACKEND_EXE;
+static char gBackendFlavor[32] = "generic";
 static char gPendingUser[PROMPT_MAX];
 static char gLogPath[MAX_PATH];
 static FILE * gLogFile = NULL;
@@ -433,6 +437,35 @@ static int file_exists_in_app_dir(const char *name) {
     snprintf(path, sizeof(path), "%s\\%s", gAppDir, name);
     attr = GetFileAttributesA(path);
     return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+static int cpu_has_sse3(void) {
+#if defined(_M_IX86) || defined(__i386__) || defined(_M_X64) || defined(__x86_64__)
+    int regs[4] = {0, 0, 0, 0};
+    __asm__ __volatile__(
+        "xorl %%ecx, %%ecx\n\t"
+        "cpuid"
+        : "=a" (regs[0]), "=b" (regs[1]), "=c" (regs[2]), "=d" (regs[3])
+        : "a" (1)
+    );
+    return (regs[2] & 0x1) != 0;
+#else
+    return 0;
+#endif
+}
+
+static void select_backend_exe(void) {
+    int has_sse3 = cpu_has_sse3();
+    if (has_sse3 && file_exists_in_app_dir(BACKEND_SSE3_EXE)) {
+        snprintf(gBackendExe, sizeof(gBackendExe), "%s", BACKEND_SSE3_EXE);
+        snprintf(gBackendFlavor, sizeof(gBackendFlavor), "SSE3");
+    } else if (file_exists_in_app_dir(BACKEND_SSE2_EXE)) {
+        snprintf(gBackendExe, sizeof(gBackendExe), "%s", BACKEND_SSE2_EXE);
+        snprintf(gBackendFlavor, sizeof(gBackendFlavor), "SSE2");
+    } else {
+        snprintf(gBackendExe, sizeof(gBackendExe), "%s", BACKEND_EXE);
+        snprintf(gBackendFlavor, sizeof(gBackendFlavor), has_sse3 ? "generic/SSE3 CPU" : "generic/SSE2 CPU");
+    }
 }
 
 // ---------- transcript helpers ----------
@@ -874,8 +907,9 @@ static int launch_backend(void) {
 
     snprintf(command, sizeof(command),
         "\"%s\\%s\" \"%s\\%s\" \"%s\\%s\" -c 256 -t 0.8 -p 0.95",
-        gAppDir, BACKEND_EXE, gAppDir, MODEL_FILE, gAppDir, TOKENIZER_FILE);
+        gAppDir, gBackendExe, gAppDir, MODEL_FILE, gAppDir, TOKENIZER_FILE);
 
+    dbg_log("GUI", "selected backend: %s (%s)", gBackendExe, gBackendFlavor);
     dbg_log("GUI", "spawning backend: %s", command);
     dbg_log("GUI", "backend stderr -> %s", err_log_path);
 
@@ -890,7 +924,7 @@ static int launch_backend(void) {
 
     if (!CreateProcessA(NULL, command, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, gAppDir, &si, &pi)) {
         DWORD err = GetLastError();
-        snprintf(err_buf, sizeof(err_buf), "Could not start " BACKEND_EXE ". Windows error %lu.", (unsigned long)err);
+        snprintf(err_buf, sizeof(err_buf), "Could not start %s. Windows error %lu.", gBackendExe, (unsigned long)err);
         dbg_log("GUI", "CreateProcess failed: %lu", (unsigned long)err);
         MessageBoxA(gMain, err_buf, APP_NAME, MB_ICONERROR | MB_OK);
         goto fail;
@@ -1258,38 +1292,86 @@ done:
 }
 
 static HICON load_command_button_icon(int stop_icon) {
-    static const struct { const char *dll_name; int index; } send_icons[] = {
-        { "browseui.dll", 32 }, { "browseui.dll", 33 },
-        { "shdocvw.dll", 32 },  { "shell32.dll", 138 },
-        { "shell32.dll", 146 }
-    };
-    static const struct { const char *dll_name; int index; } stop_icons[] = {
-        { "browseui.dll", 26 }, { "browseui.dll", 27 },
-        { "shdocvw.dll", 26 },  { "shell32.dll", 131 },
-        { "shell32.dll", 109 }
-    };
-    int i;
+    // Retained for older helper callers, but Send/Stop are now owner-drawn
+    // buttons. Stock shell/browser icon indexes vary across XP installs and
+    // resolved to a yellow caution sign on real hardware.
     const int size = 24;
-    if (stop_icon) {
-        for (i = 0; i < (int)(sizeof(stop_icons) / sizeof(stop_icons[0])); i++) {
-            HICON icon = load_extracted_icon(stop_icons[i].dll_name, stop_icons[i].index, size);
-            if (icon) return icon;
-        }
-        {
-            HICON shared = (HICON)LoadImageA(NULL, IDI_ERROR, IMAGE_ICON, size, size,
-                                             LR_DEFAULTCOLOR | LR_SHARED);
-            if (shared) {
-                HICON icon = (HICON)CopyImage(shared, IMAGE_ICON, size, size, 0);
-                if (icon) return icon;
-            }
-        }
-    } else {
-        for (i = 0; i < (int)(sizeof(send_icons) / sizeof(send_icons[0])); i++) {
-            HICON icon = load_extracted_icon(send_icons[i].dll_name, send_icons[i].index, size);
-            if (icon) return icon;
-        }
-    }
     return make_fallback_command_icon(stop_icon, size);
+}
+
+static void draw_command_button(const DRAWITEMSTRUCT *dis) {
+    HDC dc;
+    RECT rc;
+    BOOL disabled;
+    BOOL pressed;
+    HBRUSH face;
+    HPEN edge_light;
+    HPEN edge_dark;
+    HPEN old_pen;
+    HBRUSH old_brush;
+
+    if (!dis) return;
+    dc = dis->hDC;
+    rc = dis->rcItem;
+    disabled = (dis->itemState & ODS_DISABLED) != 0;
+    pressed = (dis->itemState & ODS_SELECTED) != 0;
+
+    face = GetSysColorBrush(COLOR_BTNFACE);
+    FillRect(dc, &rc, face);
+
+    edge_light = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_BTNHIGHLIGHT));
+    edge_dark = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_BTNSHADOW));
+    old_pen = (HPEN)SelectObject(dc, pressed ? edge_dark : edge_light);
+    MoveToEx(dc, rc.left, rc.bottom - 1, NULL);
+    LineTo(dc, rc.left, rc.top);
+    LineTo(dc, rc.right - 1, rc.top);
+    SelectObject(dc, pressed ? edge_light : edge_dark);
+    LineTo(dc, rc.right - 1, rc.bottom - 1);
+    LineTo(dc, rc.left, rc.bottom - 1);
+    SelectObject(dc, old_pen);
+    DeleteObject(edge_light);
+    DeleteObject(edge_dark);
+
+    InflateRect(&rc, -8, -8);
+    if (pressed) OffsetRect(&rc, 1, 1);
+
+    if (dis->CtlID == IDC_SEND) {
+        POINT pts[7];
+        COLORREF fill = disabled ? GetSysColor(COLOR_GRAYTEXT) : RGB(31, 168, 38);
+        COLORREF outline = disabled ? GetSysColor(COLOR_BTNSHADOW) : RGB(0, 102, 0);
+        HBRUSH green = CreateSolidBrush(fill);
+        HPEN pen = CreatePen(PS_SOLID, 1, outline);
+        old_brush = (HBRUSH)SelectObject(dc, green);
+        old_pen = (HPEN)SelectObject(dc, pen);
+        pts[0].x = rc.left;              pts[0].y = rc.top + (rc.bottom - rc.top) / 3;
+        pts[1].x = rc.left + (rc.right - rc.left) / 2; pts[1].y = pts[0].y;
+        pts[2].x = pts[1].x;             pts[2].y = rc.top;
+        pts[3].x = rc.right;             pts[3].y = rc.top + (rc.bottom - rc.top) / 2;
+        pts[4].x = pts[1].x;             pts[4].y = rc.bottom;
+        pts[5].x = pts[1].x;             pts[5].y = rc.bottom - (rc.bottom - rc.top) / 3;
+        pts[6].x = rc.left;              pts[6].y = pts[5].y;
+        Polygon(dc, pts, 7);
+        SelectObject(dc, old_pen);
+        SelectObject(dc, old_brush);
+        DeleteObject(pen);
+        DeleteObject(green);
+    } else if (dis->CtlID == IDC_STOP) {
+        COLORREF color = disabled ? GetSysColor(COLOR_GRAYTEXT) : RGB(190, 0, 0);
+        HPEN pen = CreatePen(PS_SOLID, 4, color);
+        old_pen = (HPEN)SelectObject(dc, pen);
+        MoveToEx(dc, rc.left + 2, rc.top + 2, NULL);
+        LineTo(dc, rc.right - 2, rc.bottom - 2);
+        MoveToEx(dc, rc.right - 2, rc.top + 2, NULL);
+        LineTo(dc, rc.left + 2, rc.bottom - 2);
+        SelectObject(dc, old_pen);
+        DeleteObject(pen);
+    }
+
+    if (dis->itemState & ODS_FOCUS) {
+        RECT fr = dis->rcItem;
+        InflateRect(&fr, -3, -3);
+        DrawFocusRect(dc, &fr);
+    }
 }
 
 static HIMAGELIST load_builtin_toolbar_imagelist(void) {
@@ -1442,12 +1524,8 @@ static void create_controls(HWND hwnd) {
     SendMessageA(gInput, EM_SETLIMITTEXT, PROMPT_MAX - 1, 0);
     SendMessageA(gInput, EM_SETBKGNDCOLOR, 0, RGB(255, 255, 255));
 
-    gSend  = make_control("BUTTON", "", BS_DEFPUSHBUTTON | BS_ICON | WS_TABSTOP, 0, IDC_SEND, hwnd);
-    gStop  = make_control("BUTTON", "", BS_PUSHBUTTON | BS_ICON | WS_TABSTOP,    0, IDC_STOP, hwnd);
-    gSendIcon = load_command_button_icon(0);
-    gStopIcon = load_command_button_icon(1);
-    if (gSendIcon) SendMessageA(gSend, BM_SETIMAGE, IMAGE_ICON, (LPARAM)gSendIcon);
-    if (gStopIcon) SendMessageA(gStop, BM_SETIMAGE, IMAGE_ICON, (LPARAM)gStopIcon);
+    gSend  = make_control("BUTTON", "", BS_DEFPUSHBUTTON | BS_OWNERDRAW | WS_TABSTOP, 0, IDC_SEND, hwnd);
+    gStop  = make_control("BUTTON", "", BS_PUSHBUTTON | BS_OWNERDRAW | WS_TABSTOP,    0, IDC_STOP, hwnd);
     gClear = make_control("BUTTON", "Clear", BS_PUSHBUTTON | WS_TABSTOP,    0, IDC_CLEAR, hwnd);
     ShowWindow(gClear, SW_HIDE);
     gStatus = CreateWindowExA(0, STATUSCLASSNAMEA, "",
@@ -2833,15 +2911,18 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         chats_index_disk();
         clear_transcript();
         diagnostics_appendf("Waiting for model...");
-        if (!file_exists_in_app_dir(BACKEND_EXE) || !file_exists_in_app_dir(MODEL_FILE)
+        select_backend_exe();
+        dbg_log("GUI", "backend selection = %s (%s)", gBackendExe, gBackendFlavor);
+        diagnostics_appendf("Selected %s backend (%s).", gBackendExe, gBackendFlavor);
+        if (!file_exists_in_app_dir(gBackendExe) || !file_exists_in_app_dir(MODEL_FILE)
             || !file_exists_in_app_dir(TOKENIZER_FILE)) {
             dbg_log("GUI", "missing files: %s=%d %s=%d %s=%d",
-                BACKEND_EXE, file_exists_in_app_dir(BACKEND_EXE),
+                gBackendExe, file_exists_in_app_dir(gBackendExe),
                 MODEL_FILE, file_exists_in_app_dir(MODEL_FILE),
                 TOKENIZER_FILE, file_exists_in_app_dir(TOKENIZER_FILE));
             diagnostics_appendf("Required backend/model/tokenizer files are missing.");
             MessageBoxA(hwnd,
-                BACKEND_EXE ", " MODEL_FILE ", or " TOKENIZER_FILE " is missing from the application folder.",
+                "Backend executable, " MODEL_FILE ", or " TOKENIZER_FILE " is missing from the application folder.",
                 APP_NAME, MB_ICONERROR | MB_OK);
         } else if (!launch_backend()) {
             set_status("Backend failed to start");
@@ -2877,6 +2958,15 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         mmi->ptMinTrackSize.x = 900;
         mmi->ptMinTrackSize.y = 560;
         return 0;
+    }
+
+    case WM_DRAWITEM: {
+        DRAWITEMSTRUCT *dis = (DRAWITEMSTRUCT *)lparam;
+        if (dis && (dis->CtlID == IDC_SEND || dis->CtlID == IDC_STOP)) {
+            draw_command_button(dis);
+            return TRUE;
+        }
+        break;
     }
 
     case WM_NOTIFY: {

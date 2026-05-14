@@ -1,0 +1,18 @@
+{
+  "release": "v1.2.1",
+  "model_name": "bliss-d12-curated-c20-v1",
+  "model_architecture": "d12",
+  "training_steps": 33600,
+  "final_validation_bpb": 0.818168,
+  "files": {
+    "NC_RUN.EXE": "9c085c263994177fe1ab77d3dde0d571040b1b177d65dbc18dfa6fe38c308ce0",
+    "NC_RUN_SSE2.EXE": "9c085c263994177fe1ab77d3dde0d571040b1b177d65dbc18dfa6fe38c308ce0",
+    "NC_RUN_SSE3.EXE": "580bbe1010baa5f52e9f5178cdeeb125bd85256f621787e29ca19672c7709cd8",
+    "XPCHAT.EXE": "f9ec911035e1104cbcd92b6d34b82737b22097b41e4c98a5d9e09bd9dcfcf1ea",
+    "MODEL.NCB": "6361d0cb21675763c0ae8a9fdb591f0e37b6c0f2d14ec38507f8d2d40fe4c578",
+    "TOKENIZER.NCT": "292796d0675114f3bcdf88a80127518fb4bcf365058cee446b3ff827024ebff3"
+  },
+  "compatibility": {
+    "backend_selection": "XPCHAT detects SSE3 at runtime; launches NC_RUN_SSE3.EXE on SSE3 CPUs, otherwise NC_RUN_SSE2.EXE for Pentium M/SSE2 systems."
+  }
+}

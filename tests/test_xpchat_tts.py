@@ -32,6 +32,14 @@ class XpChatTtsTests(unittest.TestCase):
         self.assertIn("-loleaut32", build)
         self.assertIn("-luuid", build)
 
+    def test_send_button_always_uses_owner_drawn_green_arrow(self):
+        src = read_xpchat()
+        self.assertIn("BS_DEFPUSHBUTTON | BS_OWNERDRAW", src)
+        self.assertIn("draw_command_button", src)
+        self.assertIn("dis->CtlID == IDC_SEND", src)
+        self.assertIn("RGB(31, 168, 38)", src)
+        self.assertNotIn("send_icons[]", src)
+
 
 if __name__ == "__main__":
     unittest.main()
