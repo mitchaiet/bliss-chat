@@ -1336,25 +1336,72 @@ static void draw_command_button(const DRAWITEMSTRUCT *dis) {
     if (pressed) OffsetRect(&rc, 1, 1);
 
     if (dis->CtlID == IDC_SEND) {
+        // XP-style Explorer/IE "Go" button: green square, white arrow, Go label.
+        // Drawn ourselves so the release looks the same on every XP install.
+        RECT icon_rc;
+        RECT text_rc;
         POINT pts[7];
-        COLORREF fill = disabled ? GetSysColor(COLOR_GRAYTEXT) : RGB(31, 168, 38);
-        COLORREF outline = disabled ? GetSysColor(COLOR_BTNSHADOW) : RGB(0, 102, 0);
-        HBRUSH green = CreateSolidBrush(fill);
-        HPEN pen = CreatePen(PS_SOLID, 1, outline);
-        old_brush = (HBRUSH)SelectObject(dc, green);
+        COLORREF green_top = disabled ? GetSysColor(COLOR_BTNFACE) : RGB(65, 193, 65);
+        COLORREF green_bottom = disabled ? GetSysColor(COLOR_BTNFACE) : RGB(8, 150, 39);
+        COLORREF outline = disabled ? GetSysColor(COLOR_BTNSHADOW) : RGB(0, 112, 24);
+        COLORREF arrow = disabled ? GetSysColor(COLOR_GRAYTEXT) : RGB(255, 255, 255);
+        int mid_y;
+        HBRUSH top_brush;
+        HBRUSH bottom_brush;
+        HPEN pen;
+        HBRUSH white_brush;
+        int old_bkmode;
+        COLORREF old_text;
+
+        icon_rc = rc;
+        icon_rc.right = icon_rc.left + (icon_rc.bottom - icon_rc.top);
+        text_rc = rc;
+        text_rc.left = icon_rc.right + 7;
+        if (icon_rc.right > rc.right - 24) icon_rc.right = rc.right - 24;
+
+        mid_y = icon_rc.top + (icon_rc.bottom - icon_rc.top) / 2;
+        top_brush = CreateSolidBrush(green_top);
+        bottom_brush = CreateSolidBrush(green_bottom);
+        FillRect(dc, &icon_rc, top_brush);
+        {
+            RECT bot = icon_rc;
+            bot.top = mid_y;
+            FillRect(dc, &bot, bottom_brush);
+        }
+        DeleteObject(top_brush);
+        DeleteObject(bottom_brush);
+
+        pen = CreatePen(PS_SOLID, 1, outline);
         old_pen = (HPEN)SelectObject(dc, pen);
-        pts[0].x = rc.left;              pts[0].y = rc.top + (rc.bottom - rc.top) / 3;
-        pts[1].x = rc.left + (rc.right - rc.left) / 2; pts[1].y = pts[0].y;
-        pts[2].x = pts[1].x;             pts[2].y = rc.top;
-        pts[3].x = rc.right;             pts[3].y = rc.top + (rc.bottom - rc.top) / 2;
-        pts[4].x = pts[1].x;             pts[4].y = rc.bottom;
-        pts[5].x = pts[1].x;             pts[5].y = rc.bottom - (rc.bottom - rc.top) / 3;
-        pts[6].x = rc.left;              pts[6].y = pts[5].y;
+        old_brush = (HBRUSH)SelectObject(dc, GetStockObject(NULL_BRUSH));
+        Rectangle(dc, icon_rc.left, icon_rc.top, icon_rc.right, icon_rc.bottom);
+        SelectObject(dc, old_brush);
+        SelectObject(dc, old_pen);
+        DeleteObject(pen);
+
+        InflateRect(&icon_rc, -6, -7);
+        pts[0].x = icon_rc.left;          pts[0].y = icon_rc.top + (icon_rc.bottom - icon_rc.top) / 3;
+        pts[1].x = icon_rc.left + (icon_rc.right - icon_rc.left) / 2; pts[1].y = pts[0].y;
+        pts[2].x = pts[1].x;              pts[2].y = icon_rc.top;
+        pts[3].x = icon_rc.right;         pts[3].y = icon_rc.top + (icon_rc.bottom - icon_rc.top) / 2;
+        pts[4].x = pts[1].x;              pts[4].y = icon_rc.bottom;
+        pts[5].x = pts[1].x;              pts[5].y = icon_rc.bottom - (icon_rc.bottom - icon_rc.top) / 3;
+        pts[6].x = icon_rc.left;          pts[6].y = pts[5].y;
+        white_brush = CreateSolidBrush(arrow);
+        pen = CreatePen(PS_SOLID, 1, arrow);
+        old_brush = (HBRUSH)SelectObject(dc, white_brush);
+        old_pen = (HPEN)SelectObject(dc, pen);
         Polygon(dc, pts, 7);
         SelectObject(dc, old_pen);
         SelectObject(dc, old_brush);
         DeleteObject(pen);
-        DeleteObject(green);
+        DeleteObject(white_brush);
+
+        old_bkmode = SetBkMode(dc, TRANSPARENT);
+        old_text = SetTextColor(dc, disabled ? GetSysColor(COLOR_GRAYTEXT) : RGB(0, 0, 0));
+        DrawTextA(dc, "Go", -1, &text_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        SetTextColor(dc, old_text);
+        SetBkMode(dc, old_bkmode);
     } else if (dis->CtlID == IDC_STOP) {
         COLORREF color = disabled ? GetSysColor(COLOR_GRAYTEXT) : RGB(190, 0, 0);
         HPEN pen = CreatePen(PS_SOLID, 4, color);
@@ -1814,9 +1861,10 @@ static void layout_controls(HWND hwnd) {
         int input_x = gRcInputPane.left + 12;
         int input_y = gRcInputPane.top + 39;
         int input_box_h = compact ? 30 : 34;
-        int icon_sz = input_box_h;
+        int stop_w = input_box_h;
+        int send_w = compact ? 62 : 68;
         int button_gap = 6;
-        int buttons_w = icon_sz * 2 + button_gap;
+        int buttons_w = send_w + stop_w + button_gap;
         int button_x = gRcInputPane.right - buttons_w - 14;
         int input_w = button_x - input_x - 12;
         MoveWindow(gInputGroup, gRcInputPane.left, gRcInputPane.top,
@@ -1833,9 +1881,9 @@ static void layout_controls(HWND hwnd) {
 
         if (input_w < 160) input_w = 160;
         MoveWindow(gInput, input_x, input_y, input_w, input_box_h, TRUE);
-        MoveWindow(gSend, button_x, input_y, icon_sz, input_box_h, TRUE);
-        MoveWindow(gStop, button_x + icon_sz + button_gap, input_y,
-                   icon_sz, input_box_h, TRUE);
+        MoveWindow(gSend, button_x, input_y, send_w, input_box_h, TRUE);
+        MoveWindow(gStop, button_x + send_w + button_gap, input_y,
+                   stop_w, input_box_h, TRUE);
         MoveWindow(gInputHint, gRcInputPane.left + 12, input_y + input_box_h + 9,
                    gRcInputPane.right - gRcInputPane.left - 24, 16, TRUE);
     }

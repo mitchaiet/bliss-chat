@@ -35,9 +35,10 @@ class XpChatTtsTests(unittest.TestCase):
     def test_send_button_always_uses_owner_drawn_green_arrow(self):
         src = read_xpchat()
         self.assertIn("BS_DEFPUSHBUTTON | BS_OWNERDRAW", src)
-        self.assertIn("draw_command_button", src)
+        self.assertIn("XP-style Explorer/IE", src)
+        self.assertIn('DrawTextA(dc, "Go"', src)
         self.assertIn("dis->CtlID == IDC_SEND", src)
-        self.assertIn("RGB(31, 168, 38)", src)
+        self.assertIn("RGB(8, 150, 39)", src)
         self.assertNotIn("send_icons[]", src)
 
 
