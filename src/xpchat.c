@@ -1292,11 +1292,6 @@ done:
 }
 
 static HICON load_command_button_icon(int stop_icon) {
-    static const struct { const char *dll_name; int index; } send_icons[] = {
-        { "browseui.dll", 32 }, { "browseui.dll", 33 },
-        { "shdocvw.dll", 32 },  { "shell32.dll", 138 },
-        { "shell32.dll", 146 }
-    };
     static const struct { const char *dll_name; int index; } stop_icons[] = {
         { "browseui.dll", 26 }, { "browseui.dll", 27 },
         { "shdocvw.dll", 26 },  { "shell32.dll", 131 },
@@ -1304,22 +1299,21 @@ static HICON load_command_button_icon(int stop_icon) {
     };
     int i;
     const int size = 24;
-    if (stop_icon) {
-        for (i = 0; i < (int)(sizeof(stop_icons) / sizeof(stop_icons[0])); i++) {
-            HICON icon = load_extracted_icon(stop_icons[i].dll_name, stop_icons[i].index, size);
-            if (icon) return icon;
-        }
-        {
-            HICON shared = (HICON)LoadImageA(NULL, IDI_ERROR, IMAGE_ICON, size, size,
-                                             LR_DEFAULTCOLOR | LR_SHARED);
-            if (shared) {
-                HICON icon = (HICON)CopyImage(shared, IMAGE_ICON, size, size, 0);
-                if (icon) return icon;
-            }
-        }
-    } else {
-        for (i = 0; i < (int)(sizeof(send_icons) / sizeof(send_icons[0])); i++) {
-            HICON icon = load_extracted_icon(send_icons[i].dll_name, send_icons[i].index, size);
+
+    // Do not use shell/browser DLL icon indexes for Send. They vary by XP
+    // install/theme and have resolved to a yellow warning/caution sign on real
+    // machines. The send button should always be our explicit green arrow.
+    if (!stop_icon) return make_fallback_command_icon(0, size);
+
+    for (i = 0; i < (int)(sizeof(stop_icons) / sizeof(stop_icons[0])); i++) {
+        HICON icon = load_extracted_icon(stop_icons[i].dll_name, stop_icons[i].index, size);
+        if (icon) return icon;
+    }
+    {
+        HICON shared = (HICON)LoadImageA(NULL, IDI_ERROR, IMAGE_ICON, size, size,
+                                         LR_DEFAULTCOLOR | LR_SHARED);
+        if (shared) {
+            HICON icon = (HICON)CopyImage(shared, IMAGE_ICON, size, size, 0);
             if (icon) return icon;
         }
     }
