@@ -1292,32 +1292,86 @@ done:
 }
 
 static HICON load_command_button_icon(int stop_icon) {
-    static const struct { const char *dll_name; int index; } stop_icons[] = {
-        { "browseui.dll", 26 }, { "browseui.dll", 27 },
-        { "shdocvw.dll", 26 },  { "shell32.dll", 131 },
-        { "shell32.dll", 109 }
-    };
-    int i;
+    // Retained for older helper callers, but Send/Stop are now owner-drawn
+    // buttons. Stock shell/browser icon indexes vary across XP installs and
+    // resolved to a yellow caution sign on real hardware.
     const int size = 24;
-
-    // Do not use shell/browser DLL icon indexes for Send. They vary by XP
-    // install/theme and have resolved to a yellow warning/caution sign on real
-    // machines. The send button should always be our explicit green arrow.
-    if (!stop_icon) return make_fallback_command_icon(0, size);
-
-    for (i = 0; i < (int)(sizeof(stop_icons) / sizeof(stop_icons[0])); i++) {
-        HICON icon = load_extracted_icon(stop_icons[i].dll_name, stop_icons[i].index, size);
-        if (icon) return icon;
-    }
-    {
-        HICON shared = (HICON)LoadImageA(NULL, IDI_ERROR, IMAGE_ICON, size, size,
-                                         LR_DEFAULTCOLOR | LR_SHARED);
-        if (shared) {
-            HICON icon = (HICON)CopyImage(shared, IMAGE_ICON, size, size, 0);
-            if (icon) return icon;
-        }
-    }
     return make_fallback_command_icon(stop_icon, size);
+}
+
+static void draw_command_button(const DRAWITEMSTRUCT *dis) {
+    HDC dc;
+    RECT rc;
+    BOOL disabled;
+    BOOL pressed;
+    HBRUSH face;
+    HPEN edge_light;
+    HPEN edge_dark;
+    HPEN old_pen;
+    HBRUSH old_brush;
+
+    if (!dis) return;
+    dc = dis->hDC;
+    rc = dis->rcItem;
+    disabled = (dis->itemState & ODS_DISABLED) != 0;
+    pressed = (dis->itemState & ODS_SELECTED) != 0;
+
+    face = GetSysColorBrush(COLOR_BTNFACE);
+    FillRect(dc, &rc, face);
+
+    edge_light = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_BTNHIGHLIGHT));
+    edge_dark = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_BTNSHADOW));
+    old_pen = (HPEN)SelectObject(dc, pressed ? edge_dark : edge_light);
+    MoveToEx(dc, rc.left, rc.bottom - 1, NULL);
+    LineTo(dc, rc.left, rc.top);
+    LineTo(dc, rc.right - 1, rc.top);
+    SelectObject(dc, pressed ? edge_light : edge_dark);
+    LineTo(dc, rc.right - 1, rc.bottom - 1);
+    LineTo(dc, rc.left, rc.bottom - 1);
+    SelectObject(dc, old_pen);
+    DeleteObject(edge_light);
+    DeleteObject(edge_dark);
+
+    InflateRect(&rc, -8, -8);
+    if (pressed) OffsetRect(&rc, 1, 1);
+
+    if (dis->CtlID == IDC_SEND) {
+        POINT pts[7];
+        COLORREF fill = disabled ? GetSysColor(COLOR_GRAYTEXT) : RGB(31, 168, 38);
+        COLORREF outline = disabled ? GetSysColor(COLOR_BTNSHADOW) : RGB(0, 102, 0);
+        HBRUSH green = CreateSolidBrush(fill);
+        HPEN pen = CreatePen(PS_SOLID, 1, outline);
+        old_brush = (HBRUSH)SelectObject(dc, green);
+        old_pen = (HPEN)SelectObject(dc, pen);
+        pts[0].x = rc.left;              pts[0].y = rc.top + (rc.bottom - rc.top) / 3;
+        pts[1].x = rc.left + (rc.right - rc.left) / 2; pts[1].y = pts[0].y;
+        pts[2].x = pts[1].x;             pts[2].y = rc.top;
+        pts[3].x = rc.right;             pts[3].y = rc.top + (rc.bottom - rc.top) / 2;
+        pts[4].x = pts[1].x;             pts[4].y = rc.bottom;
+        pts[5].x = pts[1].x;             pts[5].y = rc.bottom - (rc.bottom - rc.top) / 3;
+        pts[6].x = rc.left;              pts[6].y = pts[5].y;
+        Polygon(dc, pts, 7);
+        SelectObject(dc, old_pen);
+        SelectObject(dc, old_brush);
+        DeleteObject(pen);
+        DeleteObject(green);
+    } else if (dis->CtlID == IDC_STOP) {
+        COLORREF color = disabled ? GetSysColor(COLOR_GRAYTEXT) : RGB(190, 0, 0);
+        HPEN pen = CreatePen(PS_SOLID, 4, color);
+        old_pen = (HPEN)SelectObject(dc, pen);
+        MoveToEx(dc, rc.left + 2, rc.top + 2, NULL);
+        LineTo(dc, rc.right - 2, rc.bottom - 2);
+        MoveToEx(dc, rc.right - 2, rc.top + 2, NULL);
+        LineTo(dc, rc.left + 2, rc.bottom - 2);
+        SelectObject(dc, old_pen);
+        DeleteObject(pen);
+    }
+
+    if (dis->itemState & ODS_FOCUS) {
+        RECT fr = dis->rcItem;
+        InflateRect(&fr, -3, -3);
+        DrawFocusRect(dc, &fr);
+    }
 }
 
 static HIMAGELIST load_builtin_toolbar_imagelist(void) {
@@ -1470,12 +1524,8 @@ static void create_controls(HWND hwnd) {
     SendMessageA(gInput, EM_SETLIMITTEXT, PROMPT_MAX - 1, 0);
     SendMessageA(gInput, EM_SETBKGNDCOLOR, 0, RGB(255, 255, 255));
 
-    gSend  = make_control("BUTTON", "", BS_DEFPUSHBUTTON | BS_ICON | WS_TABSTOP, 0, IDC_SEND, hwnd);
-    gStop  = make_control("BUTTON", "", BS_PUSHBUTTON | BS_ICON | WS_TABSTOP,    0, IDC_STOP, hwnd);
-    gSendIcon = load_command_button_icon(0);
-    gStopIcon = load_command_button_icon(1);
-    if (gSendIcon) SendMessageA(gSend, BM_SETIMAGE, IMAGE_ICON, (LPARAM)gSendIcon);
-    if (gStopIcon) SendMessageA(gStop, BM_SETIMAGE, IMAGE_ICON, (LPARAM)gStopIcon);
+    gSend  = make_control("BUTTON", "", BS_DEFPUSHBUTTON | BS_OWNERDRAW | WS_TABSTOP, 0, IDC_SEND, hwnd);
+    gStop  = make_control("BUTTON", "", BS_PUSHBUTTON | BS_OWNERDRAW | WS_TABSTOP,    0, IDC_STOP, hwnd);
     gClear = make_control("BUTTON", "Clear", BS_PUSHBUTTON | WS_TABSTOP,    0, IDC_CLEAR, hwnd);
     ShowWindow(gClear, SW_HIDE);
     gStatus = CreateWindowExA(0, STATUSCLASSNAMEA, "",
@@ -2908,6 +2958,15 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         mmi->ptMinTrackSize.x = 900;
         mmi->ptMinTrackSize.y = 560;
         return 0;
+    }
+
+    case WM_DRAWITEM: {
+        DRAWITEMSTRUCT *dis = (DRAWITEMSTRUCT *)lparam;
+        if (dis && (dis->CtlID == IDC_SEND || dis->CtlID == IDC_STOP)) {
+            draw_command_button(dis);
+            return TRUE;
+        }
+        break;
     }
 
     case WM_NOTIFY: {
