@@ -12,8 +12,6 @@ it's shaped the way it is.
 
 Target class: Windows XP-era 32-bit machines with Pentium 4-class CPUs, SSE2, limited RAM, and no modern GPU compute path.
 
-Public docs intentionally avoid private lab-machine identifiers, network details, and exact personal hardware specs.
-
 ## Process & wire layout at runtime
 
 ```

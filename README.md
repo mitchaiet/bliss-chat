@@ -55,7 +55,7 @@ Known limitations:
 | Cross-compile | Linux → Win32 via `i686-w64-mingw32-gcc`, statically linked against legacy `msvcrt.dll` |
 | Dashboard | `nc_dashboard.py` — single-file http.server + JS frontend, parses training logs |
 
-Target hardware: **Windows XP-era Pentium 4-class machines** with SSE2 and limited RAM. The public docs intentionally avoid private lab-machine specifics.
+Target hardware: **Windows XP-era Pentium 4-class machines** with SSE2 and limited RAM.
 
 ## Repository layout
 
