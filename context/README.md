@@ -20,6 +20,7 @@ at the repo root.
 | `11-profiling.md` | Per-Pentium-4-cycle perf breakdown, SSE2 deltas |
 | `12-gui-architecture.md` | Win32 control hierarchy, dialogs, message routing |
 | `13-session-log.md` | Chronological session log of the v1.0.0 push |
+| `14-test-devices.md` | Physical XP-era test devices and compatibility notes |
 
 ## Reading order
 

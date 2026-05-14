@@ -67,6 +67,8 @@ Section
   ; module path.
   File "${BUILDDIR}\XPCHAT.EXE"
   File "${BUILDDIR}\NC_RUN.EXE"
+  File "${BUILDDIR}\NC_RUN_SSE2.EXE"
+  File "${BUILDDIR}\NC_RUN_SSE3.EXE"
   File "${DEPLOYDIR}\TOKENIZER.NCT"
   File "${DEPLOYDIR}\MODEL_VERSION.txt"
   File "${DEPLOYDIR}\release-manifest.json"
