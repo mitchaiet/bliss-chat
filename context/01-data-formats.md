@@ -84,7 +84,7 @@ and rotary tables stay fp32 — they're tiny.
 | d6 (chinchilla) | 6 | 384 | ~30 M | ~295 MB | **75 MB** |
 | d12 | 12 | 768 | ~110 M | ~1.1 GB | **280 MB** |
 
-The Pentium 4 has 512 MB RAM total. The d12 model leaves enough headroom
+The target XP-era machines have limited RAM. The d12 model leaves enough headroom
 for KV cache + OS only because of int8 quantization. d20 (~250 M params,
 ~700 MB int8) would not fit.
 

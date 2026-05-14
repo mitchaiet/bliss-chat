@@ -5,20 +5,14 @@ Windows XP `.exe` that embeds `XPCHAT.EXE`, `NC_RUN.EXE`, `MODEL.NCB`,
 `TOKENIZER.NCT`, `MODEL_VERSION.txt`, and `release-manifest.json`.
 
 A complete, end-to-end mapping from a fresh PyTorch checkpoint to live
-inference on a Pentium 4. Each layer of the system, what it does, and why
+inference on Windows XP-era hardware. Each layer of the system, what it does, and why
 it's shaped the way it is.
 
 ## Hardware target
 
-Dell Dimension 4700, retail-shipped 2004:
-- Intel Pentium 4 @ 3.0 GHz, 1 physical core, hyper-threaded (2 logical)
-- ISA: SSE, SSE2, SSE3 — **no SSE4, no AVX, no AVX2, no FMA**
-- 512 MB DDR-400 RAM (~3.2 GB/s memory bandwidth)
-- Intel 82915G integrated graphics (no compute path)
-- Maxtor 200 GB IDE drive
-- Windows XP Professional SP3 32-bit
+Target class: Windows XP-era 32-bit machines with Pentium 4-class CPUs, SSE2, limited RAM, and no modern GPU compute path.
 
-Practical RAM budget after OS: **~250–300 MB free**.
+Public docs intentionally avoid private lab-machine identifiers, network details, and exact personal hardware specs.
 
 ## Process & wire layout at runtime
 
@@ -183,7 +177,7 @@ Single Python file, stdlib only. HTTP server on `:8899`. Two endpoints:
   from `~/nanochat-logs/`, list of running processes.
 
 Runs as a systemd user service (`nc-dashboard.service`) with linger
-enabled so it survives SSH disconnect (Tailscale SSH otherwise reaps
+enabled so it survives SSH disconnect (remote SSH otherwise reaps
 detached processes).
 
 ## Why custom-build instead of `llama.cpp`?

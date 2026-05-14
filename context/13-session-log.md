@@ -104,7 +104,7 @@ via `assistant_end` before completing the stop pattern.
 ### Iter 5 — Chinchilla d6 (`1414444`)
 
 Trained d6 at ratio 20 (Chinchilla-optimal) vs the original ratio 12.
-Wall clock: **9.1 min** on RTX 6000.
+Wall clock: **9.1 min** on CUDA workstation.
 
 - val_bpb: 1.165 → **1.075** (8 % better)
 - 30 M params, 75 MB int8, drop-in
@@ -158,7 +158,7 @@ WM_COMMAND.
   - New `assets/bliss_chat.ico` (hand-written multi-res BMP-format
     .ico via PIL; Pillow's default writer uses PNG-encoded entries
     which Windows XP can't read — discovered the hard way).
-  - GUI subtitle now shows CPU name + cores + RAM, read from
+  - GUI subtitle now shows a generic CPU/RAM summary, read from
     `HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0\
     ProcessorNameString` and `GlobalMemoryStatusEx`.
 
@@ -403,7 +403,7 @@ At the time of the handoff write (22:33): 31.8 % done, loss 3.15,
 ETA ~2 h 9 min → finish ~00:42.
 
 When this lands, the plan is:
-1. Export `d12_028320.pt` → `d12-chinchilla.ncb --int8` on the GPU box.
+1. Export `d12_028320.pt` → `d12-chinchilla.ncb --int8` on the training host.
 2. SCP back to the build host, drop in as `build/deploy/MODEL.NCB`.
 3. Re-run `bench/run_bench.py` + `bench/score.py`.
 4. If meaningful improvement, push to XP; otherwise pivot to (B) or

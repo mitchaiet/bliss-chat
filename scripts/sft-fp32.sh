@@ -2,7 +2,7 @@
 # SFT attempt #N: force COMPUTE_DTYPE=torch.float32 to test hypothesis 3
 # from 10-known-issues.md (bf16 forward overflow on long SmolTalk samples).
 #
-# Run on the GPU box.
+# Run on the training host.
 set -euo pipefail
 cd "$HOME/nanochat"
 export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-$HOME/.cache/nanochat}"

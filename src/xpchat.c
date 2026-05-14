@@ -227,8 +227,8 @@ static RECT gRcConversationPane;
 static RECT gRcDiagnosticsPane;
 static RECT gRcInputPane;
 static RECT gRcStatusBar;
-static char gPcCpu[160] = "Intel(R) Pentium(R) 4 CPU 3.00GHz";
-static char gPcMemory[64] = "512 MB RAM";
+static char gPcCpu[160] = "Windows XP-era CPU";
+static char gPcMemory[64] = "limited RAM";
 static char gPcThreads[32] = "1";
 static char gModelName[160] = "(loading...)";
 static char gStatusText[160] = "Loading model...";
@@ -1354,7 +1354,7 @@ static void get_pc_specs_detail(char *cpu_out, int cpu_sz,
     mem.dwLength = sizeof(mem);
     unsigned int ram_mb = 0;
     if (GlobalMemoryStatusEx(&mem)) {
-        // Round to nearest 64 MB so we don't print "511 MB" on a 512 MB box.
+        // Round to nearest 64 MB so legacy RAM sizes display cleanly.
         unsigned long long mb = mem.ullTotalPhys / (1024ULL * 1024ULL);
         ram_mb = (unsigned int)(((mb + 32) / 64) * 64);
     }

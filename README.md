@@ -3,12 +3,12 @@
 A chat LLM that runs natively on Windows XP, end-to-end.
 
 Train a custom transformer on a modern GPU, export to a tiny binary format,
-run inference on a 21-year-old Pentium 4 via a hand-written C engine and a
+run inference on Windows XP-era hardware via a hand-written C engine and a
 native Win32 GUI.
 
 **No internet. No emulation. No cloud.** A real tiny LLM, packaged as one
 self-contained Windows XP `.exe`, generating short local responses on a
-single-core 3 GHz Pentium 4 from 2004.
+Windows XP-era machine.
 
 ## Download
 
@@ -55,8 +55,7 @@ Known limitations:
 | Cross-compile | Linux → Win32 via `i686-w64-mingw32-gcc`, statically linked against legacy `msvcrt.dll` |
 | Dashboard | `nc_dashboard.py` — single-file http.server + JS frontend, parses training logs |
 
-Target hardware: **Dell Dimension 4700**, Pentium 4 @ 3 GHz, 512 MB DDR-400,
-no AVX/SSE 4.x, integrated Intel 82915G graphics, IDE drive, Windows XP SP3.
+Target hardware: **Windows XP-era Pentium 4-class machines** with SSE2 and limited RAM. The public docs intentionally avoid private lab-machine specifics.
 
 ## Repository layout
 
@@ -176,7 +175,7 @@ Status flips to `Ready`, and the dynamic label shows the actual model descriptio
 (`Bliss d12 293M (int8)`). Type, hit Enter. After a reply completes, use
 **Speak last reply** to read it aloud with XP's built-in Microsoft Sam/SAPI voice.
 
-## Performance on the Dell Dimension 4700
+## Performance on Windows XP-era hardware
 
 | Setup | Model | Speed |
 |---|---|---|

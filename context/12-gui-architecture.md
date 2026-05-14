@@ -46,7 +46,7 @@ Backend reader thread (started by spawn_backend)
 gMain (top-level)
 ├── gIcon          STATIC (SS_ICON)           // 32x32 Bliss icon, top-left
 ├── gTitle         STATIC                     // "Bliss Chat" big bold
-├── gSubtitle      STATIC                     // CPU + RAM specs
+├── gSubtitle      STATIC                     // CPU + RAM summary
 ├── gModel         STATIC                     // "Model: nanochat-d12 ..."
 ├── gToolbar       TOOLBARCLASSNAMEA          // XP Explorer-style toolbar
 │                                             // Buttons: New Chat / Save / Stop / Settings / Help

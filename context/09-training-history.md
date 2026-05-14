@@ -6,13 +6,13 @@ something is shaped a particular way.
 
 ## Hardware
 
-NVIDIA RTX PRO 6000 Blackwell Workstation Edition
+CUDA training workstation
 - 96 GB VRAM
 - Compute capability 12.0
 - CUDA driver 580.95.05
 - ~1.5–2× slower than H100 for our workloads
 
-Linux Ubuntu 24.04, kernel 6.8.0, Python 3.10.19, PyTorch 2.9.1+cu128.
+Linux/CUDA training environment with PyTorch.
 
 Training framework: [Karpathy nanochat](https://github.com/karpathy/nanochat)
 @ commit `dc54a1a` (early 2026).
@@ -304,8 +304,8 @@ deployment remains the Run 7 base `MODEL.NCB`.
   lighter objective or adapter.
 - **LoRA/adapters** before more full-model SFT: every full-model SFT damaged
   base behavior despite lower validation loss.
-- **d20** for "real GPT-2-grade" coherence. Would take ~2 hours on the RTX 6000.
-  280 MB → ~700 MB int8. Would NOT fit on the Dell's 512 MB RAM.
+- **d20** for "real GPT-2-grade" coherence. Would take ~2 hours on the CUDA workstation.
+  280 MB → ~700 MB int8. Would NOT fit comfortably on the target XP-era machines.
 - **d8 / d10 at Chinchilla ratio 20** — somewhere between d6's speed
   and d12's coherence.
 - **Smaller seq_len**: 256 or even 128 for production deployment to XP,
@@ -314,7 +314,7 @@ deployment remains the Run 7 base `MODEL.NCB`.
 ## Lessons
 
 - **For tiny demo tier on a laptop**, use `runs/runcpu.sh` config (d6, 30 min
-  on a laptop-class GPU). For real coherence, d12+ and ~50 min on a Blackwell.
+  on a laptop-class GPU). For real coherence, d12+ and ~50 min on a CUDA workstation.
 - **The default nanochat SFT pipeline NaN's on pretrained checkpoints
   whose chat-special-token embeddings are at random init.** This isn't
   documented anywhere in the repo as far as I can tell. The fix is to
@@ -324,5 +324,5 @@ deployment remains the Run 7 base `MODEL.NCB`.
   fp32 vs int8 in our spot-checks.
 - **CPU inference scales badly with model size on the P4** — d6 (30M) at
   3 tok/s, d12 (110M) at ~0.7 tok/s. The bottleneck is memory bandwidth
-  on the DDR-400 RAM, not compute. Larger models won't get faster with
+  on memory bandwidth, not compute. Larger models won't get faster with
   any reasonable optimization on this hardware.

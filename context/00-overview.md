@@ -8,12 +8,12 @@ binary format and runs in ~1500 LOC on a 21-year-old machine.
 ## The problem
 
 A modern small chat model (e.g. SmolLM2-135M, Qwen2.5-0.5B) is theoretically
-small enough to fit on a Pentium 4 with 512 MB of RAM, but in practice does
+small enough to fit on memory-constrained Windows XP-era hardware, but in practice does
 not run usably:
 
 - **`llama.cpp` cross-compiled for XP** drops to a scalar codepath because
   the P4 lacks AVX/AVX2 (its fast vec-dot kernels are gated on those).
-  Measured throughput on the Dell Dimension 4700 with SmolLM2-135M Q4_0:
+  Measured throughput on the Windows XP-era Pentium 4 machine with SmolLM2-135M Q4_0:
   **~25 sec/token**, with quantization artifacts producing partly-garbage
   output (mode collapse on certain prompts).
 - Modern Windows binaries link against UCRT (`api-ms-win-crt-*.dll`) which
@@ -28,7 +28,7 @@ write the inference engine to match the model **exactly**, with no
 abstraction tax.
 
 1. **Training**: Karpathy's [nanochat](https://github.com/karpathy/nanochat)
-   on Linux + an NVIDIA RTX PRO 6000 Blackwell. Model sizes:
+   on Linux + an CUDA training workstation. Model sizes:
    - `d6` (~30M params, 1.6 min) — demo tier, used for first end-to-end
      bring-up.
    - `d12` (~110M params, 54 min) — coherent base LM, current target.
@@ -61,7 +61,7 @@ abstraction tax.
 
 ## Result
 
-| Setup | Model | Speed on Dell P4 |
+| Setup | Model | Speed on XP Pentium 4 |
 |---|---|---|
 | `llama.cpp` (XP-patched) + SmolLM2-135M Q8 | 135M params, vanilla llama-arch | ~25 sec/token |
 | **`nc_run` + nanochat-d6 int8** | 30M params, custom arch | **~3 tok/s** |

@@ -2,7 +2,7 @@
 """WinXP-themed web chat UI for testing Bliss locally from a browser.
 
 Runs a persistent nc_run_native backend and serves a tiny browser UI.
-Intended for LAN/Tailscale testing before packaging.
+Intended for local network/private VPN testing before packaging.
 """
 from __future__ import annotations
 

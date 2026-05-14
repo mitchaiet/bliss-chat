@@ -1,7 +1,7 @@
 #!/bin/bash
 # Train a Chinchilla-optimal d6 nanochat model (target ratio 20 vs the
 # default 12). Should produce a much better-trained tiny model — same
-# 30M params, but ~5x more tokens. Wall clock ~10-15 min on RTX 6000.
+# 30M params, but ~5x more tokens. Wall clock ~10-15 min on CUDA workstation.
 #
 # Run on the training box (~/nanochat).
 set -euo pipefail
