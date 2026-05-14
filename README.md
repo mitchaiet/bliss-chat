@@ -18,7 +18,7 @@ to install.
 
 - **[bliss-chat-xp-v1.2.1-auto-cpu-portable.exe][full]** — single-file portable EXE, d12 curated c20 int8 model, with automatic CPU backend selection for SSE2-only and SSE3 Windows XP machines.
 
-The file is also browsable on the [v1.2.1 release page](https://github.com/mitchaiet/bliss-chat/releases/tag/v1.2.1). Verified SHA-256: `a548f1d062e6127279d43f0b663f58a5a0ed2e431aa4a2721f8704be8ba16c19`.
+The file is also browsable on the [v1.2.1 release page](https://github.com/mitchaiet/bliss-chat/releases/tag/v1.2.1). Verified SHA-256: `17fb3a7058fa417c03723115eef3645b0499f8cd46e67537579701bdbb3f671a`.
 
 [full]: https://github.com/mitchaiet/bliss-chat/releases/download/v1.2.1/bliss-chat-xp-v1.2.1-auto-cpu-portable.exe
 
