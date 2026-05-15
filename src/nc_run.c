@@ -1148,8 +1148,10 @@ int main(int argc, char **argv) {
 
     // Q&A prompt prefix. The base LM is most coherent with a terse identity
     // instruction followed by "Q: ...\nA:" with no space after A:. We prefill
-    // the prefix ONCE at startup, snapshot the KV cache, and restore it at the
-    // top of each turn, so the prefix cost is paid only on model load.
+    // the prefix ONCE at startup, snapshot the KV cache, and then append each
+    // normal user/assistant turn to the live KV cache so thread context remains
+    // available. The snapshot is restored only for /reset, /system, or forced
+    // context-window rollover.
     //
     // The prefix can be replaced at runtime via the `/system <text>` slash
     // command, which re-prefills and re-snapshots with the new text.
@@ -1365,13 +1367,6 @@ int main(int argc, char **argv) {
 
         prof_reset();
 
-        // Fresh one-shot semantics for each user turn. The XP GUI process can
-        // stay resident for fast model load, but each prompt starts from the
-        // clean prefixed KV snapshot so prior bad turns/settings do not
-        // contaminate coherence.
-        state_restore_prefix(&S);
-        turn_idx = 0;
-
         char shaped_line[8192];
         shape_prompt(line, shaped_line, sizeof(shaped_line));
 
@@ -1389,6 +1384,17 @@ int main(int argc, char **argv) {
         int n = 0;
         n += nct_encode(T, turn_buf, prompt_ids + n,
                         (int)(sizeof(prompt_ids)/sizeof(int)) - n - 8);
+        if (S.seq_pos + n + 64 >= ctx_max) {
+            state_restore_prefix(&S);
+            turn_idx = 0;
+            emit_sentinel_str("INFO", "context full, conversation reset");
+            if (turn_idx == 0) {
+                snprintf(turn_buf, sizeof(turn_buf), "%s%s", shaped_line, PROMPT_SUFFIX);
+            }
+            n = 0;
+            n += nct_encode(T, turn_buf, prompt_ids + n,
+                            (int)(sizeof(prompt_ids)/sizeof(int)) - n - 8);
+        }
 
         // Prefill
         for (int i = 0; i < n; i++) forward_one(&S, prompt_ids[i]);

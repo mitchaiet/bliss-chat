@@ -205,8 +205,7 @@ The nanochat path:
   …) cause early activation overflow in the bf16 forward path. Fix is to
   initialize those embeddings from related token embeddings before SFT;
   not yet implemented.
-- **Multi-turn**: each user message resets the KV cache (`state_reset`).
-  Conversation memory across turns is not yet implemented.
+- **Multi-turn**: native `NC_RUN.EXE` now keeps the live KV cache across normal turns so the model can use earlier messages in the current thread. `/reset`, `/system`, New Chat, or context-window rollover restore the clean prefix snapshot.
 - **Stop button** in the GUI is greyed out — would need to either kill
   and respawn the backend, or add a `\x01STOP\n` request sentinel that
   the inference loop polls for.
