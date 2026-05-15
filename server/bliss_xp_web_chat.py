@@ -7,8 +7,12 @@ Intended for local network/private VPN testing before packaging.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
+import math
 import os
+import operator
+import re
 import subprocess
 import sys
 import threading
@@ -21,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "build" / "nc_run_native"
 MODEL = ROOT / "build" / "deploy" / "MODEL.NCB"
 TOKENIZER = ROOT / "build" / "deploy" / "TOKENIZER.NCT"
+KNOWLEDGE_DIR = ROOT / "knowledge"
 SOH = b"\x01"
 
 HTML = r"""<!doctype html>
@@ -124,6 +129,89 @@ refreshStatus(); setInterval(refreshStatus,5000);
 </html>
 """
 
+_SAFE_BINOPS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
+}
+_SAFE_UNARY = {ast.UAdd: operator.pos, ast.USub: operator.neg}
+
+
+def _safe_eval(node):
+    if isinstance(node, ast.Expression):
+        return _safe_eval(node.body)
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return node.value
+    if isinstance(node, ast.BinOp) and type(node.op) in _SAFE_BINOPS:
+        left = _safe_eval(node.left)
+        right = _safe_eval(node.right)
+        if isinstance(node.op, ast.Pow) and abs(right) > 8:
+            raise ValueError("exponent too large")
+        return _SAFE_BINOPS[type(node.op)](left, right)
+    if isinstance(node, ast.UnaryOp) and type(node.op) in _SAFE_UNARY:
+        return _SAFE_UNARY[type(node.op)](_safe_eval(node.operand))
+    raise ValueError("unsupported expression")
+
+
+def answer_tool_prompt(prompt: str):
+    """Return a direct local-tool answer when the prompt is safely answerable."""
+    m = re.match(r"^\s*(?:calculate|calc|what is)\s+(.+?)(?:\?)?\s*$", prompt, re.I)
+    if not m:
+        return None
+    expr = m.group(1).strip()
+    if not re.fullmatch(r"[0-9+\-*/%().\s]+", expr):
+        return None
+    try:
+        value = _safe_eval(ast.parse(expr, mode="eval"))
+    except Exception:
+        return None
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        return None
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return {"answer": str(value), "tokens": 0, "elapsed": 0.0, "tok_per_sec": 0.0, "info": ["tool: calculator"], "model": "Bliss local tools", "tool": "calculator"}
+
+
+def _query_terms(text: str) -> set[str]:
+    stop = {"the", "and", "for", "with", "what", "does", "this", "that", "use", "uses", "about", "tell", "from"}
+    return {w for w in re.findall(r"[a-z0-9]{3,}", text.lower()) if w not in stop}
+
+
+def augment_prompt_with_knowledge(prompt: str, knowledge_dir: Path = KNOWLEDGE_DIR):
+    """Search local .txt/.md/.html snippets and prepend the best small context."""
+    if not knowledge_dir.exists():
+        return prompt, []
+    terms = _query_terms(prompt)
+    if not terms:
+        return prompt, []
+    hits = []
+    for path in sorted(knowledge_dir.glob("**/*")):
+        if path.suffix.lower() not in {".txt", ".md", ".html", ".htm"} or not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")[:20000]
+        except OSError:
+            continue
+        plain = re.sub(r"<[^>]+>", " ", text)
+        words = _query_terms(plain)
+        score = len(terms & words)
+        if score <= 0:
+            continue
+        snippet = " ".join(plain.split())[:500]
+        hits.append({"file": str(path.relative_to(knowledge_dir)), "score": score, "snippet": snippet})
+    hits.sort(key=lambda h: (-h["score"], h["file"]))
+    hits = hits[:3]
+    if not hits:
+        return prompt, []
+    context = "\n".join(f"[{h['file']}] {h['snippet']}" for h in hits)
+    shaped = f"Use this local knowledge if helpful:\n{context}\n\nQuestion: {prompt}\nAnswer briefly:"
+    return shaped, hits
+
+
 class BlissBackend:
     """Simple one-shot backend runner.
 
@@ -144,7 +232,11 @@ class BlissBackend:
     def command(self, line: str):
         if line.strip() == "/reset":
             return {"answer": "", "tokens": 0, "elapsed": 0.0, "tok_per_sec": 0.0, "info": ["one-shot mode: every prompt is already a fresh chat"], "model": self.model}
-        shaped_line = shape_prompt(line)
+        tool_answer = answer_tool_prompt(line)
+        if tool_answer is not None:
+            return tool_answer
+        augmented_line, knowledge_hits = augment_prompt_with_knowledge(line)
+        shaped_line = shape_prompt(augmented_line)
         with self.lock:
             cmd = [str(BACKEND), str(MODEL), str(TOKENIZER), "-c", str(self.ctx), "-t", str(self.temp), "-p", str(self.top_p)]
             if self.seed is not None:
@@ -158,7 +250,7 @@ class BlissBackend:
             if parsed["model"]:
                 self.model = parsed["model"]
             tokens = parsed["tokens"]
-            return {"answer": parsed["answer"].strip(), "tokens": tokens, "elapsed": elapsed, "tok_per_sec": tokens / elapsed, "info": parsed["info"], "model": self.model}
+            return {"answer": parsed["answer"].strip(), "tokens": tokens, "elapsed": elapsed, "tok_per_sec": tokens / elapsed, "info": parsed["info"], "model": self.model, "knowledge_hits": knowledge_hits}
 
     def stop(self):
         pass
