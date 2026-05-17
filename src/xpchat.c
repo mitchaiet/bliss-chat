@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
+#include <ctype.h>
 
 #define APP_NAME "Bliss Chat"
 #define APP_DISPLAY_NAME "Bliss Chat"
@@ -218,6 +219,9 @@ static HICON gSendIcon;
 static HICON gStopIcon;
 static HIMAGELIST gToolbarImages;
 static HMODULE gRichEdit;
+static IDispatch *gSapiVoice;
+static DISPID gSapiSpeakDispid;
+static int gSapiComInitialized;
 static WNDPROC gOldInputProc;
 
 static RECT gRcToolbarBand;
@@ -294,6 +298,19 @@ static DWORD gSeed     = DEFAULT_SEED;
 static float gTopP     = DEFAULT_TOPP;
 static DWORD gMaxTok   = DEFAULT_MAXTOK;
 static char  gSysPrompt[2048] = "";  // empty = use backend default
+
+typedef struct {
+    const char *name;
+    const char *temp;
+    const char *top_p;
+    const char *max_tok;
+} SettingsPreset;
+
+static const SettingsPreset gSettingsPresets[] = {
+    { "deterministic", "0.00", "0.95", "128" },  // Preset deterministic
+    { "balanced",      "0.70", "0.90", "160" },  // Preset balanced
+    { "creative",      "1.10", "0.95", "220" }   // Preset creative
+};
 
 // Last find text from the Find dialog. Static so "Find Next" stays useful
 // when the dialog is dismissed (and reusable if we ever wire F3).
@@ -616,35 +633,61 @@ static void trim_trailing_newlines(char *text) {
     }
 }
 
-static int sapi_speak_text(HWND owner, const char *text) {
+static int sapi_ensure_voice(void) {
     HRESULT hr;
     CLSID clsid;
-    IDispatch *voice = NULL;
-    DISPID dispid;
     OLECHAR *method = L"Speak";
+
+    if (gSapiVoice) return 1;
+
+    if (!gSapiComInitialized) {
+        hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+        if (SUCCEEDED(hr)) {
+            gSapiComInitialized = 1;
+        } else if (hr != RPC_E_CHANGED_MODE) {
+            return 0;
+        }
+    }
+
+    hr = CLSIDFromProgID(L"SAPI.SpVoice", &clsid);
+    if (FAILED(hr)) return 0;
+    hr = CoCreateInstance(&clsid, NULL, CLSCTX_INPROC_SERVER | CLSCTX_LOCAL_SERVER,
+                          &IID_IDispatch, (void **)&gSapiVoice);
+    if (FAILED(hr) || !gSapiVoice) return 0;
+
+    hr = gSapiVoice->lpVtbl->GetIDsOfNames(gSapiVoice, &IID_NULL, &method, 1,
+                                           LOCALE_USER_DEFAULT, &gSapiSpeakDispid);
+    if (FAILED(hr)) {
+        gSapiVoice->lpVtbl->Release(gSapiVoice);
+        gSapiVoice = NULL;
+        return 0;
+    }
+
+    return 1;
+}
+
+static void sapi_cleanup(void) {
+    if (gSapiVoice) {
+        gSapiVoice->lpVtbl->Release(gSapiVoice);
+        gSapiVoice = NULL;
+    }
+    if (gSapiComInitialized) {
+        CoUninitialize();
+        gSapiComInitialized = 0;
+    }
+}
+
+static int sapi_speak_text(HWND owner, const char *text) {
+    HRESULT hr;
     DISPPARAMS params;
     VARIANT args[2];
     BSTR speech = NULL;
     WCHAR *wide = NULL;
     int wide_len;
     int ok = 0;
-    int did_init = 0;
 
     if (!text || !*text) return 0;
-
-    hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
-    if (SUCCEEDED(hr)) did_init = 1;
-    else if (hr != RPC_E_CHANGED_MODE) return 0;
-
-    hr = CLSIDFromProgID(L"SAPI.SpVoice", &clsid);
-    if (FAILED(hr)) goto done;
-    hr = CoCreateInstance(&clsid, NULL, CLSCTX_INPROC_SERVER | CLSCTX_LOCAL_SERVER,
-                          &IID_IDispatch, (void **)&voice);
-    if (FAILED(hr) || !voice) goto done;
-
-    hr = voice->lpVtbl->GetIDsOfNames(voice, &IID_NULL, &method, 1,
-                                      LOCALE_USER_DEFAULT, &dispid);
-    if (FAILED(hr)) goto done;
+    if (!sapi_ensure_voice()) goto done;
 
     wide_len = MultiByteToWideChar(CP_ACP, 0, text, -1, NULL, 0);
     if (wide_len <= 0) goto done;
@@ -659,19 +702,18 @@ static int sapi_speak_text(HWND owner, const char *text) {
     args[1].vt = VT_BSTR;
     args[1].bstrVal = speech;
     args[0].vt = VT_I4;
-    args[0].lVal = 1;  // SVSFlagsAsync: return immediately while Microsoft Sam speaks.
+    args[0].lVal = 1;  // SVSFlagsAsync: keep gSapiVoice alive until shutdown.
     ZeroMemory(&params, sizeof(params));
     params.rgvarg = args;
     params.cArgs = 2;
-    hr = voice->lpVtbl->Invoke(voice, dispid, &IID_NULL, LOCALE_USER_DEFAULT,
-                               DISPATCH_METHOD, &params, NULL, NULL, NULL);
+    hr = gSapiVoice->lpVtbl->Invoke(gSapiVoice, gSapiSpeakDispid, &IID_NULL,
+                                    LOCALE_USER_DEFAULT, DISPATCH_METHOD,
+                                    &params, NULL, NULL, NULL);
     ok = SUCCEEDED(hr);
 
 done:
     if (speech) SysFreeString(speech);
     if (wide) free(wide);
-    if (voice) voice->lpVtbl->Release(voice);
-    if (did_init) CoUninitialize();
     if (!ok && owner) MessageBeep(MB_ICONWARNING);
     return ok;
 }
@@ -990,6 +1032,230 @@ static void shutdown_backend(void) {
     }
 }
 
+// ---------- local tools + Knowledge context ----------
+static int starts_ci(const char *s, const char *prefix) {
+    size_t i;
+    if (!s || !prefix) return 0;
+    for (i = 0; prefix[i]; i++) {
+        if (!s[i]) return 0;
+        if (tolower((unsigned char)s[i]) != tolower((unsigned char)prefix[i])) return 0;
+    }
+    return 1;
+}
+
+static void skip_spaces(const char **p) {
+    while (**p && isspace((unsigned char)**p)) (*p)++;
+}
+
+static double parse_expr(const char **p, int *ok);
+
+static double parse_number_or_paren(const char **p, int *ok) {
+    double v;
+    char *endp;
+    skip_spaces(p);
+    if (**p == '(') {
+        (*p)++;
+        v = parse_expr(p, ok);
+        skip_spaces(p);
+        if (**p != ')') { *ok = 0; return 0.0; }
+        (*p)++;
+        return v;
+    }
+    v = strtod(*p, &endp);
+    if (endp == *p) { *ok = 0; return 0.0; }
+    *p = endp;
+    return v;
+}
+
+static double parse_term(const char **p, int *ok) {
+    double v = parse_number_or_paren(p, ok);
+    while (*ok) {
+        char op;
+        double rhs;
+        skip_spaces(p);
+        op = **p;
+        if (op != '*' && op != '/') break;
+        (*p)++;
+        rhs = parse_number_or_paren(p, ok);
+        if (!*ok) return 0.0;
+        if (op == '*') v *= rhs;
+        else {
+            if (rhs == 0.0) { *ok = 0; return 0.0; }
+            v /= rhs;
+        }
+    }
+    return v;
+}
+
+static double parse_expr(const char **p, int *ok) {
+    double v = parse_term(p, ok);
+    while (*ok) {
+        char op;
+        double rhs;
+        skip_spaces(p);
+        op = **p;
+        if (op != '+' && op != '-') break;
+        (*p)++;
+        rhs = parse_term(p, ok);
+        if (!*ok) return 0.0;
+        if (op == '+') v += rhs;
+        else v -= rhs;
+    }
+    return v;
+}
+
+static int safe_eval_arithmetic(const char *expr, double *out) {
+    const char *p = expr;
+    int ok = 1;
+    if (!expr || !out) return 0;
+    while (*p) {
+        if (!(isdigit((unsigned char)*p) || isspace((unsigned char)*p) || *p == '.' ||
+              *p == '+' || *p == '-' || *p == '*' || *p == '/' || *p == '(' || *p == ')')) return 0;
+        p++;
+    }
+    p = expr;
+    *out = parse_expr(&p, &ok);
+    skip_spaces(&p);
+    return ok && *p == 0;
+}
+
+static void append_local_assistant_answer(const char *title, const char *answer) {
+    SYSTEMTIME st;
+    char hdr[96];
+    if (!answer || !*answer) return;
+    GetLocalTime(&st);
+    snprintf(hdr, sizeof(hdr), "Assistant  -  %d:%02d %s\r\n",
+             (st.wHour % 12) ? (st.wHour % 12) : 12, st.wMinute,
+             st.wHour < 12 ? "AM" : "PM");
+    rich_append_color(hdr, RGB(0, 128, 0), TRUE);
+    gLastAsstStart = rich_end_pos();
+    rich_append_color(answer, RGB(0, 0, 0), FALSE);
+    gLastAsstEnd = rich_end_pos();
+    gHasAsstTurn = 1;
+    rich_append_color("\r\n", RGB(0, 0, 0), FALSE);
+    if (title) diagnostics_appendf("%s", title);
+    if (gActiveIdx >= 0) chats_append_turn("ASSISTANT", answer);
+    update_msg_actions();
+}
+
+static int try_answer_local_tool(const char *user_prompt) {
+    char answer[256];
+    const char *expr = NULL;
+    double value;
+    SYSTEMTIME st;
+    if (starts_ci(user_prompt, "calculate ")) expr = user_prompt + 10;
+    else if (starts_ci(user_prompt, "calc ")) expr = user_prompt + 5;
+    if (expr) {
+        if (!safe_eval_arithmetic(expr, &value)) return 0;
+        snprintf(answer, sizeof(answer), "Tool result: %.10g", value);
+        append_local_assistant_answer("local tool answered: calculator", answer);
+        set_status("Answered with local calculator tool.");
+        return 1;
+    }
+    if (starts_ci(user_prompt, "date") || starts_ci(user_prompt, "time") || starts_ci(user_prompt, "what time is it")) {
+        GetLocalTime(&st);
+        snprintf(answer, sizeof(answer), "Tool result: %04d-%02d-%02d %02d:%02d:%02d local time.",
+                 st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+        append_local_assistant_answer("local tool answered: date/time", answer);
+        set_status("Answered with local date/time tool.");
+        return 1;
+    }
+    return 0;
+}
+
+static int has_query_word(const char *query, const char *text) {
+    char word[64];
+    int wi = 0;
+    const char *p;
+    for (p = query; ; p++) {
+        int c = *p;
+        if (isalnum((unsigned char)c)) {
+            if (wi + 1 < (int)sizeof(word)) word[wi++] = (char)tolower((unsigned char)c);
+        } else {
+            if (wi >= 4) {
+                const char *h;
+                word[wi] = 0;
+                for (h = text; *h; h++) {
+                    int i = 0;
+                    while (word[i] && h[i] && tolower((unsigned char)h[i]) == word[i]) i++;
+                    if (!word[i]) return 1;
+                }
+            }
+            wi = 0;
+            if (!c) break;
+        }
+    }
+    return 0;
+}
+
+static void strip_html_inplace(char *s) {
+    char *w = s;
+    int tag = 0;
+    while (*s) {
+        if (*s == '<') { tag = 1; s++; continue; }
+        if (*s == '>') { tag = 0; s++; continue; }
+        if (!tag) *w++ = (*s == '\r' || *s == '\n' || *s == '\t') ? ' ' : *s;
+        s++;
+    }
+    *w = 0;
+}
+
+static void knowledge_scan_pattern(Buffer *hits, const char *query, const char *pattern) {
+    char search[MAX_PATH * 2];
+    WIN32_FIND_DATAA fd;
+    HANDLE h;
+    snprintf(search, sizeof(search), "%s\\Knowledge\\%s", gAppDir, pattern);
+    h = FindFirstFileA(search, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        char path[MAX_PATH * 2];
+        FILE *fp;
+        char buf[1600];
+        size_t n;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        snprintf(path, sizeof(path), "%s\\Knowledge\\%s", gAppDir, fd.cFileName);
+        fp = fopen(path, "rb");
+        if (!fp) continue;
+        n = fread(buf, 1, sizeof(buf) - 1, fp);
+        fclose(fp);
+        buf[n] = 0;
+        if (strstr(pattern, "html")) strip_html_inplace(buf);
+        if (has_query_word(query, buf)) {
+            if (hits->len == 0) buffer_append(hits, "Local knowledge snippets:\n", 26);
+            buffer_append(hits, "Source: ", 8);
+            buffer_append(hits, fd.cFileName, strlen(fd.cFileName));
+            buffer_append(hits, "\n", 1);
+            buffer_append(hits, buf, strlen(buf) > 650 ? 650 : strlen(buf));
+            buffer_append(hits, "\n---\n", 5);
+            if (hits->len > 2200) break;
+        }
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+}
+
+static char *augment_prompt_with_knowledge(const char *user_prompt) {
+    Buffer hits;
+    Buffer out;
+    DWORD attr;
+    char dir[MAX_PATH * 2];
+    snprintf(dir, sizeof(dir), "%s\\Knowledge", gAppDir);
+    attr = GetFileAttributesA(dir);
+    if (attr == INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_DIRECTORY)) return dup_text(user_prompt);
+    buffer_init(&hits);
+    knowledge_scan_pattern(&hits, user_prompt, "*.txt");
+    knowledge_scan_pattern(&hits, user_prompt, "*.md");
+    knowledge_scan_pattern(&hits, user_prompt, "*.html");
+    knowledge_scan_pattern(&hits, user_prompt, "*.htm");
+    if (!hits.data || hits.len == 0) { if (hits.data) free(hits.data); return dup_text(user_prompt); }
+    buffer_init(&out);
+    buffer_append(&out, hits.data, hits.len);
+    buffer_append(&out, "\nUse the local knowledge above only if relevant.\nUser: ", 54);
+    buffer_append(&out, user_prompt, strlen(user_prompt));
+    free(hits.data);
+    diagnostics_appendf("Knowledge context injected.");
+    return out.data ? out.data : dup_text(user_prompt);
+}
+
 // ---------- send a turn ----------
 static int input_has_text(const char *text) {
     const unsigned char *p = (const unsigned char *)text;
@@ -1012,6 +1278,7 @@ static void sanitize_user(char *text) {
 // when gRegenLabel is set (cleared here after use).
 static void send_prompt_text(const char *user_prompt, int show_user_header) {
     DWORD written;
+    char *backend_prompt = NULL;
     char with_newline[PROMPT_MAX + 4];
 
     if (!InterlockedCompareExchange(&gBackendReady, 0, 0)) {
@@ -1020,6 +1287,7 @@ static void send_prompt_text(const char *user_prompt, int show_user_header) {
     }
     if (InterlockedCompareExchange(&gRunning, 0, 0)) return;
     if (!user_prompt || !input_has_text(user_prompt)) return;
+    if (user_prompt[0] != '/' && try_answer_local_tool(user_prompt)) return;
 
     snprintf(gPendingUser, sizeof(gPendingUser), "%s", user_prompt);
 
@@ -1068,7 +1336,9 @@ static void send_prompt_text(const char *user_prompt, int show_user_header) {
     diagnostics_appendf("Generating response...");
 
     dbg_log("USER", "%s", user_prompt);
-    snprintf(with_newline, sizeof(with_newline), "%s\n", user_prompt);
+    backend_prompt = (user_prompt[0] == '/') ? dup_text(user_prompt) : augment_prompt_with_knowledge(user_prompt);
+    if (!backend_prompt) backend_prompt = dup_text(user_prompt);
+    snprintf(with_newline, sizeof(with_newline), "%s\n", backend_prompt ? backend_prompt : user_prompt);
     if (!WriteFile(gBackendStdinW, with_newline, (DWORD)strlen(with_newline), &written, NULL)) {
         dbg_log("GUI", "WriteFile to backend stdin failed");
         rich_append_color("[backend write failed]\r\n", RGB(192, 0, 0), TRUE);
@@ -1076,6 +1346,7 @@ static void send_prompt_text(const char *user_prompt, int show_user_header) {
         set_running(FALSE);
         set_status("Backend error");
     }
+    if (backend_prompt) free(backend_prompt);
 }
 
 static void send_prompt(void) {
@@ -2427,6 +2698,14 @@ static void settings_apply_to_backend(void) {
     }
 }
 
+static void apply_settings_preset(HWND dlg, int preset_index) {
+    int count = (int)(sizeof(gSettingsPresets) / sizeof(gSettingsPresets[0]));
+    if (!dlg || preset_index < 0 || preset_index >= count) return;
+    SetDlgItemTextA(dlg, IDC_TEMP_EDIT, gSettingsPresets[preset_index].temp);
+    SetDlgItemTextA(dlg, IDC_TOPP_EDIT, gSettingsPresets[preset_index].top_p);
+    SetDlgItemTextA(dlg, IDC_MAXTOK_EDIT, gSettingsPresets[preset_index].max_tok);
+}
+
 // Dialog proc for the Settings dialog. Loads gTemp / gSeed / gTopP /
 // gMaxTok / gSysPrompt into the controls on init, writes them back on
 // OK, and handles the preset / random-seed / reset buttons.
@@ -2481,15 +2760,15 @@ static INT_PTR CALLBACK settings_dlg_proc(HWND dlg, UINT msg, WPARAM wparam, LPA
             return TRUE;
 
         case IDC_PRESET_GREEDY:
-            SetDlgItemTextA(dlg, IDC_TEMP_EDIT, "0.00");
+            apply_settings_preset(dlg, 0);
             return TRUE;
 
         case IDC_PRESET_BALANCED:
-            SetDlgItemTextA(dlg, IDC_TEMP_EDIT, "0.70");
+            apply_settings_preset(dlg, 1);
             return TRUE;
 
         case IDC_PRESET_CREATIVE:
-            SetDlgItemTextA(dlg, IDC_TEMP_EDIT, "1.20");
+            apply_settings_preset(dlg, 2);
             return TRUE;
 
         case IDC_SEED_RANDOM: {
@@ -3310,7 +3589,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
                 "SIMD: SSE2 / SSE3 (Pentium 4 compatible)\n"
                 "Model file: MODEL.NCB (custom NCB1 format, int8 quantized)\n"
                 "\n"
-                "Slash commands: /help /info /reset /temp /topp /seed /maxtok /system",
+                "Slash commands: /help /info /template /defaults /preset /reset /temp /topp /seed /maxtok /system",
                 APP_NAME, MB_ICONINFORMATION | MB_OK);
             return 0;
         case IDM_EXIT:
@@ -3458,6 +3737,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
     case WM_DESTROY:
         dbg_log("GUI", "WM_DESTROY");
         shutdown_backend();
+        sapi_cleanup();
         if (gUiFont)    DeleteObject(gUiFont);
         if (gTitleFont) DeleteObject(gTitleFont);
         if (gPaneFont)  DeleteObject(gPaneFont);

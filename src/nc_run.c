@@ -210,6 +210,86 @@ static int estimate_model_millions(const nc_model *m) {
     return (int)((double)m->blob_len / denom + 0.5);
 }
 
+// ===== coherence runtime config =====
+// LM Studio-style coherence controls, kept deliberately static/offline for XP:
+// no JSON parser, no heap ownership, just versioned metadata + named presets.
+#define BLISS_MODEL_DEFAULTS_VERSION 1
+#define BLISS_PROMPT_TEMPLATE_VERSION 1
+
+typedef struct {
+    float temp;
+    float top_p;
+    int max_tokens;
+    int ramble_guard;
+    float repeat_penalty;
+    const char *model_config_source;
+} bliss_runtime_config;
+
+typedef struct {
+    const char *name;
+    float temp;
+    float top_p;
+    int max_tokens;
+    int ramble_guard;
+    float repeat_penalty;
+    const char *description;
+} bliss_preset;
+
+typedef struct {
+    const char *name;
+    int version;
+    const char *turn_format;
+    const char *stop_policy;
+} bliss_prompt_template_meta;
+
+static const bliss_preset bliss_presets[] = {
+    { "deterministic", 0.00f, 0.95f, 128, 1, 1.10f, "short factual greedy replies" },
+    { "balanced",      0.70f, 0.90f, 160, 1, 1.12f, "more varied but still concise" },
+    { "creative",      1.10f, 0.95f, 220, 1, 1.15f, "longer exploratory replies" }
+};
+
+static const bliss_prompt_template_meta BLISS_PROMPT_TEMPLATE = {
+    "bliss-qa-short-v1",
+    BLISS_PROMPT_TEMPLATE_VERSION,
+    "system prefix + Q: user + A:",
+    "newline, sentence punctuation, Q:/A: tail, eos, guardrail"
+};
+
+static bliss_runtime_config default_model_config_for(const nc_model *m) {
+    bliss_runtime_config cfg;
+    cfg.temp = 0.0f;
+    cfg.top_p = 0.95f;
+    cfg.max_tokens = 128;
+    cfg.ramble_guard = 1;
+    cfg.repeat_penalty = 1.10f;
+    cfg.model_config_source = "built-in:generic-coherent-v1";
+    if (m && m->n_layer >= 12) {
+        cfg.max_tokens = 160;
+        cfg.repeat_penalty = 1.12f;
+        cfg.model_config_source = "built-in:bliss-d12-coherent-v1";
+    } else if (m && m->sequence_len <= 1024) {
+        cfg.max_tokens = 96;
+        cfg.model_config_source = "built-in:small-context-coherent-v1";
+    }
+    return cfg;
+}
+
+static int apply_preset_by_name(const char *name, bliss_runtime_config *cfg) {
+    int count = (int)(sizeof(bliss_presets) / sizeof(bliss_presets[0]));
+    for (int i = 0; i < count; i++) {
+        if (!strcmp(name, bliss_presets[i].name)) {
+            cfg->temp = bliss_presets[i].temp;
+            cfg->top_p = bliss_presets[i].top_p;
+            cfg->max_tokens = bliss_presets[i].max_tokens;
+            cfg->ramble_guard = bliss_presets[i].ramble_guard;
+            cfg->repeat_penalty = bliss_presets[i].repeat_penalty;
+            cfg->model_config_source = bliss_presets[i].name;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int ascii_tolower(int c) {
     if (c >= 'A' && c <= 'Z') return c + ('a' - 'A');
     return c;
@@ -250,6 +330,29 @@ static int capture_word_after(const char *line, const char *marker, char *word, 
     }
     word[n] = 0;
     return n > 0;
+}
+
+static void summary_append_turn(char *thread_summary, size_t cap, const char *line) {
+    size_t len;
+    size_t add;
+    if (!thread_summary || cap == 0 || !line || !*line) return;
+    len = strlen(thread_summary);
+    if (len + 4 >= cap) {
+        size_t keep = cap / 2;
+        if (keep > len) keep = len;
+        memmove(thread_summary, thread_summary + len - keep, keep + 1);
+        len = strlen(thread_summary);
+    }
+    if (len > 0 && len + 2 < cap) {
+        thread_summary[len++] = ';';
+        thread_summary[len++] = ' ';
+        thread_summary[len] = 0;
+    }
+    add = strlen(line);
+    if (add > 120) add = 120;
+    if (len + add + 1 >= cap) add = cap - len - 1;
+    memcpy(thread_summary + len, line, add);
+    thread_summary[len + add] = 0;
 }
 
 static void shape_prompt(const char *line, char *out, size_t out_sz) {
@@ -1104,14 +1207,15 @@ int main(int argc, char **argv) {
     const char *model_path = argv[1];
     const char *tok_path   = argv[2];
     float temp = 0.0f, top_p = 0.95f;
+    int cli_temp = 0, cli_top_p = 0;
     // Default to the model's full sequence length so multi-turn has
     // room. Overridable via -c.
     int   ctx_max = -1;
     uint64_t seed = (uint64_t)time(NULL);
     for (int i = 3; i + 1 < argc; i += 2) {
         if      (!strcmp(argv[i], "-c")) ctx_max = atoi(argv[i+1]);
-        else if (!strcmp(argv[i], "-t")) temp    = (float)atof(argv[i+1]);
-        else if (!strcmp(argv[i], "-p")) top_p   = (float)atof(argv[i+1]);
+        else if (!strcmp(argv[i], "-t")) { temp  = (float)atof(argv[i+1]); cli_temp = 1; }
+        else if (!strcmp(argv[i], "-p")) { top_p = (float)atof(argv[i+1]); cli_top_p = 1; }
         else if (!strcmp(argv[i], "-s")) seed    = (uint64_t)atoll(argv[i+1]);
     }
     rng_state = seed ? seed : 0xDEADBEEFCAFEBABEULL;
@@ -1119,6 +1223,12 @@ int main(int argc, char **argv) {
     nc_model M = {0};
     if (!model_load(&M, model_path)) return 2;
     if (ctx_max <= 0 || ctx_max > M.sequence_len) ctx_max = M.sequence_len;
+
+    bliss_runtime_config cfg = default_model_config_for(&M);
+    if (cli_temp) cfg.temp = temp;
+    if (cli_top_p) cfg.top_p = top_p;
+    temp = cfg.temp;
+    top_p = cfg.top_p;
 
     nct *T = nct_load(tok_path);
     if (!T) { fprintf(stderr, "[nc_run] tokenizer load failed: %s\n", tok_path); return 3; }
@@ -1163,12 +1273,14 @@ int main(int argc, char **argv) {
 
     // Per-turn token cap. 0 = no cap (use the model's remaining context).
     // Settable via `/maxtok <int>` at runtime; clamped to [0, 2048].
-    int max_tokens = 128;
+    int max_tokens = cfg.max_tokens;
     // Runtime anti-ramble controls. `/rambleguard 0` disables both the hard
     // repeated-token/phrase stop and the repetition penalty, preserving the
     // previous deterministic greedy behavior.
     int ramble_guard = 1;
     float repeat_penalty = 1.10f;
+    ramble_guard = cfg.ramble_guard;
+    repeat_penalty = cfg.repeat_penalty;
 
     // Helper to prefill an arbitrary prefix string and snapshot it as the
     // restorable prefix. Resets the state first. Emits PROG sentinels as
@@ -1209,6 +1321,7 @@ int main(int argc, char **argv) {
     // "/reset" or when the cache approaches sequence_len (forced reset
     // with a notice to the GUI).
     int turn_idx = 0;
+    char thread_summary[2048] = {0};
 
     while (read_line(line, sizeof(line)) >= 0) {
         if (line[0] == 0) continue;
@@ -1217,6 +1330,7 @@ int main(int argc, char **argv) {
         if (!strcmp(line, "/reset")) {
             state_restore_prefix(&S);
             turn_idx = 0;
+            thread_summary[0] = 0;
             emit_sentinel_str("INFO", "conversation reset");
             emit_sentinel_str("EOT", "0");
             continue;
@@ -1226,6 +1340,9 @@ int main(int argc, char **argv) {
             emit_sentinel_str("INFO", "/reset         = drop conversation history");
             emit_sentinel_str("INFO", "/info          = show model + perf info");
             emit_sentinel_str("INFO", "/help          = show this list");
+            emit_sentinel_str("INFO", "/template      = show prompt-template metadata");
+            emit_sentinel_str("INFO", "/defaults      = re-apply model defaults");
+            emit_sentinel_str("INFO", "/preset <name> = apply deterministic|balanced|creative");
             emit_sentinel_str("INFO", "/temp <f>      = set sampling temperature (0 = greedy)");
             emit_sentinel_str("INFO", "/topp <f>      = set top-p nucleus sampling (0..1)");
             emit_sentinel_str("INFO", "/seed <int>    = re-seed the RNG");
@@ -1233,6 +1350,54 @@ int main(int argc, char **argv) {
             emit_sentinel_str("INFO", "/rambleguard <0|1> = stop repeated-token/phrase loops");
             emit_sentinel_str("INFO", "/repeat <f>    = repetition penalty (1.0 = off)");
             emit_sentinel_str("INFO", "/system <text> = replace system prompt (escape newlines as \\n)");
+            emit_sentinel_str("EOT", "0");
+            continue;
+        }
+        // /template: emit versioned prompt-template metadata for diagnostics.
+        if (!strcmp(line, "/template")) {
+            char info[256];
+            snprintf(info, sizeof(info), "prompt template = %s v%d | turn=%s | stops=%s",
+                     BLISS_PROMPT_TEMPLATE.name,
+                     BLISS_PROMPT_TEMPLATE.version,
+                     BLISS_PROMPT_TEMPLATE.turn_format,
+                     BLISS_PROMPT_TEMPLATE.stop_policy);
+            emit_sentinel_str("INFO", info);
+            emit_sentinel_str("EOT", "0");
+            continue;
+        }
+        // /defaults: re-apply model-specific coherence defaults without
+        // touching the current system prompt or conversation prefix.
+        if (!strcmp(line, "/defaults")) {
+            cfg = default_model_config_for(&M);
+            temp = cfg.temp;
+            top_p = cfg.top_p;
+            max_tokens = cfg.max_tokens;
+            ramble_guard = cfg.ramble_guard;
+            repeat_penalty = cfg.repeat_penalty;
+            char info[160];
+            snprintf(info, sizeof(info), "defaults applied (%s v%d): temp=%.2f top_p=%.2f max_tokens=%d repeat=%.2f",
+                     cfg.model_config_source, BLISS_MODEL_DEFAULTS_VERSION,
+                     temp, top_p, max_tokens, repeat_penalty);
+            emit_sentinel_str("INFO", info);
+            emit_sentinel_str("EOT", "0");
+            continue;
+        }
+        // /preset <name>: apply a named sampling/coherence tuple.
+        if (!strncmp(line, "/preset ", 8)) {
+            const char *name = line + 8;
+            if (apply_preset_by_name(name, &cfg)) {
+                temp = cfg.temp;
+                top_p = cfg.top_p;
+                max_tokens = cfg.max_tokens;
+                ramble_guard = cfg.ramble_guard;
+                repeat_penalty = cfg.repeat_penalty;
+                char info[160];
+                snprintf(info, sizeof(info), "preset %s: temp=%.2f top_p=%.2f max_tokens=%d repeat=%.2f",
+                         name, temp, top_p, max_tokens, repeat_penalty);
+                emit_sentinel_str("INFO", info);
+            } else {
+                emit_sentinel_str("INFO", "unknown preset; use deterministic, balanced, or creative");
+            }
             emit_sentinel_str("EOT", "0");
             continue;
         }
@@ -1337,20 +1502,24 @@ int main(int argc, char **argv) {
             snprintf(new_prefix, sizeof(new_prefix), "%s\n\nQ: ", unescaped);
             PREFILL_AND_SNAPSHOT(new_prefix);
             turn_idx = 0;
+            thread_summary[0] = 0;
             emit_sentinel_str("INFO", "system prompt replaced");
             emit_sentinel_str("EOT", "0");
             continue;
         }
         // /info: re-emit the model description (handy after a long session).
         if (!strcmp(line, "/info")) {
-            char info[224];
+            char info[384];
             snprintf(info, sizeof(info),
-                "Bliss d%d %dM (%s) | seq=%d | turn=%d | pos=%d/%d | temp=%.2f | guard=%d repeat=%.2f",
+                "Bliss d%d %dM (%s) | seq=%d | turn=%d | pos=%d/%d | temp=%.2f top_p=%.2f | max=%d | guard=%d repeat=%.2f | cfg=%s | tmpl=%s v%d",
                 M.n_layer,
                 estimate_model_millions(&M),
                 (M.dtype_code == 1 ? "int8" : "fp32"),
                 M.sequence_len, turn_idx, S.seq_pos, ctx_max,
-                temp, ramble_guard, repeat_penalty);
+                temp, top_p, max_tokens, ramble_guard, repeat_penalty,
+                cfg.model_config_source,
+                BLISS_PROMPT_TEMPLATE.name,
+                BLISS_PROMPT_TEMPLATE.version);
             emit_sentinel_str("INFO", info);
             emit_sentinel_str("EOT", "0");
             continue;
@@ -1362,13 +1531,19 @@ int main(int argc, char **argv) {
         if (S.seq_pos + 64 >= ctx_max) {
             state_restore_prefix(&S);
             turn_idx = 0;
-            emit_sentinel_str("INFO", "context full, conversation reset");
+            emit_sentinel_str("INFO", "context full, rebuilt from bounded thread summary");
         }
 
         prof_reset();
 
         char shaped_line[8192];
         shape_prompt(line, shaped_line, sizeof(shaped_line));
+        if (turn_idx == 0 && thread_summary[0]) {
+            char with_summary[8192];
+            snprintf(with_summary, sizeof(with_summary),
+                     "Conversation so far: %s\n\nQ: %s", thread_summary, shaped_line);
+            snprintf(shaped_line, sizeof(shaped_line), "%s", with_summary);
+        }
 
         // Per-turn tail.
         //   First turn: prefix already ends in "Q: ", so we just append
@@ -1387,10 +1562,8 @@ int main(int argc, char **argv) {
         if (S.seq_pos + n + 64 >= ctx_max) {
             state_restore_prefix(&S);
             turn_idx = 0;
-            emit_sentinel_str("INFO", "context full, conversation reset");
-            if (turn_idx == 0) {
-                snprintf(turn_buf, sizeof(turn_buf), "%s%s", shaped_line, PROMPT_SUFFIX);
-            }
+            emit_sentinel_str("INFO", "context full, rebuilt from bounded thread summary");
+            snprintf(turn_buf, sizeof(turn_buf), "%s%s", shaped_line, PROMPT_SUFFIX);
             n = 0;
             n += nct_encode(T, turn_buf, prompt_ids + n,
                             (int)(sizeof(prompt_ids)/sizeof(int)) - n - 8);
@@ -1515,6 +1688,7 @@ int main(int argc, char **argv) {
             snprintf(eot_msg, sizeof(eot_msg), "%d", gen_count);
             emit_sentinel_str("EOT", eot_msg);
         }
+        summary_append_turn(thread_summary, sizeof(thread_summary), line);
         turn_idx++;
     }
 

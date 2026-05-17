@@ -29,8 +29,9 @@ pipeline, not state-of-the-art assistant quality. Expect short, simple answers.
 
 - One self-contained portable `.exe`; no separate model/tokenizer files.
 - Automatic backend selection: `NC_RUN_SSE2.EXE` for Pentium M / SSE2-only systems, `NC_RUN_SSE3.EXE` for newer CPUs.
-- Coherent defaults baked in: `ctx=256`, `temp=0.0`, `top_p=0.95`, `max_tokens=128`.
-- Clean per-turn KV reset so earlier bad turns do not contaminate later answers.
+- Coherent defaults baked in: model-aware built-in defaults, `temp=0.0`, `top_p=0.95`, short reply token caps, repetition guardrails.
+- Multi-turn KV thread memory, with `/reset` or automatic context rollover when the context window fills.
+- LM Studio-style runtime controls: `/template`, `/defaults`, and `/preset deterministic|balanced|creative` expose prompt-template metadata and named sampling presets offline.
 - Prompt assist for fragile tiny-model prompts such as guitar facts and simple compliments.
 - XP-native Microsoft Sam text-to-speech through SAPI via **Speak last reply**.
 - Owner-drawn green-arrow Send button, avoiding XP shell icon mismatches.
