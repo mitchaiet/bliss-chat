@@ -26,6 +26,21 @@ class XpChatTtsTests(unittest.TestCase):
         self.assertIn('L"Speak"', src)
         self.assertIn("COINIT_APARTMENTTHREADED", src)
 
+    def test_async_sapi_voice_lives_until_app_shutdown(self):
+        src = read_xpchat()
+        speak_fn = src[src.index("static int sapi_speak_text"):src.index("static void speak_last_reply")]
+        destroy_handler = src[src.index("case WM_DESTROY:"):src.index("PostQuitMessage(0);")]
+
+        # SVSFlagsAsync only works reliably if the SpVoice automation object is
+        # not released as soon as Speak returns; keep it alive until shutdown.
+        self.assertIn("static IDispatch *gSapiVoice", src)
+        self.assertIn("static void sapi_cleanup(void)", src)
+        self.assertIn("gSapiVoice", speak_fn)
+        self.assertIn("args[0].lVal = 1", speak_fn)
+        self.assertNotIn("IDispatch *voice = NULL", speak_fn)
+        self.assertNotIn("Release(voice)", speak_fn)
+        self.assertIn("sapi_cleanup();", destroy_handler)
+
     def test_build_links_ole_libraries_for_sapi_automation(self):
         build = BUILD.read_text(encoding="utf-8")
         self.assertIn("-lole32", build)

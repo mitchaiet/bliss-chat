@@ -33,7 +33,7 @@ class NcRunGuardrailSourceTests(unittest.TestCase):
         self.assertIn('Multi-turn: keep the KV cache across turns', self.source)
         self.assertNotIn('Fresh one-shot semantics for each user turn', self.source)
         self.assertNotRegex(self.source, r"state_restore_prefix\(&S\);\s*turn_idx\s*=\s*0;\s*char shaped_line")
-        self.assertIn('context full, conversation reset', self.source)
+        self.assertIn('context full, rebuilt from bounded thread summary', self.source)
 
 
 if __name__ == "__main__":

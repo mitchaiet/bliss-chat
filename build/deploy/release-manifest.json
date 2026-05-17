@@ -1,18 +1,57 @@
 {
-  "release": "v1.2.1",
-  "model_name": "bliss-d12-curated-c20-v1",
-  "model_architecture": "d12",
-  "training_steps": 33600,
-  "final_validation_bpb": 0.818168,
-  "files": {
-    "NC_RUN.EXE": "5a0d81a99a1bb03a80e70df821d326137085d997057a75292570e9f75f308a70",
-    "NC_RUN_SSE2.EXE": "5a0d81a99a1bb03a80e70df821d326137085d997057a75292570e9f75f308a70",
-    "NC_RUN_SSE3.EXE": "87b901823cb61b23461b233a7771385fdd1a57cae781d000d30526c86a7b9d6e",
-    "XPCHAT.EXE": "de774aac4b39c8fa2e43e0c6fa3137c64bdd6d30978bf85ce547b034995a6979",
-    "MODEL.NCB": "6361d0cb21675763c0ae8a9fdb591f0e37b6c0f2d14ec38507f8d2d40fe4c578",
-    "TOKENIZER.NCT": "292796d0675114f3bcdf88a80127518fb4bcf365058cee446b3ff827024ebff3"
+  "MODEL.NCB": {
+    "bytes": 292886664,
+    "sha256": "6361d0cb21675763c0ae8a9fdb591f0e37b6c0f2d14ec38507f8d2d40fe4c578"
+  },
+  "MODEL_VERSION.txt": {
+    "bytes": 449,
+    "sha256": "380cf875c1f9b7ea7f777239263c394b116135185b400ce13de2272128ea582f"
+  },
+  "NC_RUN.EXE": {
+    "bytes": 326989,
+    "sha256": "b5cf43568c077532da1edd49addfaa7a834f8c701c5d06963d5055c1a0cc0cb5"
+  },
+  "NC_RUN_SSE2.EXE": {
+    "bytes": 326989,
+    "sha256": "b5cf43568c077532da1edd49addfaa7a834f8c701c5d06963d5055c1a0cc0cb5"
+  },
+  "NC_RUN_SSE3.EXE": {
+    "bytes": 326653,
+    "sha256": "1a586145782426586ed2913020cab91228d056b4e4d6928596710aa519e1b787"
+  },
+  "README_RELEASE.txt": {
+    "bytes": 768,
+    "sha256": "02a873cb376c7dffcfdb3dcc759df1014700ebdf144d366ab1cf8f9ea7d40454"
+  },
+  "TOKENIZER.NCT": {
+    "bytes": 477616,
+    "sha256": "292796d0675114f3bcdf88a80127518fb4bcf365058cee446b3ff827024ebff3"
+  },
+  "XPCHAT.EXE": {
+    "bytes": 902304,
+    "sha256": "75e9e928b152e49dd503bafa0fafefeb0556519ccddebc37de03a53a503b2918"
   },
   "compatibility": {
     "backend_selection": "XPCHAT detects SSE3 at runtime; launches NC_RUN_SSE3.EXE on SSE3 CPUs, otherwise NC_RUN_SSE2.EXE for Pentium M/SSE2 systems."
-  }
+  },
+  "files": {
+    "MODEL.NCB": "6361d0cb21675763c0ae8a9fdb591f0e37b6c0f2d14ec38507f8d2d40fe4c578",
+    "MODEL_VERSION.txt": "380cf875c1f9b7ea7f777239263c394b116135185b400ce13de2272128ea582f",
+    "NC_RUN.EXE": "b5cf43568c077532da1edd49addfaa7a834f8c701c5d06963d5055c1a0cc0cb5",
+    "NC_RUN_SSE2.EXE": "b5cf43568c077532da1edd49addfaa7a834f8c701c5d06963d5055c1a0cc0cb5",
+    "NC_RUN_SSE3.EXE": "1a586145782426586ed2913020cab91228d056b4e4d6928596710aa519e1b787",
+    "README_RELEASE.txt": "02a873cb376c7dffcfdb3dcc759df1014700ebdf144d366ab1cf8f9ea7d40454",
+    "TOKENIZER.NCT": "292796d0675114f3bcdf88a80127518fb4bcf365058cee446b3ff827024ebff3",
+    "XPCHAT.EXE": "75e9e928b152e49dd503bafa0fafefeb0556519ccddebc37de03a53a503b2918",
+    "index.html": "84a3b3e1f4b4b9580ab860cdb594eae1db5ab5e3cfac12b58790bcd7e592e5bb"
+  },
+  "final_validation_bpb": 0.818168,
+  "index.html": {
+    "bytes": 378,
+    "sha256": "84a3b3e1f4b4b9580ab860cdb594eae1db5ab5e3cfac12b58790bcd7e592e5bb"
+  },
+  "model_architecture": "d12",
+  "model_name": "bliss-d12-curated-c20-v1",
+  "release": "v1.2.3",
+  "training_steps": 33600
 }
