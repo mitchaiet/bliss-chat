@@ -158,6 +158,7 @@ typedef struct {
     int dtype_code;        // 0=fp32, 1=int8, 2=q4 group-32
     int softcap;
 
+
     // Owned buffer for the whole file (we read it in)
     void   *blob;
     size_t  blob_len;
@@ -511,6 +512,10 @@ static int read_file(const char *path, void **out_blob, size_t *out_len) {
     return 1;
 }
 
+// dtype_code of the loaded model, needed by linear() to pick the kernel
+// (the weight slots alone can't distinguish int8 from q4 packing).
+static int g_dtype_code = 0;
+
 // Parse header + set up pointers into blob. Returns 1 on success.
 static int model_load(nc_model *m, const char *path) {
     if (!read_file(path, &m->blob, &m->blob_len)) {
@@ -712,10 +717,6 @@ static void matmul_fp32(float *y, const float *W, const float *x, int rows, int 
     }
 #endif
 }
-
-// dtype_code of the loaded model, needed by linear() to pick the kernel
-// (the weight slots alone can't distinguish int8 from q4 packing).
-static int g_dtype_code = 0;
 
 // ---- q4 (dtype=2) support: group-wise symmetric int4, group size 32 ----
 // Packing (chosen so the SSE2 kernel needs zero shuffles): each 32-column
