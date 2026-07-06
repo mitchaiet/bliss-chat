@@ -99,3 +99,23 @@ and replace the table above. Track:
 * Per-category correct% delta
 * Total coherent% (the most user-facing number)
 * Average tokens per response (lower = less ramble usually)
+
+## Memory / notes / persona evals (v1.3.0)
+
+Three additional harnesses, all stdlib-only, temp 0.0, seed 42, ctx 1024,
+180 s per-turn timeout. Common flags: `--model --tokenizer --binary --ctx
+--temp --seed`.
+
+```bash
+python3 bench/eval_multiturn_memory.py   # MEMORY SCORE: p/40  -> results_memory.csv
+python3 bench/eval_notes.py              # NOTES SCORE: p/25   -> results_notes.csv
+python3 bench/eval_persona.py            # PERSONA SCORE: p/n  -> results_persona.csv
+```
+
+| Eval | Cases | Protocol | Pass rule (case-insensitive) |
+|---|---|---|---|
+| `eval_multiturn_memory.py` | 40 dialogs: 15 personal-fact, 10 pronoun carry-over, 8 running-list, 7 correction | one backend; `/reset` once per dialog, then turns run **without** reset (in-context memory is the thing under test); only the recall turn is scored | any `expect` present; running lists use `expect_all` (every item required); corrections also require no `reject` (the pre-correction value) |
+| `eval_notes.py` | 25 cases: 20 answered-by-one-note, 5 unrelated-to-notes | fresh backend per case with `-m <temp notes file>` (one note per line), one question, terminate | any `expect` present AND no `reject` present — rejects are words from the *other* notes (answered) or from any note (unrelated), so note-dumping and note-bleed both fail |
+| `eval_persona.py` | probes from `bliss_native_eval_v1.jsonl` (`{"prompt", "expect_contains"}`) | one backend; `/reset` between probes | `expect_contains` substring present; an empty `expect_contains` passes on any non-empty answer |
+
+Same substring caveat as `correct` above: keyword presence, not direction.
