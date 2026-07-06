@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
+#include <ctype.h>
 
 #define APP_NAME "Bliss Chat"
 #define APP_DISPLAY_NAME "Bliss Chat"
@@ -51,6 +52,7 @@
 #define IDC_REGEN      1031
 #define IDC_EDIT_LAST  1032
 #define IDC_SPEAK_LAST 1033
+#define IDC_REMEMBER   1034
 #define IDC_TASK_SAVE   1040
 #define IDC_TASK_EXPORT 1041
 #define IDC_TASK_IMPORT 1042
@@ -102,6 +104,9 @@
 #define IDM_PERF       2030
 #define IDM_TEMPLATES  2031
 #define IDM_HELPTOPICS 2032
+#define IDM_VIEWMEM    2033
+#define IDM_FORGETMEM  2034
+#define IDM_KNOWLEDGE  2035
 
 // Resource IDs from resource.rc — must stay in sync.
 #define IDD_SETTINGS         200
@@ -147,6 +152,8 @@
 
 #define PROMPT_MAX     8192
 #define BACKEND_EXE    "NC_RUN.EXE"
+#define BACKEND_SSE2_EXE "NC_RUN_SSE2.EXE"
+#define BACKEND_SSE3_EXE "NC_RUN_SSE3.EXE"
 #define MODEL_FILE     "MODEL.NCB"
 #define TOKENIZER_FILE "TOKENIZER.NCT"
 #define MODEL_LABEL    "(loading...)"
@@ -208,6 +215,7 @@ static HWND gCopyLastBtn;  // per-message action strip above the transcript
 static HWND gRegenBtn;
 static HWND gEditLastBtn;
 static HWND gSpeakLastBtn;
+static HWND gRememberBtn;
 static HFONT gUiFont;
 static HFONT gTitleFont;
 static HFONT gPaneFont;
@@ -216,6 +224,9 @@ static HICON gSendIcon;
 static HICON gStopIcon;
 static HIMAGELIST gToolbarImages;
 static HMODULE gRichEdit;
+static IDispatch *gSapiVoice;
+static DISPID gSapiSpeakDispid;
+static int gSapiComInitialized;
 static WNDPROC gOldInputProc;
 
 static RECT gRcToolbarBand;
@@ -234,6 +245,8 @@ static char gModelName[160] = "(loading...)";
 static char gStatusText[160] = "Loading model...";
 
 static char gAppDir[MAX_PATH];
+static char gBackendExe[MAX_PATH] = BACKEND_EXE;
+static char gBackendFlavor[32] = "generic";
 static char gPendingUser[PROMPT_MAX];
 static char gLogPath[MAX_PATH];
 static FILE * gLogFile = NULL;
@@ -290,6 +303,19 @@ static DWORD gSeed     = DEFAULT_SEED;
 static float gTopP     = DEFAULT_TOPP;
 static DWORD gMaxTok   = DEFAULT_MAXTOK;
 static char  gSysPrompt[2048] = "";  // empty = use backend default
+
+typedef struct {
+    const char *name;
+    const char *temp;
+    const char *top_p;
+    const char *max_tok;
+} SettingsPreset;
+
+static const SettingsPreset gSettingsPresets[] = {
+    { "deterministic", "0.00", "0.95", "128" },  // Preset deterministic
+    { "balanced",      "0.70", "0.90", "160" },  // Preset balanced
+    { "creative",      "1.10", "0.95", "220" }   // Preset creative
+};
 
 // Last find text from the Find dialog. Static so "Find Next" stays useful
 // when the dialog is dismissed (and reusable if we ever wire F3).
@@ -433,6 +459,35 @@ static int file_exists_in_app_dir(const char *name) {
     snprintf(path, sizeof(path), "%s\\%s", gAppDir, name);
     attr = GetFileAttributesA(path);
     return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+static int cpu_has_sse3(void) {
+#if defined(_M_IX86) || defined(__i386__) || defined(_M_X64) || defined(__x86_64__)
+    int regs[4] = {0, 0, 0, 0};
+    __asm__ __volatile__(
+        "xorl %%ecx, %%ecx\n\t"
+        "cpuid"
+        : "=a" (regs[0]), "=b" (regs[1]), "=c" (regs[2]), "=d" (regs[3])
+        : "a" (1)
+    );
+    return (regs[2] & 0x1) != 0;
+#else
+    return 0;
+#endif
+}
+
+static void select_backend_exe(void) {
+    int has_sse3 = cpu_has_sse3();
+    if (has_sse3 && file_exists_in_app_dir(BACKEND_SSE3_EXE)) {
+        snprintf(gBackendExe, sizeof(gBackendExe), "%s", BACKEND_SSE3_EXE);
+        snprintf(gBackendFlavor, sizeof(gBackendFlavor), "SSE3");
+    } else if (file_exists_in_app_dir(BACKEND_SSE2_EXE)) {
+        snprintf(gBackendExe, sizeof(gBackendExe), "%s", BACKEND_SSE2_EXE);
+        snprintf(gBackendFlavor, sizeof(gBackendFlavor), "SSE2");
+    } else {
+        snprintf(gBackendExe, sizeof(gBackendExe), "%s", BACKEND_EXE);
+        snprintf(gBackendFlavor, sizeof(gBackendFlavor), has_sse3 ? "generic/SSE3 CPU" : "generic/SSE2 CPU");
+    }
 }
 
 // ---------- transcript helpers ----------
@@ -583,35 +638,61 @@ static void trim_trailing_newlines(char *text) {
     }
 }
 
-static int sapi_speak_text(HWND owner, const char *text) {
+static int sapi_ensure_voice(void) {
     HRESULT hr;
     CLSID clsid;
-    IDispatch *voice = NULL;
-    DISPID dispid;
     OLECHAR *method = L"Speak";
+
+    if (gSapiVoice) return 1;
+
+    if (!gSapiComInitialized) {
+        hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+        if (SUCCEEDED(hr)) {
+            gSapiComInitialized = 1;
+        } else if (hr != RPC_E_CHANGED_MODE) {
+            return 0;
+        }
+    }
+
+    hr = CLSIDFromProgID(L"SAPI.SpVoice", &clsid);
+    if (FAILED(hr)) return 0;
+    hr = CoCreateInstance(&clsid, NULL, CLSCTX_INPROC_SERVER | CLSCTX_LOCAL_SERVER,
+                          &IID_IDispatch, (void **)&gSapiVoice);
+    if (FAILED(hr) || !gSapiVoice) return 0;
+
+    hr = gSapiVoice->lpVtbl->GetIDsOfNames(gSapiVoice, &IID_NULL, &method, 1,
+                                           LOCALE_USER_DEFAULT, &gSapiSpeakDispid);
+    if (FAILED(hr)) {
+        gSapiVoice->lpVtbl->Release(gSapiVoice);
+        gSapiVoice = NULL;
+        return 0;
+    }
+
+    return 1;
+}
+
+static void sapi_cleanup(void) {
+    if (gSapiVoice) {
+        gSapiVoice->lpVtbl->Release(gSapiVoice);
+        gSapiVoice = NULL;
+    }
+    if (gSapiComInitialized) {
+        CoUninitialize();
+        gSapiComInitialized = 0;
+    }
+}
+
+static int sapi_speak_text(HWND owner, const char *text) {
+    HRESULT hr;
     DISPPARAMS params;
     VARIANT args[2];
     BSTR speech = NULL;
     WCHAR *wide = NULL;
     int wide_len;
     int ok = 0;
-    int did_init = 0;
 
     if (!text || !*text) return 0;
-
-    hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
-    if (SUCCEEDED(hr)) did_init = 1;
-    else if (hr != RPC_E_CHANGED_MODE) return 0;
-
-    hr = CLSIDFromProgID(L"SAPI.SpVoice", &clsid);
-    if (FAILED(hr)) goto done;
-    hr = CoCreateInstance(&clsid, NULL, CLSCTX_INPROC_SERVER | CLSCTX_LOCAL_SERVER,
-                          &IID_IDispatch, (void **)&voice);
-    if (FAILED(hr) || !voice) goto done;
-
-    hr = voice->lpVtbl->GetIDsOfNames(voice, &IID_NULL, &method, 1,
-                                      LOCALE_USER_DEFAULT, &dispid);
-    if (FAILED(hr)) goto done;
+    if (!sapi_ensure_voice()) goto done;
 
     wide_len = MultiByteToWideChar(CP_ACP, 0, text, -1, NULL, 0);
     if (wide_len <= 0) goto done;
@@ -626,19 +707,18 @@ static int sapi_speak_text(HWND owner, const char *text) {
     args[1].vt = VT_BSTR;
     args[1].bstrVal = speech;
     args[0].vt = VT_I4;
-    args[0].lVal = 1;  // SVSFlagsAsync: return immediately while Microsoft Sam speaks.
+    args[0].lVal = 1;  // SVSFlagsAsync: keep gSapiVoice alive until shutdown.
     ZeroMemory(&params, sizeof(params));
     params.rgvarg = args;
     params.cArgs = 2;
-    hr = voice->lpVtbl->Invoke(voice, dispid, &IID_NULL, LOCALE_USER_DEFAULT,
-                               DISPATCH_METHOD, &params, NULL, NULL, NULL);
+    hr = gSapiVoice->lpVtbl->Invoke(gSapiVoice, gSapiSpeakDispid, &IID_NULL,
+                                    LOCALE_USER_DEFAULT, DISPATCH_METHOD,
+                                    &params, NULL, NULL, NULL);
     ok = SUCCEEDED(hr);
 
 done:
     if (speech) SysFreeString(speech);
     if (wide) free(wide);
-    if (voice) voice->lpVtbl->Release(voice);
-    if (did_init) CoUninitialize();
     if (!ok && owner) MessageBeep(MB_ICONWARNING);
     return ok;
 }
@@ -694,6 +774,7 @@ static void update_msg_actions(void) {
     if (gSpeakLastBtn) EnableWindow(gSpeakLastBtn, have_asst);
     if (gRegenBtn)     EnableWindow(gRegenBtn,     have_asst && have_user && ready && idle);
     if (gEditLastBtn)  EnableWindow(gEditLastBtn,  have_user && ready && idle);
+    if (gRememberBtn)  EnableWindow(gRememberBtn,  (have_user || have_asst) && ready && idle);
 }
 
 static void clear_transcript(void) {
@@ -713,7 +794,7 @@ static void clear_transcript(void) {
         rich_append_color(MODEL_LABEL "\r\n", RGB(96, 96, 96), FALSE);
     }
     if (InterlockedCompareExchange(&gBackendReady, 0, 0)) {
-        rich_append_color("Note: this clears the on-screen transcript only. Backend conversation memory persists until exit.\r\n\r\n", RGB(96, 96, 96), FALSE);
+        rich_append_color("Note: this clears the on-screen transcript only. Backend conversation memory persists until exit. Reopening a saved chat restores its recent turns into model context.\r\n\r\n", RGB(96, 96, 96), FALSE);
     } else {
         rich_append_color("Loading model...\r\n\r\n", RGB(96, 96, 96), FALSE);
     }
@@ -846,9 +927,10 @@ static int launch_backend(void) {
     HANDLE backend_err = INVALID_HANDLE_VALUE;
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
-    char command[1024];
+    char command[2048];
     char err_buf[256];
     char err_log_path[MAX_PATH];
+    char mem_path[MAX_PATH + 32];
 
     sa.nLength = sizeof(sa);
     sa.lpSecurityDescriptor = NULL;
@@ -872,10 +954,26 @@ static int launch_backend(void) {
     backend_err = CreateFileA(err_log_path, GENERIC_WRITE, FILE_SHARE_READ,
         &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 
-    snprintf(command, sizeof(command),
-        "\"%s\\%s\" \"%s\\%s\" \"%s\\%s\" -c 256 -t 0.8 -p 0.95",
-        gAppDir, BACKEND_EXE, gAppDir, MODEL_FILE, gAppDir, TOKENIZER_FILE);
+    // Persistent notes file for /remember — lives next to the chats dir in
+    // %APPDATA%\bliss-chat (same SHGetFolderPathA pattern as chats_resolve_dir,
+    // and the same mkdir-if-missing behavior in case chats haven't run yet).
+    {
+        char appdata[MAX_PATH];
+        if (SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appdata) == S_OK) {
+            char parent[MAX_PATH + 16];
+            snprintf(parent, sizeof(parent), "%s\\bliss-chat", appdata);
+            CreateDirectoryA(parent, NULL);  // ok if it exists
+            snprintf(mem_path, sizeof(mem_path), "%s\\MEMORY.TXT", parent);
+        } else {
+            snprintf(mem_path, sizeof(mem_path), "%s\\MEMORY.TXT", gAppDir);
+        }
+    }
 
+    snprintf(command, sizeof(command),
+        "\"%s\\%s\" \"%s\\%s\" \"%s\\%s\" -c 256 -t 0.8 -p 0.95 -m \"%s\"",
+        gAppDir, gBackendExe, gAppDir, MODEL_FILE, gAppDir, TOKENIZER_FILE, mem_path);
+
+    dbg_log("GUI", "selected backend: %s (%s)", gBackendExe, gBackendFlavor);
     dbg_log("GUI", "spawning backend: %s", command);
     dbg_log("GUI", "backend stderr -> %s", err_log_path);
 
@@ -890,7 +988,7 @@ static int launch_backend(void) {
 
     if (!CreateProcessA(NULL, command, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, gAppDir, &si, &pi)) {
         DWORD err = GetLastError();
-        snprintf(err_buf, sizeof(err_buf), "Could not start " BACKEND_EXE ". Windows error %lu.", (unsigned long)err);
+        snprintf(err_buf, sizeof(err_buf), "Could not start %s. Windows error %lu.", gBackendExe, (unsigned long)err);
         dbg_log("GUI", "CreateProcess failed: %lu", (unsigned long)err);
         MessageBoxA(gMain, err_buf, APP_NAME, MB_ICONERROR | MB_OK);
         goto fail;
@@ -956,6 +1054,376 @@ static void shutdown_backend(void) {
     }
 }
 
+// ---------- local tools + Knowledge context ----------
+static int starts_ci(const char *s, const char *prefix) {
+    size_t i;
+    if (!s || !prefix) return 0;
+    for (i = 0; prefix[i]; i++) {
+        if (!s[i]) return 0;
+        if (tolower((unsigned char)s[i]) != tolower((unsigned char)prefix[i])) return 0;
+    }
+    return 1;
+}
+
+static void skip_spaces(const char **p) {
+    while (**p && isspace((unsigned char)**p)) (*p)++;
+}
+
+static double parse_expr(const char **p, int *ok);
+
+static double parse_number_or_paren(const char **p, int *ok) {
+    double v;
+    char *endp;
+    skip_spaces(p);
+    if (**p == '(') {
+        (*p)++;
+        v = parse_expr(p, ok);
+        skip_spaces(p);
+        if (**p != ')') { *ok = 0; return 0.0; }
+        (*p)++;
+        return v;
+    }
+    v = strtod(*p, &endp);
+    if (endp == *p) { *ok = 0; return 0.0; }
+    *p = endp;
+    return v;
+}
+
+static double parse_term(const char **p, int *ok) {
+    double v = parse_number_or_paren(p, ok);
+    while (*ok) {
+        char op;
+        double rhs;
+        skip_spaces(p);
+        op = **p;
+        if (op != '*' && op != '/') break;
+        (*p)++;
+        rhs = parse_number_or_paren(p, ok);
+        if (!*ok) return 0.0;
+        if (op == '*') v *= rhs;
+        else {
+            if (rhs == 0.0) { *ok = 0; return 0.0; }
+            v /= rhs;
+        }
+    }
+    return v;
+}
+
+static double parse_expr(const char **p, int *ok) {
+    double v = parse_term(p, ok);
+    while (*ok) {
+        char op;
+        double rhs;
+        skip_spaces(p);
+        op = **p;
+        if (op != '+' && op != '-') break;
+        (*p)++;
+        rhs = parse_term(p, ok);
+        if (!*ok) return 0.0;
+        if (op == '+') v += rhs;
+        else v -= rhs;
+    }
+    return v;
+}
+
+static int safe_eval_arithmetic(const char *expr, double *out) {
+    const char *p = expr;
+    int ok = 1;
+    if (!expr || !out) return 0;
+    while (*p) {
+        if (!(isdigit((unsigned char)*p) || isspace((unsigned char)*p) || *p == '.' ||
+              *p == '+' || *p == '-' || *p == '*' || *p == '/' || *p == '(' || *p == ')')) return 0;
+        p++;
+    }
+    p = expr;
+    *out = parse_expr(&p, &ok);
+    skip_spaces(&p);
+    return ok && *p == 0;
+}
+
+static void append_local_assistant_answer(const char *title, const char *answer) {
+    SYSTEMTIME st;
+    char hdr[96];
+    if (!answer || !*answer) return;
+    GetLocalTime(&st);
+    snprintf(hdr, sizeof(hdr), "Assistant  -  %d:%02d %s\r\n",
+             (st.wHour % 12) ? (st.wHour % 12) : 12, st.wMinute,
+             st.wHour < 12 ? "AM" : "PM");
+    rich_append_color(hdr, RGB(0, 128, 0), TRUE);
+    gLastAsstStart = rich_end_pos();
+    rich_append_color(answer, RGB(0, 0, 0), FALSE);
+    gLastAsstEnd = rich_end_pos();
+    gHasAsstTurn = 1;
+    rich_append_color("\r\n", RGB(0, 0, 0), FALSE);
+    if (title) diagnostics_appendf("%s", title);
+    if (gActiveIdx >= 0) chats_append_turn("ASSISTANT", answer);
+    update_msg_actions();
+}
+
+static int try_answer_local_tool(const char *user_prompt) {
+    char answer[256];
+    const char *expr = NULL;
+    double value;
+    SYSTEMTIME st;
+    if (starts_ci(user_prompt, "calculate ")) expr = user_prompt + 10;
+    else if (starts_ci(user_prompt, "calc ")) expr = user_prompt + 5;
+    if (expr) {
+        if (!safe_eval_arithmetic(expr, &value)) return 0;
+        snprintf(answer, sizeof(answer), "Tool result: %.10g", value);
+        append_local_assistant_answer("local tool answered: calculator", answer);
+        set_status("Answered with local calculator tool.");
+        return 1;
+    }
+    if (starts_ci(user_prompt, "date") || starts_ci(user_prompt, "time") || starts_ci(user_prompt, "what time is it")) {
+        GetLocalTime(&st);
+        snprintf(answer, sizeof(answer), "Tool result: %04d-%02d-%02d %02d:%02d:%02d local time.",
+                 st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+        append_local_assistant_answer("local tool answered: date/time", answer);
+        set_status("Answered with local date/time tool.");
+        return 1;
+    }
+    return 0;
+}
+
+// ---------- knowledge retrieval v2 ----------
+// The user prompt is tokenized into distinct lowercase terms; every
+// *.txt/*.md/*.html file under <appdir>\Knowledge is scored by how many
+// distinct prompt terms it contains, and snippets from the top two files
+// are prepended to the prompt as one "Context: ..." line (the model's
+// training format). v1 emitted multi-line "Local knowledge snippets:"
+// blocks instead. The file names used are remembered in gKnowledgeSources
+// so WM_RUN_DONE can append a gray "Sources: ..." footer under the reply.
+
+#define KNOW_TERMS_MAX   32
+#define KNOW_TERM_LEN    32
+#define KNOW_FILE_MAX    65536
+#define KNOW_SNIPPET_MAX 240
+
+typedef struct {
+    char name[MAX_PATH];
+    char snippet[KNOW_SNIPPET_MAX + 1];
+    int  score;
+} KnowledgeHit;
+
+// Names of the knowledge files backing the in-flight prompt, rendered as
+// "file1.txt, file2.txt". Empty = the current prompt had no knowledge hits.
+static char gKnowledgeSources[2 * MAX_PATH + 4];
+
+static const char *kKnowStopwords[] = {
+    "the", "and", "for", "are", "but", "not", "you", "all", "can", "her",
+    "was", "one", "our", "out", "day", "get", "has", "him", "his", "how",
+    "man", "new", "now", "old", "see", "two", "way", "who", "its", "did",
+    "yes", "she", "may", "say", "each", "which", "their", "time", "will",
+    "about", "what", "when", "your", "them", "then", "this", "that", "with",
+    "from", "have", "does", "were", "been", "than", "into", "some", "could",
+    "would", "where", "there"
+};
+
+static int know_is_stopword(const char *w) {
+    int i;
+    for (i = 0; i < (int)(sizeof(kKnowStopwords) / sizeof(kKnowStopwords[0])); i++) {
+        if (!strcmp(w, kKnowStopwords[i])) return 1;
+    }
+    return 0;
+}
+
+// Split the prompt into distinct lowercase [a-z0-9]+ terms of length >= 3,
+// skipping stopwords. Returns the number of terms stored.
+static int know_extract_terms(const char *prompt, char terms[][KNOW_TERM_LEN], int max_terms) {
+    char word[KNOW_TERM_LEN];
+    int wi = 0;
+    int count = 0;
+    const char *p;
+    for (p = prompt; ; p++) {
+        int c = (unsigned char)*p;
+        if (isalnum(c)) {
+            if (wi + 1 < KNOW_TERM_LEN) word[wi++] = (char)tolower(c);
+        } else {
+            if (wi >= 3) {
+                int k, dup = 0;
+                word[wi] = 0;
+                for (k = 0; k < count; k++) {
+                    if (!strcmp(word, terms[k])) { dup = 1; break; }
+                }
+                if (!dup && !know_is_stopword(word) && count < max_terms) {
+                    strcpy(terms[count++], word);
+                }
+            }
+            wi = 0;
+            if (!c) break;
+        }
+    }
+    return count;
+}
+
+// Case-insensitive substring search. Returns the byte offset of the first
+// match, or -1 if absent. `needle` is already lowercase.
+static int know_find_term(const char *haystack, const char *needle) {
+    size_t i;
+    for (i = 0; haystack[i]; i++) {
+        size_t j = 0;
+        while (needle[j] && haystack[i + j] &&
+               tolower((unsigned char)haystack[i + j]) == (unsigned char)needle[j]) j++;
+        if (!needle[j]) return (int)i;
+    }
+    return -1;
+}
+
+// Copy up to KNOW_SNIPPET_MAX chars around offset `off` in `text`, backing
+// up to the previous space so the snippet starts on a word boundary.
+// Whitespace runs (and control bytes) are flattened into single spaces.
+static void know_extract_snippet(const char *text, int off, char *out, int outsz) {
+    int start = off - KNOW_SNIPPET_MAX / 2;
+    int o = 0;
+    int sp = 1;  // suppress leading space
+    const char *p;
+    if (start < 0) start = 0;
+    while (start > 0 && !isspace((unsigned char)text[start - 1])) start--;
+    for (p = text + start; *p && o + 1 < outsz; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c <= ' ' || c == 0x7f) {
+            if (!sp) out[o++] = ' ';
+            sp = 1;
+        } else {
+            out[o++] = (char)c;
+            sp = 0;
+        }
+    }
+    while (o > 0 && out[o - 1] == ' ') o--;
+    out[o] = 0;
+}
+
+static void strip_html_inplace(char *s) {
+    char *w = s;
+    int tag = 0;
+    while (*s) {
+        if (*s == '<') { tag = 1; s++; continue; }
+        if (*s == '>') { tag = 0; s++; continue; }
+        if (!tag) *w++ = (*s == '\r' || *s == '\n' || *s == '\t') ? ' ' : *s;
+        s++;
+    }
+    *w = 0;
+}
+
+// Score one Knowledge\<pattern> file set against the prompt terms and fold
+// any file with score >= 1 into the running top-2 leaderboard. A file's
+// score is the number of DISTINCT prompt terms it contains; the snippet is
+// centered on the first occurrence of the first matching term.
+static void knowledge_scan_pattern(KnowledgeHit best[2], char terms[][KNOW_TERM_LEN],
+                                   int nterms, const char *pattern) {
+    char search[MAX_PATH * 2];
+    WIN32_FIND_DATAA fd;
+    HANDLE h;
+    char *buf;
+    snprintf(search, sizeof(search), "%s\\Knowledge\\%s", gAppDir, pattern);
+    h = FindFirstFileA(search, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    buf = (char *)malloc(KNOW_FILE_MAX + 1);
+    if (!buf) { FindClose(h); return; }
+    do {
+        char path[MAX_PATH * 2];
+        FILE *fp;
+        size_t n;
+        int t, score = 0, first_off = -1;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        snprintf(path, sizeof(path), "%s\\Knowledge\\%s", gAppDir, fd.cFileName);
+        fp = fopen(path, "rb");
+        if (!fp) continue;
+        n = fread(buf, 1, KNOW_FILE_MAX, fp);
+        fclose(fp);
+        buf[n] = 0;
+        if (strstr(pattern, "htm")) strip_html_inplace(buf);
+        for (t = 0; t < nterms; t++) {
+            int off = know_find_term(buf, terms[t]);
+            if (off >= 0) {
+                score++;
+                if (first_off < 0) first_off = off;
+            }
+        }
+        if (score < 1) continue;
+        // Fold into the top-2 leaderboard (ties keep the earlier file).
+        if (score > best[0].score) {
+            best[1] = best[0];
+            best[0].score = score;
+            snprintf(best[0].name, sizeof(best[0].name), "%s", fd.cFileName);
+            know_extract_snippet(buf, first_off, best[0].snippet, sizeof(best[0].snippet));
+        } else if (score > best[1].score) {
+            best[1].score = score;
+            snprintf(best[1].name, sizeof(best[1].name), "%s", fd.cFileName);
+            know_extract_snippet(buf, first_off, best[1].snippet, sizeof(best[1].snippet));
+        }
+    } while (FindNextFileA(h, &fd));
+    free(buf);
+    FindClose(h);
+}
+
+// Build the backend prompt for `user_prompt`. If Knowledge files match, the
+// result is a single line in the model's training format:
+//   Context: <snippet1> <snippet2> <original user prompt>
+// capped at the PROMPT_MAX send buffer (snippet2 is dropped first, then
+// snippet1 truncated). Caller frees the returned string. Sets
+// gKnowledgeSources for the end-of-turn footer; clears it when the prompt
+// has no knowledge hits.
+static char *augment_prompt_with_knowledge(const char *user_prompt) {
+    Buffer out;
+    KnowledgeHit best[2];
+    char terms[KNOW_TERMS_MAX][KNOW_TERM_LEN];
+    char snip1[KNOW_SNIPPET_MAX + 1];
+    const char *snip2;
+    char dir[MAX_PATH * 2];
+    DWORD attr;
+    int nterms;
+    size_t plen, budget;
+
+    gKnowledgeSources[0] = 0;
+    snprintf(dir, sizeof(dir), "%s\\Knowledge", gAppDir);
+    attr = GetFileAttributesA(dir);
+    if (attr == INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_DIRECTORY)) return dup_text(user_prompt);
+    nterms = know_extract_terms(user_prompt, terms, KNOW_TERMS_MAX);
+    if (nterms == 0) return dup_text(user_prompt);
+
+    ZeroMemory(best, sizeof(best));
+    knowledge_scan_pattern(best, terms, nterms, "*.txt");
+    knowledge_scan_pattern(best, terms, nterms, "*.md");
+    knowledge_scan_pattern(best, terms, nterms, "*.html");
+    knowledge_scan_pattern(best, terms, nterms, "*.htm");
+    if (best[0].score < 1 || !best[0].snippet[0]) return dup_text(user_prompt);
+
+    // Budget: the whole augmented line must fit the PROMPT_MAX send buffer.
+    // Fixed parts are "Context: " (9 chars), one separating space per
+    // snippet, and the untouched user prompt.
+    plen = strlen(user_prompt);
+    budget = PROMPT_MAX - 1;
+    snprintf(snip1, sizeof(snip1), "%s", best[0].snippet);
+    snip2 = (best[1].score >= 1 && best[1].snippet[0]) ? best[1].snippet : NULL;
+    if (snip2 && 9 + strlen(snip1) + 1 + strlen(snip2) + 1 + plen > budget) snip2 = NULL;
+    if (9 + strlen(snip1) + 1 + plen > budget) {
+        size_t keep = (budget > 9 + 1 + plen) ? budget - 9 - 1 - plen : 0;
+        snip1[keep] = 0;
+        if (!snip1[0]) return dup_text(user_prompt);  // no room for any context
+    }
+
+    buffer_init(&out);
+    buffer_append(&out, "Context: ", 9);
+    buffer_append(&out, snip1, strlen(snip1));
+    if (snip2) {
+        buffer_append(&out, " ", 1);
+        buffer_append(&out, snip2, strlen(snip2));
+    }
+    buffer_append(&out, " ", 1);
+    buffer_append(&out, user_prompt, plen);
+    if (!out.data) return dup_text(user_prompt);
+
+    if (snip2) {
+        snprintf(gKnowledgeSources, sizeof(gKnowledgeSources), "%s, %s",
+                 best[0].name, best[1].name);
+    } else {
+        snprintf(gKnowledgeSources, sizeof(gKnowledgeSources), "%s", best[0].name);
+    }
+    diagnostics_appendf("Knowledge context injected: %s", gKnowledgeSources);
+    return out.data;
+}
+
 // ---------- send a turn ----------
 static int input_has_text(const char *text) {
     const unsigned char *p = (const unsigned char *)text;
@@ -978,6 +1446,7 @@ static void sanitize_user(char *text) {
 // when gRegenLabel is set (cleared here after use).
 static void send_prompt_text(const char *user_prompt, int show_user_header) {
     DWORD written;
+    char *backend_prompt = NULL;
     char with_newline[PROMPT_MAX + 4];
 
     if (!InterlockedCompareExchange(&gBackendReady, 0, 0)) {
@@ -986,6 +1455,7 @@ static void send_prompt_text(const char *user_prompt, int show_user_header) {
     }
     if (InterlockedCompareExchange(&gRunning, 0, 0)) return;
     if (!user_prompt || !input_has_text(user_prompt)) return;
+    if (user_prompt[0] != '/' && try_answer_local_tool(user_prompt)) return;
 
     snprintf(gPendingUser, sizeof(gPendingUser), "%s", user_prompt);
 
@@ -1034,7 +1504,9 @@ static void send_prompt_text(const char *user_prompt, int show_user_header) {
     diagnostics_appendf("Generating response...");
 
     dbg_log("USER", "%s", user_prompt);
-    snprintf(with_newline, sizeof(with_newline), "%s\n", user_prompt);
+    backend_prompt = (user_prompt[0] == '/') ? dup_text(user_prompt) : augment_prompt_with_knowledge(user_prompt);
+    if (!backend_prompt) backend_prompt = dup_text(user_prompt);
+    snprintf(with_newline, sizeof(with_newline), "%s\n", backend_prompt ? backend_prompt : user_prompt);
     if (!WriteFile(gBackendStdinW, with_newline, (DWORD)strlen(with_newline), &written, NULL)) {
         dbg_log("GUI", "WriteFile to backend stdin failed");
         rich_append_color("[backend write failed]\r\n", RGB(192, 0, 0), TRUE);
@@ -1042,6 +1514,7 @@ static void send_prompt_text(const char *user_prompt, int show_user_header) {
         set_running(FALSE);
         set_status("Backend error");
     }
+    if (backend_prompt) free(backend_prompt);
 }
 
 static void send_prompt(void) {
@@ -1092,6 +1565,10 @@ static void make_menu(HWND hwnd) {
 
     AppendMenuA(tools, MF_STRING, IDM_TEMPLATES, "Templates");
     AppendMenuA(tools, MF_STRING, IDM_FIND, "Find...\tCtrl+F");
+    AppendMenuA(tools, MF_SEPARATOR, 0, NULL);
+    AppendMenuA(tools, MF_STRING, IDM_VIEWMEM, "View Memories");
+    AppendMenuA(tools, MF_STRING, IDM_FORGETMEM, "Forget a Memory...");
+    AppendMenuA(tools, MF_STRING, IDM_KNOWLEDGE, "Open Knowledge Folder");
 
     AppendMenuA(help, MF_STRING, IDM_HELPTOPICS, "Help Topics");
     AppendMenuA(help, MF_STRING, IDM_SHORTCUTS, "Keyboard Shortcuts...");
@@ -1258,38 +1735,133 @@ done:
 }
 
 static HICON load_command_button_icon(int stop_icon) {
-    static const struct { const char *dll_name; int index; } send_icons[] = {
-        { "browseui.dll", 32 }, { "browseui.dll", 33 },
-        { "shdocvw.dll", 32 },  { "shell32.dll", 138 },
-        { "shell32.dll", 146 }
-    };
-    static const struct { const char *dll_name; int index; } stop_icons[] = {
-        { "browseui.dll", 26 }, { "browseui.dll", 27 },
-        { "shdocvw.dll", 26 },  { "shell32.dll", 131 },
-        { "shell32.dll", 109 }
-    };
-    int i;
+    // Retained for older helper callers, but Send/Stop are now owner-drawn
+    // buttons. Stock shell/browser icon indexes vary across XP installs and
+    // resolved to a yellow caution sign on real hardware.
     const int size = 24;
-    if (stop_icon) {
-        for (i = 0; i < (int)(sizeof(stop_icons) / sizeof(stop_icons[0])); i++) {
-            HICON icon = load_extracted_icon(stop_icons[i].dll_name, stop_icons[i].index, size);
-            if (icon) return icon;
-        }
-        {
-            HICON shared = (HICON)LoadImageA(NULL, IDI_ERROR, IMAGE_ICON, size, size,
-                                             LR_DEFAULTCOLOR | LR_SHARED);
-            if (shared) {
-                HICON icon = (HICON)CopyImage(shared, IMAGE_ICON, size, size, 0);
-                if (icon) return icon;
-            }
-        }
-    } else {
-        for (i = 0; i < (int)(sizeof(send_icons) / sizeof(send_icons[0])); i++) {
-            HICON icon = load_extracted_icon(send_icons[i].dll_name, send_icons[i].index, size);
-            if (icon) return icon;
-        }
-    }
     return make_fallback_command_icon(stop_icon, size);
+}
+
+static void draw_command_button(const DRAWITEMSTRUCT *dis) {
+    HDC dc;
+    RECT rc;
+    BOOL disabled;
+    BOOL pressed;
+    HBRUSH face;
+    HPEN edge_light;
+    HPEN edge_dark;
+    HPEN old_pen;
+    HBRUSH old_brush;
+
+    if (!dis) return;
+    dc = dis->hDC;
+    rc = dis->rcItem;
+    disabled = (dis->itemState & ODS_DISABLED) != 0;
+    pressed = (dis->itemState & ODS_SELECTED) != 0;
+
+    face = GetSysColorBrush(COLOR_BTNFACE);
+    FillRect(dc, &rc, face);
+
+    edge_light = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_BTNHIGHLIGHT));
+    edge_dark = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_BTNSHADOW));
+    old_pen = (HPEN)SelectObject(dc, pressed ? edge_dark : edge_light);
+    MoveToEx(dc, rc.left, rc.bottom - 1, NULL);
+    LineTo(dc, rc.left, rc.top);
+    LineTo(dc, rc.right - 1, rc.top);
+    SelectObject(dc, pressed ? edge_light : edge_dark);
+    LineTo(dc, rc.right - 1, rc.bottom - 1);
+    LineTo(dc, rc.left, rc.bottom - 1);
+    SelectObject(dc, old_pen);
+    DeleteObject(edge_light);
+    DeleteObject(edge_dark);
+
+    InflateRect(&rc, -8, -8);
+    if (pressed) OffsetRect(&rc, 1, 1);
+
+    if (dis->CtlID == IDC_SEND) {
+        // XP-style Explorer/IE "Go" button: green square, white arrow, Go label.
+        // Drawn ourselves so the release looks the same on every XP install.
+        RECT icon_rc;
+        RECT text_rc;
+        POINT pts[7];
+        COLORREF green_top = disabled ? GetSysColor(COLOR_BTNFACE) : RGB(65, 193, 65);
+        COLORREF green_bottom = disabled ? GetSysColor(COLOR_BTNFACE) : RGB(8, 150, 39);
+        COLORREF outline = disabled ? GetSysColor(COLOR_BTNSHADOW) : RGB(0, 112, 24);
+        COLORREF arrow = disabled ? GetSysColor(COLOR_GRAYTEXT) : RGB(255, 255, 255);
+        int mid_y;
+        HBRUSH top_brush;
+        HBRUSH bottom_brush;
+        HPEN pen;
+        HBRUSH white_brush;
+        int old_bkmode;
+        COLORREF old_text;
+
+        icon_rc = rc;
+        icon_rc.right = icon_rc.left + (icon_rc.bottom - icon_rc.top);
+        text_rc = rc;
+        text_rc.left = icon_rc.right + 7;
+        if (icon_rc.right > rc.right - 24) icon_rc.right = rc.right - 24;
+
+        mid_y = icon_rc.top + (icon_rc.bottom - icon_rc.top) / 2;
+        top_brush = CreateSolidBrush(green_top);
+        bottom_brush = CreateSolidBrush(green_bottom);
+        FillRect(dc, &icon_rc, top_brush);
+        {
+            RECT bot = icon_rc;
+            bot.top = mid_y;
+            FillRect(dc, &bot, bottom_brush);
+        }
+        DeleteObject(top_brush);
+        DeleteObject(bottom_brush);
+
+        pen = CreatePen(PS_SOLID, 1, outline);
+        old_pen = (HPEN)SelectObject(dc, pen);
+        old_brush = (HBRUSH)SelectObject(dc, GetStockObject(NULL_BRUSH));
+        Rectangle(dc, icon_rc.left, icon_rc.top, icon_rc.right, icon_rc.bottom);
+        SelectObject(dc, old_brush);
+        SelectObject(dc, old_pen);
+        DeleteObject(pen);
+
+        InflateRect(&icon_rc, -6, -7);
+        pts[0].x = icon_rc.left;          pts[0].y = icon_rc.top + (icon_rc.bottom - icon_rc.top) / 3;
+        pts[1].x = icon_rc.left + (icon_rc.right - icon_rc.left) / 2; pts[1].y = pts[0].y;
+        pts[2].x = pts[1].x;              pts[2].y = icon_rc.top;
+        pts[3].x = icon_rc.right;         pts[3].y = icon_rc.top + (icon_rc.bottom - icon_rc.top) / 2;
+        pts[4].x = pts[1].x;              pts[4].y = icon_rc.bottom;
+        pts[5].x = pts[1].x;              pts[5].y = icon_rc.bottom - (icon_rc.bottom - icon_rc.top) / 3;
+        pts[6].x = icon_rc.left;          pts[6].y = pts[5].y;
+        white_brush = CreateSolidBrush(arrow);
+        pen = CreatePen(PS_SOLID, 1, arrow);
+        old_brush = (HBRUSH)SelectObject(dc, white_brush);
+        old_pen = (HPEN)SelectObject(dc, pen);
+        Polygon(dc, pts, 7);
+        SelectObject(dc, old_pen);
+        SelectObject(dc, old_brush);
+        DeleteObject(pen);
+        DeleteObject(white_brush);
+
+        old_bkmode = SetBkMode(dc, TRANSPARENT);
+        old_text = SetTextColor(dc, disabled ? GetSysColor(COLOR_GRAYTEXT) : RGB(0, 0, 0));
+        DrawTextA(dc, "Go", -1, &text_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        SetTextColor(dc, old_text);
+        SetBkMode(dc, old_bkmode);
+    } else if (dis->CtlID == IDC_STOP) {
+        COLORREF color = disabled ? GetSysColor(COLOR_GRAYTEXT) : RGB(190, 0, 0);
+        HPEN pen = CreatePen(PS_SOLID, 4, color);
+        old_pen = (HPEN)SelectObject(dc, pen);
+        MoveToEx(dc, rc.left + 2, rc.top + 2, NULL);
+        LineTo(dc, rc.right - 2, rc.bottom - 2);
+        MoveToEx(dc, rc.right - 2, rc.top + 2, NULL);
+        LineTo(dc, rc.left + 2, rc.bottom - 2);
+        SelectObject(dc, old_pen);
+        DeleteObject(pen);
+    }
+
+    if (dis->itemState & ODS_FOCUS) {
+        RECT fr = dis->rcItem;
+        InflateRect(&fr, -3, -3);
+        DrawFocusRect(dc, &fr);
+    }
 }
 
 static HIMAGELIST load_builtin_toolbar_imagelist(void) {
@@ -1442,12 +2014,8 @@ static void create_controls(HWND hwnd) {
     SendMessageA(gInput, EM_SETLIMITTEXT, PROMPT_MAX - 1, 0);
     SendMessageA(gInput, EM_SETBKGNDCOLOR, 0, RGB(255, 255, 255));
 
-    gSend  = make_control("BUTTON", "", BS_DEFPUSHBUTTON | BS_ICON | WS_TABSTOP, 0, IDC_SEND, hwnd);
-    gStop  = make_control("BUTTON", "", BS_PUSHBUTTON | BS_ICON | WS_TABSTOP,    0, IDC_STOP, hwnd);
-    gSendIcon = load_command_button_icon(0);
-    gStopIcon = load_command_button_icon(1);
-    if (gSendIcon) SendMessageA(gSend, BM_SETIMAGE, IMAGE_ICON, (LPARAM)gSendIcon);
-    if (gStopIcon) SendMessageA(gStop, BM_SETIMAGE, IMAGE_ICON, (LPARAM)gStopIcon);
+    gSend  = make_control("BUTTON", "", BS_DEFPUSHBUTTON | BS_OWNERDRAW | WS_TABSTOP, 0, IDC_SEND, hwnd);
+    gStop  = make_control("BUTTON", "", BS_PUSHBUTTON | BS_OWNERDRAW | WS_TABSTOP,    0, IDC_STOP, hwnd);
     gClear = make_control("BUTTON", "Clear", BS_PUSHBUTTON | WS_TABSTOP,    0, IDC_CLEAR, hwnd);
     ShowWindow(gClear, SW_HIDE);
     gStatus = CreateWindowExA(0, STATUSCLASSNAMEA, "",
@@ -1512,14 +2080,17 @@ static void create_controls(HWND hwnd) {
     gSpeakLastBtn = make_control("BUTTON", "Speak last reply",BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_SPEAK_LAST, hwnd);
     gRegenBtn     = make_control("BUTTON", "Regenerate",      BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_REGEN,      hwnd);
     gEditLastBtn  = make_control("BUTTON", "Edit last prompt",BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_EDIT_LAST,  hwnd);
+    gRememberBtn  = make_control("BUTTON", "Remember",        BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_REMEMBER,   hwnd);
     EnableWindow(gCopyLastBtn,  FALSE);
     EnableWindow(gSpeakLastBtn, FALSE);
     EnableWindow(gRegenBtn,     FALSE);
     EnableWindow(gEditLastBtn,  FALSE);
+    EnableWindow(gRememberBtn,  FALSE);
     ShowWindow(gCopyLastBtn,  SW_HIDE);
     ShowWindow(gSpeakLastBtn, SW_HIDE);
     ShowWindow(gRegenBtn,     SW_HIDE);
     ShowWindow(gEditLastBtn,  SW_HIDE);
+    ShowWindow(gRememberBtn,  SW_HIDE);
 
     // Chat history sidebar. Layout (top -> bottom):
     //   [search edit]    <- filter; placeholder cue banner
@@ -1714,10 +2285,13 @@ static void layout_controls(HWND hwnd) {
         MoveWindow(gRegenBtn, action_x, action_y, 92, action_h, TRUE);
         action_x += 92 + action_gap;
         MoveWindow(gEditLastBtn, action_x, action_y, 104, action_h, TRUE);
+        action_x += 104 + action_gap;
+        MoveWindow(gRememberBtn, action_x, action_y, 84, action_h, TRUE);
         ShowWindow(gCopyLastBtn, SW_SHOW);
         ShowWindow(gSpeakLastBtn, SW_SHOW);
         ShowWindow(gRegenBtn, SW_SHOW);
         ShowWindow(gEditLastBtn, SW_SHOW);
+        ShowWindow(gRememberBtn, SW_SHOW);
         MoveWindow(gTranscript,
             gRcConversationPane.left + 10, transcript_y,
             gRcConversationPane.right - gRcConversationPane.left - 20,
@@ -1736,9 +2310,10 @@ static void layout_controls(HWND hwnd) {
         int input_x = gRcInputPane.left + 12;
         int input_y = gRcInputPane.top + 39;
         int input_box_h = compact ? 30 : 34;
-        int icon_sz = input_box_h;
+        int stop_w = input_box_h;
+        int send_w = compact ? 62 : 68;
         int button_gap = 6;
-        int buttons_w = icon_sz * 2 + button_gap;
+        int buttons_w = send_w + stop_w + button_gap;
         int button_x = gRcInputPane.right - buttons_w - 14;
         int input_w = button_x - input_x - 12;
         MoveWindow(gInputGroup, gRcInputPane.left, gRcInputPane.top,
@@ -1755,9 +2330,9 @@ static void layout_controls(HWND hwnd) {
 
         if (input_w < 160) input_w = 160;
         MoveWindow(gInput, input_x, input_y, input_w, input_box_h, TRUE);
-        MoveWindow(gSend, button_x, input_y, icon_sz, input_box_h, TRUE);
-        MoveWindow(gStop, button_x + icon_sz + button_gap, input_y,
-                   icon_sz, input_box_h, TRUE);
+        MoveWindow(gSend, button_x, input_y, send_w, input_box_h, TRUE);
+        MoveWindow(gStop, button_x + send_w + button_gap, input_y,
+                   stop_w, input_box_h, TRUE);
         MoveWindow(gInputHint, gRcInputPane.left + 12, input_y + input_box_h + 9,
                    gRcInputPane.right - gRcInputPane.left - 24, 16, TRUE);
     }
@@ -1805,10 +2380,10 @@ static void layout_controls(HWND hwnd) {
 //
 // gChats[] mirrors the on-disk list, sorted newest first. gActiveIdx
 // is the chat to which new turns get appended. Selecting a different
-// chat in the sidebar switches active (sends /reset to the backend so
-// the cache matches the empty state, and replays the historical text
-// into the transcript view — but we do NOT replay tokens through the
-// model, so previous-turn context is lost; this is the v1 trade-off).
+// chat in the sidebar switches active (sends /reset to the backend,
+// re-renders the historical text into the transcript view, and re-feeds
+// the last few user/assistant pairs through /replay so the model's
+// context matches the restored conversation).
 
 // (gChats / gChatCount / gActiveIdx / gChatsDir declared near the top.)
 
@@ -2180,6 +2755,105 @@ static void chats_load_into_view(int idx) {
     rich_append_color("\r\n", RGB(0, 0, 0), FALSE);
 }
 
+// ---------- session-restore replay ----------
+// Re-feed the last REPLAY_MAX_PAIRS completed user/assistant exchanges of
+// a saved chat into the backend via "/replay <user>\t<assistant>" (oldest
+// first) so the model context matches the restored transcript. Both sides
+// are flattened to single lines and capped at REPLAY_SIDE_MAX chars.
+// Callers only invoke this while the backend is ready and idle.
+#define REPLAY_MAX_PAIRS 6
+#define REPLAY_SIDE_MAX  600
+
+typedef struct {
+    char user[REPLAY_SIDE_MAX + 1];
+    char asst[REPLAY_SIDE_MAX + 1];
+} ReplayPair;
+
+// Append one fgets record to `dst` (REPLAY_SIDE_MAX+1 bytes), flattening
+// newlines/tabs/control bytes to spaces and collapsing runs. The line's
+// own trailing newline becomes the separator before the next line.
+static void replay_accum(char *dst, const char *line) {
+    size_t o = strlen(dst);
+    int sp = (o == 0 || dst[o - 1] == ' ');
+    const char *p;
+    for (p = line; *p && o + 1 < REPLAY_SIDE_MAX + 1; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c <= ' ' || c == 0x7f) {
+            if (!sp) dst[o++] = ' ';
+            sp = 1;
+        } else {
+            dst[o++] = (char)c;
+            sp = 0;
+        }
+    }
+    dst[o] = 0;
+}
+
+// Push `cur` into the pairs ring if both sides are non-empty (after
+// trimming the trailing separator space). Oldest pair falls off the
+// front once the ring holds REPLAY_MAX_PAIRS. Returns the new count.
+static int replay_push(ReplayPair *pairs, int count, ReplayPair *cur) {
+    size_t n;
+    n = strlen(cur->user);
+    while (n > 0 && cur->user[n - 1] == ' ') cur->user[--n] = 0;
+    n = strlen(cur->asst);
+    while (n > 0 && cur->asst[n - 1] == ' ') cur->asst[--n] = 0;
+    if (!cur->user[0] || !cur->asst[0]) return count;
+    if (count == REPLAY_MAX_PAIRS) {
+        memmove(&pairs[0], &pairs[1], sizeof(ReplayPair) * (REPLAY_MAX_PAIRS - 1));
+        count--;
+    }
+    pairs[count++] = *cur;
+    return count;
+}
+
+static void chats_replay_context(int idx) {
+    ReplayPair pairs[REPLAY_MAX_PAIRS];
+    ReplayPair cur;
+    char line[8192];
+    char cmd[REPLAY_SIDE_MAX * 2 + 32];
+    FILE *fp;
+    int count = 0, in_user = 0, in_asst = 0, past_header = 0, i;
+
+    if (idx < 0 || idx >= gChatCount) return;
+    fp = fopen(gChats[idx].path, "rb");
+    if (!fp) return;
+    ZeroMemory(&cur, sizeof(cur));
+    while (fgets(line, sizeof(line), fp)) {
+        if (!past_header) {
+            if (!strncmp(line, "---", 3)) past_header = 1;
+            continue;
+        }
+        if (!strncmp(line, "[USER]", 6)) {
+            // A finished user+assistant pair rolls into the ring buffer;
+            // an unanswered user turn is simply replaced.
+            count = replay_push(pairs, count, &cur);
+            ZeroMemory(&cur, sizeof(cur));
+            in_user = 1; in_asst = 0;
+            continue;
+        }
+        if (!strncmp(line, "[ASSISTANT]", 11)) {
+            // Regenerated replies append a second [ASSISTANT] block for
+            // the same user turn -- keep only the latest one.
+            cur.asst[0] = 0;
+            in_user = 0;
+            in_asst = cur.user[0] ? 1 : 0;
+            continue;
+        }
+        if (in_user) replay_accum(cur.user, line);
+        else if (in_asst) replay_accum(cur.asst, line);
+    }
+    fclose(fp);
+    count = replay_push(pairs, count, &cur);
+    if (count == 0) return;
+    for (i = 0; i < count; i++) {
+        snprintf(cmd, sizeof(cmd), "/replay %.600s\t%.600s", pairs[i].user, pairs[i].asst);
+        backend_send_line(cmd);
+    }
+    diagnostics_appendf("Restored %d turn(s) into model context.", count);
+    set_status("Chat context restored.");
+}
+
 // Send a single line to the backend's stdin (the line should NOT include
 // a trailing newline — we add it). Returns TRUE on success.
 // Buffer is sized to hold the longest realistic command: `/system` plus a
@@ -2301,6 +2975,14 @@ static void settings_apply_to_backend(void) {
     }
 }
 
+static void apply_settings_preset(HWND dlg, int preset_index) {
+    int count = (int)(sizeof(gSettingsPresets) / sizeof(gSettingsPresets[0]));
+    if (!dlg || preset_index < 0 || preset_index >= count) return;
+    SetDlgItemTextA(dlg, IDC_TEMP_EDIT, gSettingsPresets[preset_index].temp);
+    SetDlgItemTextA(dlg, IDC_TOPP_EDIT, gSettingsPresets[preset_index].top_p);
+    SetDlgItemTextA(dlg, IDC_MAXTOK_EDIT, gSettingsPresets[preset_index].max_tok);
+}
+
 // Dialog proc for the Settings dialog. Loads gTemp / gSeed / gTopP /
 // gMaxTok / gSysPrompt into the controls on init, writes them back on
 // OK, and handles the preset / random-seed / reset buttons.
@@ -2355,15 +3037,15 @@ static INT_PTR CALLBACK settings_dlg_proc(HWND dlg, UINT msg, WPARAM wparam, LPA
             return TRUE;
 
         case IDC_PRESET_GREEDY:
-            SetDlgItemTextA(dlg, IDC_TEMP_EDIT, "0.00");
+            apply_settings_preset(dlg, 0);
             return TRUE;
 
         case IDC_PRESET_BALANCED:
-            SetDlgItemTextA(dlg, IDC_TEMP_EDIT, "0.70");
+            apply_settings_preset(dlg, 1);
             return TRUE;
 
         case IDC_PRESET_CREATIVE:
-            SetDlgItemTextA(dlg, IDC_TEMP_EDIT, "1.20");
+            apply_settings_preset(dlg, 2);
             return TRUE;
 
         case IDC_SEED_RANDOM: {
@@ -2833,15 +3515,18 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         chats_index_disk();
         clear_transcript();
         diagnostics_appendf("Waiting for model...");
-        if (!file_exists_in_app_dir(BACKEND_EXE) || !file_exists_in_app_dir(MODEL_FILE)
+        select_backend_exe();
+        dbg_log("GUI", "backend selection = %s (%s)", gBackendExe, gBackendFlavor);
+        diagnostics_appendf("Selected %s backend (%s).", gBackendExe, gBackendFlavor);
+        if (!file_exists_in_app_dir(gBackendExe) || !file_exists_in_app_dir(MODEL_FILE)
             || !file_exists_in_app_dir(TOKENIZER_FILE)) {
             dbg_log("GUI", "missing files: %s=%d %s=%d %s=%d",
-                BACKEND_EXE, file_exists_in_app_dir(BACKEND_EXE),
+                gBackendExe, file_exists_in_app_dir(gBackendExe),
                 MODEL_FILE, file_exists_in_app_dir(MODEL_FILE),
                 TOKENIZER_FILE, file_exists_in_app_dir(TOKENIZER_FILE));
             diagnostics_appendf("Required backend/model/tokenizer files are missing.");
             MessageBoxA(hwnd,
-                BACKEND_EXE ", " MODEL_FILE ", or " TOKENIZER_FILE " is missing from the application folder.",
+                "Backend executable, " MODEL_FILE ", or " TOKENIZER_FILE " is missing from the application folder.",
                 APP_NAME, MB_ICONERROR | MB_OK);
         } else if (!launch_backend()) {
             set_status("Backend failed to start");
@@ -2877,6 +3562,15 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         mmi->ptMinTrackSize.x = 900;
         mmi->ptMinTrackSize.y = 560;
         return 0;
+    }
+
+    case WM_DRAWITEM: {
+        DRAWITEMSTRUCT *dis = (DRAWITEMSTRUCT *)lparam;
+        if (dis && (dis->CtlID == IDC_SEND || dis->CtlID == IDC_STOP)) {
+            draw_command_button(dis);
+            return TRUE;
+        }
+        break;
     }
 
     case WM_NOTIFY: {
@@ -3049,6 +3743,15 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
             }
             rich_append_color(foot, RGB(96, 96, 96), FALSE);
         }
+        // Knowledge sources footer -- same muted style as the stats line.
+        // Only rendered under a real reply; always cleared so a stale
+        // source list can't attach to a later slash-command EOT.
+        if (tcount > 0 && gKnowledgeSources[0]) {
+            char src[sizeof(gKnowledgeSources) + 16];
+            snprintf(src, sizeof(src), "Sources: %s\r\n\r\n", gKnowledgeSources);
+            rich_append_color(src, RGB(96, 96, 96), FALSE);
+        }
+        gKnowledgeSources[0] = 0;
         if (message) free(message);
         set_status("Ready");
         update_msg_actions();
@@ -3163,6 +3866,42 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
             send_prompt_text(edited, 1);
             return 0;
         }
+        case IDC_REMEMBER: {
+            // Store the last user message (fall back to the last assistant
+            // body) as a persistent backend note via /remember. The INFO
+            // reply renders through the normal WM_BACKEND_INFO path.
+            char fact[192];
+            char cmd[224];
+            if (!InterlockedCompareExchange(&gBackendReady, 0, 0)) {
+                MessageBeep(MB_ICONWARNING);
+                return 0;
+            }
+            if (InterlockedCompareExchange(&gRunning, 0, 0)) return 0;
+            if (gPendingUser[0]) {
+                snprintf(fact, sizeof(fact), "%.150s", gPendingUser);
+            } else if (gHasAsstTurn && gLastAsstEnd > gLastAsstStart) {
+                char *body = rich_get_range(gLastAsstStart, gLastAsstEnd);
+                if (!body) {
+                    MessageBeep(MB_ICONWARNING);
+                    return 0;
+                }
+                trim_trailing_newlines(body);
+                snprintf(fact, sizeof(fact), "%.150s", body);
+                free(body);
+            } else {
+                MessageBeep(MB_ICONWARNING);
+                return 0;
+            }
+            sanitize_user(fact);  // flatten any newlines to spaces
+            if (!input_has_text(fact)) {
+                MessageBeep(MB_ICONWARNING);
+                return 0;
+            }
+            snprintf(cmd, sizeof(cmd), "/remember %s", fact);
+            backend_send_line(cmd);
+            set_status("Saving memory...");
+            return 0;
+        }
         case IDM_ABOUT:
             MessageBoxA(hwnd,
                 APP_NAME "\n\nReal LLM running natively on Windows XP.\n"
@@ -3172,7 +3911,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
                 "SIMD: SSE2 / SSE3 (Pentium 4 compatible)\n"
                 "Model file: MODEL.NCB (custom NCB1 format, int8 quantized)\n"
                 "\n"
-                "Slash commands: /help /info /reset /temp /topp /seed /maxtok /system",
+                "Slash commands: /help /info /template /defaults /preset /reset /temp /topp /seed /maxtok /system",
                 APP_NAME, MB_ICONINFORMATION | MB_OK);
             return 0;
         case IDM_EXIT:
@@ -3218,11 +3957,17 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
                 if (row >= 0 && row < gFilteredCount) {
                     int sel = gFilteredIndices[row];
                     if (sel >= 0 && sel < gChatCount && sel != gActiveIdx) {
-                        if (InterlockedCompareExchange(&gBackendReady, 0, 0)) {
+                        BOOL ready = InterlockedCompareExchange(&gBackendReady, 0, 0) != 0;
+                        BOOL idle  = !InterlockedCompareExchange(&gRunning, 0, 0);
+                        if (ready) {
                             backend_send_line("/reset");
                         }
                         gActiveIdx = sel;
                         chats_load_into_view(sel);
+                        // Re-feed the last few saved exchanges so the model
+                        // remembers the restored conversation. Skipped
+                        // silently while a generation is in flight.
+                        if (ready && idle) chats_replay_context(sel);
                     }
                 }
             }
@@ -3309,6 +4054,41 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
                             MB_ICONINFORMATION | MB_OK);
             }
             return 0;
+        case IDM_VIEWMEM:
+            // List the stored persistent notes; the backend replies with
+            // one INFO line per note.
+            if (InterlockedCompareExchange(&gBackendReady, 0, 0)) {
+                backend_send_line("/memories");
+            } else {
+                MessageBoxA(hwnd, "Backend not ready yet.", APP_NAME,
+                            MB_ICONINFORMATION | MB_OK);
+            }
+            return 0;
+        case IDM_FORGETMEM:
+            // Show the numbered note list, then pre-fill the input with
+            // "/forget " so the user just types the number and hits Enter.
+            if (InterlockedCompareExchange(&gBackendReady, 0, 0)) {
+                backend_send_line("/memories");
+                SetWindowTextA(gInput, "/forget ");
+                SetFocus(gInput);
+                {
+                    int len = GetWindowTextLengthA(gInput);
+                    SendMessageA(gInput, EM_SETSEL, (WPARAM)len, (LPARAM)len);
+                }
+            } else {
+                MessageBoxA(hwnd, "Backend not ready yet.", APP_NAME,
+                            MB_ICONINFORMATION | MB_OK);
+            }
+            return 0;
+        case IDM_KNOWLEDGE: {
+            // Create <appdir>\Knowledge if missing, then open it in Explorer
+            // so the user can drop reference .txt/.md/.html files in.
+            char dir[MAX_PATH * 2];
+            snprintf(dir, sizeof(dir), "%s\\Knowledge", gAppDir);
+            CreateDirectoryA(dir, NULL);  // ok if it exists
+            ShellExecuteA(hwnd, "open", dir, NULL, NULL, SW_SHOWNORMAL);
+            return 0;
+        }
         }
         break;
 
@@ -3320,6 +4100,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
     case WM_DESTROY:
         dbg_log("GUI", "WM_DESTROY");
         shutdown_backend();
+        sapi_cleanup();
         if (gUiFont)    DeleteObject(gUiFont);
         if (gTitleFont) DeleteObject(gTitleFont);
         if (gPaneFont)  DeleteObject(gPaneFont);

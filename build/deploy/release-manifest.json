@@ -1,0 +1,47 @@
+{
+  "MODEL.NCB": {
+    "bytes": 292886664,
+    "sha256": "11c82d07097f057dbb458a02e4bed8daf748f359b73dfd3abb4dd1df9dc679cc"
+  },
+  "MODEL_VERSION.txt": {
+    "bytes": 528,
+    "sha256": "345ad21f766d43fb33d3102b8ce57024a5a8a55e1c827ef1ced576664739b9c0"
+  },
+  "NC_RUN.EXE": {
+    "bytes": 334568,
+    "sha256": "1f45aba44af423938278bebec99e0f3fdaba9f3fcfba6d5435573f79a9750a44"
+  },
+  "NC_RUN_SSE2.EXE": {
+    "bytes": 334568,
+    "sha256": "1f45aba44af423938278bebec99e0f3fdaba9f3fcfba6d5435573f79a9750a44"
+  },
+  "NC_RUN_SSE3.EXE": {
+    "bytes": 333720,
+    "sha256": "9604bc9969279e5d2a2f0bfb29bbfed908f10e369cd128e2d323da51b1709bb9"
+  },
+  "TOKENIZER.NCT": {
+    "bytes": 477616,
+    "sha256": "292796d0675114f3bcdf88a80127518fb4bcf365058cee446b3ff827024ebff3"
+  },
+  "XPCHAT.EXE": {
+    "bytes": 910995,
+    "sha256": "d5cc61525d47aed09dfcde1f8f1fc841c798baebd323a69933c8fe413a771e52"
+  },
+  "compatibility": {
+    "backend_selection": "XPCHAT detects SSE3 at runtime; launches NC_RUN_SSE3.EXE on SSE3 CPUs, otherwise NC_RUN_SSE2.EXE for Pentium M/SSE2 systems."
+  },
+  "files": {
+    "NC_RUN.EXE": "1f45aba44af423938278bebec99e0f3fdaba9f3fcfba6d5435573f79a9750a44",
+    "NC_RUN_SSE2.EXE": "1f45aba44af423938278bebec99e0f3fdaba9f3fcfba6d5435573f79a9750a44",
+    "NC_RUN_SSE3.EXE": "9604bc9969279e5d2a2f0bfb29bbfed908f10e369cd128e2d323da51b1709bb9",
+    "XPCHAT.EXE": "d5cc61525d47aed09dfcde1f8f1fc841c798baebd323a69933c8fe413a771e52",
+    "MODEL.NCB": "11c82d07097f057dbb458a02e4bed8daf748f359b73dfd3abb4dd1df9dc679cc",
+    "TOKENIZER.NCT": "292796d0675114f3bcdf88a80127518fb4bcf365058cee446b3ff827024ebff3",
+    "MODEL_VERSION.txt": "345ad21f766d43fb33d3102b8ce57024a5a8a55e1c827ef1ced576664739b9c0"
+  },
+  "final_validation_bpb": 0.817234,
+  "model_architecture": "d12",
+  "model_name": "bliss-d12-mem-c20-v2a",
+  "release": "v1.3.0",
+  "training_steps": 37600
+}
