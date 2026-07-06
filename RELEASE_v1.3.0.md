@@ -35,15 +35,24 @@ separate model files, fully offline.
 - Memory UI in the Tools menu (View Memories, Forget, Open Knowledge Folder)
   and a per-message **Remember** button.
 
-## Benchmarks (temp 0.3, seed 42, native engine)
+## Benchmarks (temp 0.3 bench / greedy evals, seed 42, native engine, same binary both sides)
 
-| Metric | v1.2.3 (c20-v1) | v1.3.0 (mem-c20-v2) |
+| Metric | v1.2.3 (c20-v1) | v1.3.0 (mem-c20-v2a) |
 |---|---|---|
-| Correct (100-question bench) | 57% | TBD |
-| Coherent | 99% | TBD |
-| Multi-turn memory (40 dialogs) | TBD | TBD |
-| Notes selective recall (25 cases) | TBD | TBD |
-| Persona probes | TBD | TBD |
+| Correct (100-question bench) | 57% | **77%** |
+| Coherent | 99% | **100%** |
+| — math | 6.7% | **53.3%** |
+| — factual | 60% | **95%** |
+| — time | 20% | **100%** |
+| Multi-turn memory (40 dialogs) | 27/40 | **37/40** |
+| Notes selective recall (25 cases) | 21/25 | **22/25** |
+| Persona probes | 5/8 | **8/8** |
+
+Model: continued pretraining of `bliss-d12-curated-c20-v1` (+4,000 steps at
+tail learning rate, curated-mix p=0.35 over the v2 mixture: 8,384 distinct
+conversations across multi-turn recall, Notes recall, Context grounding,
+reasoning, behavior, identity — plus the proven v1 doc set). Final validation
+bpb 0.817234 (v1: 0.818168) — general language modeling did not regress.
 
 ## Files
 

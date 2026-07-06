@@ -16,33 +16,41 @@ Drop the .exe on a Windows XP machine and double-click. It self-extracts
 to a temp dir, launches the chat GUI, and cleans up on exit. Nothing else
 to install.
 
-- **[bliss-chat-xp-v1.2.1-auto-cpu-portable.exe][full]** — single-file portable EXE, d12 curated c20 int8 model, with automatic CPU backend selection for SSE2-only and SSE3 Windows XP machines.
+- **[bliss-chat-xp-v1.3.0-memory-portable.exe][full]** — single-file portable EXE, d12 mem c20 v2 int8 model, persistent memory, knowledge-folder RAG, automatic CPU backend selection.
 
-The file is also browsable on the [v1.2.1 release page](https://github.com/mitchaiet/bliss-chat/releases/tag/v1.2.1). Verified SHA-256: `17fb3a7058fa417c03723115eef3645b0499f8cd46e67537579701bdbb3f671a`.
+The file is also browsable on the [v1.3.0 release page](https://github.com/mitchaiet/bliss-chat/releases/tag/v1.3.0). SHA-256 in `RELEASE_v1.3.0.md`.
 
-[full]: https://github.com/mitchaiet/bliss-chat/releases/download/v1.2.1/bliss-chat-xp-v1.2.1-auto-cpu-portable.exe
+[full]: https://github.com/mitchaiet/bliss-chat/releases/download/v1.3.0/bliss-chat-xp-v1.3.0-memory-portable.exe
 
-## Current release: v1.2.1
+## Current release: v1.3.0 — memory
 
-v1.2.1 is a milestone/demo release: the point is the complete offline XP
-pipeline, not state-of-the-art assistant quality. Expect short, simple answers.
+Bliss now remembers. The v1.3.0 model was retrained on a curated mixture
+that teaches multi-turn recall, selective persistent-note recall,
+`Context:`-grounded answering, and small-step reasoning — the bench
+"correct" score went from 57% to **77%**, multi-turn memory from 27/40 to
+**37/40**, with zero regression in general language modeling.
 
 - One self-contained portable `.exe`; no separate model/tokenizer files.
-- Automatic backend selection: `NC_RUN_SSE2.EXE` for Pentium M / SSE2-only systems, `NC_RUN_SSE3.EXE` for newer CPUs.
-- Coherent defaults baked in: model-aware built-in defaults, `temp=0.0`, `top_p=0.95`, short reply token caps, repetition guardrails.
-- Multi-turn KV thread memory, with `/reset` or automatic context rollover when the context window fills.
-- LM Studio-style runtime controls: `/template`, `/defaults`, and `/preset deterministic|balanced|creative` expose prompt-template metadata and named sampling presets offline.
-- Prompt assist for fragile tiny-model prompts such as guitar facts and simple compliments.
-- XP-native Microsoft Sam text-to-speech through SAPI via **Speak last reply**.
-- Owner-drawn green-arrow Send button, avoiding XP shell icon mismatches.
+- **Persistent memory**: `/remember`, `/memories`, `/forget`, a per-message
+  Remember button, and a Tools menu — notes survive restarts and are used
+  selectively by the model.
+- **Restored chats really resume**: reopening a saved chat replays its recent
+  turns into model context.
+- **Knowledge folder RAG v2**: term-overlap retrieval with match-centered
+  snippets and a Sources footer, in the trained `Context:` format.
+- **Real top-p (nucleus) sampling**; automatic SSE2/SSE3 backend selection.
+- **~72 MB less RAM** — the engine no longer keeps a second KV-cache copy.
+- Multi-turn KV thread memory with `/reset` and smarter context rollover
+  (the bounded summary now keeps both questions and answers).
+- LM Studio-style runtime controls: `/template`, `/defaults`, `/preset`.
+- XP-native Microsoft Sam text-to-speech via **Speak last reply**.
 - Visible NSIS extraction/progress window for the large bundled model payload.
-- Includes a local browser web chat harness for pre-packaging testing during development.
 
 Known limitations:
 
 - The model is tiny by modern standards and is not a general-purpose assistant.
-- Best results come from short factual prompts and deterministic settings.
-- Answers can be overly terse or generic; quality work is the next milestone.
+- Arithmetic beyond small numbers, and multi-hop reasoning, remain weak.
+- Answers are intentionally short; long-form composition is out of scope.
 
 ## What this is
 
