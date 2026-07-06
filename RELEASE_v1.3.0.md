@@ -56,7 +56,10 @@ bpb 0.817234 (v1: 0.818168) — general language modeling did not regress.
 
 ## Files
 
-- `bliss-chat-xp-v1.3.0-memory-portable.exe` — SHA-256: `TBD`
+- `bliss-chat-xp-v1.3.0-memory-portable.exe` (260,383,900 bytes) — SHA-256:
+  `8890ea06c3bf34a8c9328c1b3455a38306d1a00510b17c46ed3c19740065863d`
+- `MODEL.NCB` (embedded) — SHA-256:
+  `11c82d07097f057dbb458a02e4bed8daf748f359b73dfd3abb4dd1df9dc679cc`
 
 ## Compatibility
 
