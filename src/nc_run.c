@@ -355,6 +355,107 @@ static void summary_append_turn(char *thread_summary, size_t cap, const char *li
     thread_summary[len + add] = 0;
 }
 
+// ===== persistent memory ("Notes") =====
+// Short user-approved facts that survive across conversations and app
+// restarts. Stored one per line in a plain text file (path from -m or
+// /memfile), rendered as a single "Notes: a; b; c\n" line inside the
+// system prefix so the model can use them. The curated training mixture
+// teaches the model to read this exact "Notes:" format.
+#define MEM_MAX  12
+#define MEM_LINE 160
+static char g_mem[MEM_MAX][MEM_LINE];
+static int  g_mem_n = 0;
+static char g_mem_path[1024] = {0};
+static int  g_mem_dirty = 0; // notes changed since the last prefix prefill
+
+static void mem_strip(char *s) {
+    size_t n, i, w = 0;
+    for (i = 0; s[i]; i++) {
+        char c = s[i];
+        if (c == '\t' || c == '\r' || c == '\n') c = ' ';
+        if ((unsigned char)c < 32) continue;
+        s[w++] = c;
+    }
+    s[w] = 0;
+    while (w > 0 && s[w-1] == ' ') s[--w] = 0;
+    n = 0;
+    while (s[n] == ' ') n++;
+    if (n) memmove(s, s + n, strlen(s + n) + 1);
+}
+
+static void mem_load(const char *path) {
+    FILE *f;
+    char buf[512];
+    g_mem_n = 0;
+    if (!path || !*path) return;
+    f = fopen(path, "rb");
+    if (!f) return;
+    while (g_mem_n < MEM_MAX && fgets(buf, sizeof(buf), f)) {
+        mem_strip(buf);
+        if (!buf[0]) continue;
+        snprintf(g_mem[g_mem_n], MEM_LINE, "%s", buf);
+        g_mem_n++;
+    }
+    fclose(f);
+}
+
+static int mem_save(void) {
+    FILE *f;
+    int i;
+    if (!g_mem_path[0]) return 0;
+    f = fopen(g_mem_path, "wb");
+    if (!f) return 0;
+    for (i = 0; i < g_mem_n; i++) fprintf(f, "%s\n", g_mem[i]);
+    fclose(f);
+    return 1;
+}
+
+static int mem_add(const char *text) {
+    char buf[512];
+    if (g_mem_n >= MEM_MAX) return -1;
+    snprintf(buf, sizeof(buf), "%s", text ? text : "");
+    mem_strip(buf);
+    if (!buf[0]) return 0;
+    snprintf(g_mem[g_mem_n], MEM_LINE, "%s", buf);
+    g_mem_n++;
+    g_mem_dirty = 1;
+    return 1;
+}
+
+static int mem_forget(int idx1) { // 1-based index as shown by /memories
+    int i;
+    if (idx1 < 1 || idx1 > g_mem_n) return 0;
+    for (i = idx1 - 1; i + 1 < g_mem_n; i++) {
+        memcpy(g_mem[i], g_mem[i + 1], MEM_LINE);
+    }
+    g_mem_n--;
+    g_mem_dirty = 1;
+    return 1;
+}
+
+// Render "Notes: a; b; c\n" (empty string when no notes are stored).
+static void mem_render(char *out, size_t cap) {
+    size_t len = 0;
+    int i;
+    out[0] = 0;
+    if (g_mem_n == 0) return;
+    len = (size_t)snprintf(out, cap, "Notes: ");
+    for (i = 0; i < g_mem_n && len + 2 < cap; i++) {
+        len += (size_t)snprintf(out + len, cap - len, "%s%s",
+                                i ? "; " : "", g_mem[i]);
+        if (len >= cap) { out[cap - 1] = 0; len = cap - 1; }
+    }
+    if (len + 1 < cap) { out[len++] = '\n'; out[len] = 0; }
+}
+
+// Compose the full restorable prefix: system text, optional Notes line,
+// then the "Q: " scaffold the turn-builder expects.
+static void compose_prefix(char *out, size_t cap, const char *sys_text) {
+    char notes[MEM_MAX * MEM_LINE + 32];
+    mem_render(notes, sizeof(notes));
+    snprintf(out, cap, "%s\n%sQ: ", sys_text, notes);
+}
+
 static void shape_prompt(const char *line, char *out, size_t out_sz) {
     char name[64];
     if (!line || out_sz == 0) return;
@@ -753,10 +854,13 @@ typedef struct {
     float    *x_backout;           // (n_embd) — saved residual for backout
     int       backout_layer;
     // Prefix snapshot for fast turn restart (set once after the static
-    // few-shot prefix is prefilled, then restored at the top of each turn).
+    // few-shot prefix is prefilled, then restored on /reset or rollover).
+    // KV cache writes are append-only at seq_pos, and attention never reads
+    // rows at or beyond the current position, so restoring the prefix does
+    // NOT require copying the caches back — rewinding seq_pos (plus the
+    // smear state prev_x_norm) is sufficient. This saves two full KV-cache
+    // copies (~72 MiB for d12 @ seq 1024) on the 512 MB target machines.
     int       prefix_saved;
-    float    *prefix_kcache;
-    float    *prefix_vcache;
     float    *prefix_prev_x_norm;
     int       prefix_seq_pos;
     int       prefix_has_prev_x;
@@ -793,6 +897,7 @@ static void state_free(nc_state *s) {
     free(s->q_h); free(s->k_h); free(s->v_h);
     free(s->attn_scores); free(s->ffn_h); free(s->logits);
     free(s->ranking); free(s->probs); free(s->x_backout);
+    free(s->prefix_prev_x_norm);
 }
 
 static void state_reset(nc_state *s) {
@@ -802,14 +907,11 @@ static void state_reset(nc_state *s) {
 
 static void state_save_prefix(nc_state *s) {
     nc_model *m = s->m;
-    size_t kv_bytes = (size_t)m->n_layer * m->sequence_len * m->kv_dim * sizeof(float);
-    if (!s->prefix_kcache) {
-        s->prefix_kcache = (float *)xmalloc(kv_bytes);
-        s->prefix_vcache = (float *)xmalloc(kv_bytes);
+    if (!s->prefix_prev_x_norm) {
         s->prefix_prev_x_norm = (float *)xmalloc((size_t)m->n_embd * sizeof(float));
     }
-    memcpy(s->prefix_kcache, s->kcache, kv_bytes);
-    memcpy(s->prefix_vcache, s->vcache, kv_bytes);
+    // KV rows for positions < seq_pos stay valid in place (append-only
+    // writes, causal reads), so only the tiny smear state needs copying.
     memcpy(s->prefix_prev_x_norm, s->prev_x_norm, (size_t)m->n_embd * sizeof(float));
     s->prefix_seq_pos = s->seq_pos;
     s->prefix_has_prev_x = s->has_prev_x;
@@ -817,11 +919,8 @@ static void state_save_prefix(nc_state *s) {
 }
 
 static void state_restore_prefix(nc_state *s) {
-    if (!s->prefix_saved) { state_reset(s); return; }
     nc_model *m = s->m;
-    size_t kv_bytes = (size_t)m->n_layer * m->sequence_len * m->kv_dim * sizeof(float);
-    memcpy(s->kcache, s->prefix_kcache, kv_bytes);
-    memcpy(s->vcache, s->prefix_vcache, kv_bytes);
+    if (!s->prefix_saved) { state_reset(s); return; }
     memcpy(s->prev_x_norm, s->prefix_prev_x_norm, (size_t)m->n_embd * sizeof(float));
     s->seq_pos = s->prefix_seq_pos;
     s->has_prev_x = s->prefix_has_prev_x;
@@ -1026,16 +1125,9 @@ static uint32_t xorshift32(void) {
 }
 static float urand(void) { return (xorshift32() & 0xffffff) / 16777216.0f; }
 
-static int cmp_desc(const void *a, const void *b, void *ctx) {
-    const float *p = (const float *)ctx;
-    int ia = *(const int *)a, ib = *(const int *)b;
-    if (p[ia] > p[ib]) return -1;
-    if (p[ia] < p[ib]) return 1;
-    return 0;
-}
-
-#ifdef _WIN32
-// MSVC/MinGW don't have qsort_r. Use a thread-local pointer.
+// Portable comparator for sorting token indices by probability, descending.
+// qsort_r isn't available on the XP-era msvcrt we link against, so we use a
+// file-static pointer; nc_run is single-threaded so this is safe.
 static const float *g_cmp_p;
 static int cmp_desc_w(const void *a, const void *b) {
     int ia = *(const int *)a, ib = *(const int *)b;
@@ -1043,7 +1135,6 @@ static int cmp_desc_w(const void *a, const void *b) {
     if (g_cmp_p[ia] < g_cmp_p[ib]) return 1;
     return 0;
 }
-#endif
 
 static void apply_repetition_penalty(nc_state *s, int *recent_ids, int recent_n, float penalty) {
     nc_model *m = s->m;
@@ -1124,11 +1215,25 @@ static int sample(nc_state *s, float temperature, float top_p,
     float inv = (float)(1.0 / ssum);
     for (int i = 0; i < V; i++) s->probs[i] *= inv;
 
-    // Direct (multinomial) sample. We don't bother with top-p filtering for
-    // this tiny model — temperature alone gives enough diversity, and
-    // aggressive top-p filtering on a 32K vocab requires either a partial
-    // sort (added complexity) or a full sort (slow + NaN-fragile). KISS.
-    (void)top_p;
+    // Real top-p (nucleus) filtering. Probabilities come out of a softmax so
+    // they are finite and non-negative — the historical NaN worry doesn't
+    // apply post-softmax. A full index sort of the 32K vocab costs well under
+    // a millisecond even on the Pentium 4, which is noise next to the
+    // ~200 ms forward pass per token.
+    if (top_p > 0.0f && top_p < 0.9995f) {
+        for (int i = 0; i < V; i++) s->ranking[i] = i;
+        g_cmp_p = s->probs;
+        qsort(s->ranking, (size_t)V, sizeof(int), cmp_desc_w);
+        double cum = 0.0;
+        int cut = V;
+        for (int i = 0; i < V; i++) {
+            cum += s->probs[s->ranking[i]];
+            if (cum >= (double)top_p) { cut = i + 1; break; }
+        }
+        for (int i = cut; i < V; i++) s->probs[s->ranking[i]] = 0.0f;
+        float renorm = (float)(1.0 / (cum > 0.0 ? cum : 1.0));
+        for (int i = 0; i < cut; i++) s->probs[s->ranking[i]] *= renorm;
+    }
     float r = urand(), cdf = 0.0f;
     for (int i = 0; i < V; i++) { cdf += s->probs[i]; if (r < cdf) return i; }
     return V - 1;
@@ -1201,7 +1306,7 @@ int main(int argc, char **argv) {
     _setmode(_fileno(stdin),  _O_BINARY);
 #endif
     if (argc < 3) {
-        fprintf(stderr, "usage: %s MODEL.NCB TOKENIZER.NCT [-c ctx] [-t temp] [-p top_p] [-s seed]\n", argv[0]);
+        fprintf(stderr, "usage: %s MODEL.NCB TOKENIZER.NCT [-c ctx] [-t temp] [-p top_p] [-s seed] [-m memfile]\n", argv[0]);
         return 1;
     }
     const char *model_path = argv[1];
@@ -1217,7 +1322,9 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-t")) { temp  = (float)atof(argv[i+1]); cli_temp = 1; }
         else if (!strcmp(argv[i], "-p")) { top_p = (float)atof(argv[i+1]); cli_top_p = 1; }
         else if (!strcmp(argv[i], "-s")) seed    = (uint64_t)atoll(argv[i+1]);
+        else if (!strcmp(argv[i], "-m")) snprintf(g_mem_path, sizeof(g_mem_path), "%s", argv[i+1]);
     }
+    if (g_mem_path[0]) mem_load(g_mem_path);
     rng_state = seed ? seed : 0xDEADBEEFCAFEBABEULL;
 
     nc_model M = {0};
@@ -1265,11 +1372,15 @@ int main(int argc, char **argv) {
     //
     // The prefix can be replaced at runtime via the `/system <text>` slash
     // command, which re-prefills and re-snapshots with the new text.
-    static const char *FEWSHOT_PREFIX =
+    static const char *BLISS_SYSTEM_TEXT =
         "You are Bliss, a small local chat assistant on Windows XP. "
-        "Answer in one short factual sentence.\n"
-        "Q: ";
+        "Answer in one short factual sentence.";
     static const char *PROMPT_SUFFIX  = "\nA:";
+    // Live system text (replaceable via /system) and the composed prefix
+    // (system text + optional Notes line + "Q: " scaffold).
+    char sys_text[4096];
+    char prefix_buf[8192];
+    snprintf(sys_text, sizeof(sys_text), "%s", BLISS_SYSTEM_TEXT);
 
     // Per-turn token cap. 0 = no cap (use the model's remaining context).
     // Settable via `/maxtok <int>` at runtime; clamped to [0, 2048].
@@ -1308,7 +1419,9 @@ int main(int argc, char **argv) {
     // NOTE: must happen BEFORE we emit READY, otherwise the GUI lets the
     // user type while the backend is still tied up prefilling and the
     // first turn appears to take forever.
-    PREFILL_AND_SNAPSHOT(FEWSHOT_PREFIX);
+    compose_prefix(prefix_buf, sizeof(prefix_buf), sys_text);
+    PREFILL_AND_SNAPSHOT(prefix_buf);
+    g_mem_dirty = 0;
 
     // Now we're truly ready for user input.
     emit_sentinel_str("READY", NULL);
@@ -1327,8 +1440,16 @@ int main(int argc, char **argv) {
         if (line[0] == 0) continue;
 
         // /reset: drop conversation history, return to post-fewshot state.
+        // If notes changed since the prefix was prefilled, rebuild it so
+        // the new notes take effect.
         if (!strcmp(line, "/reset")) {
-            state_restore_prefix(&S);
+            if (g_mem_dirty) {
+                compose_prefix(prefix_buf, sizeof(prefix_buf), sys_text);
+                PREFILL_AND_SNAPSHOT(prefix_buf);
+                g_mem_dirty = 0;
+            } else {
+                state_restore_prefix(&S);
+            }
             turn_idx = 0;
             thread_summary[0] = 0;
             emit_sentinel_str("INFO", "conversation reset");
@@ -1350,6 +1471,9 @@ int main(int argc, char **argv) {
             emit_sentinel_str("INFO", "/rambleguard <0|1> = stop repeated-token/phrase loops");
             emit_sentinel_str("INFO", "/repeat <f>    = repetition penalty (1.0 = off)");
             emit_sentinel_str("INFO", "/system <text> = replace system prompt (escape newlines as \\n)");
+            emit_sentinel_str("INFO", "/remember <fact> = store a persistent note");
+            emit_sentinel_str("INFO", "/memories      = list stored notes");
+            emit_sentinel_str("INFO", "/forget <n>    = remove note n");
             emit_sentinel_str("EOT", "0");
             continue;
         }
@@ -1496,14 +1620,116 @@ int main(int argc, char **argv) {
                 }
             }
             unescaped[u] = 0;
-            char new_prefix[4096 + 32];
-            // Ensure the prefix ends in the Q/A scaffolding so the
-            // turn-builder below still works correctly.
-            snprintf(new_prefix, sizeof(new_prefix), "%s\n\nQ: ", unescaped);
-            PREFILL_AND_SNAPSHOT(new_prefix);
+            // Keep the new system text and recompose the full prefix
+            // (system + Notes + "Q: " scaffold) so the turn-builder and
+            // persistent notes keep working correctly.
+            snprintf(sys_text, sizeof(sys_text), "%s", unescaped);
+            compose_prefix(prefix_buf, sizeof(prefix_buf), sys_text);
+            PREFILL_AND_SNAPSHOT(prefix_buf);
+            g_mem_dirty = 0;
             turn_idx = 0;
             thread_summary[0] = 0;
             emit_sentinel_str("INFO", "system prompt replaced");
+            emit_sentinel_str("EOT", "0");
+            continue;
+        }
+        // /remember <text>: store a short persistent note. Takes effect in
+        // the prefilled prefix at the next /reset, rollover, or restart —
+        // the current conversation already contains the fact naturally.
+        if (!strncmp(line, "/remember ", 10)) {
+            int rc = mem_add(line + 10);
+            char info[224];
+            if (rc > 0) {
+                mem_save();
+                snprintf(info, sizeof(info), "noted (%d/%d): %s", g_mem_n, MEM_MAX, g_mem[g_mem_n - 1]);
+            } else if (rc < 0) {
+                snprintf(info, sizeof(info), "memory full (%d) - use /forget <n> first", MEM_MAX);
+            } else {
+                snprintf(info, sizeof(info), "nothing to remember");
+            }
+            emit_sentinel_str("INFO", info);
+            emit_sentinel_str("EOT", "0");
+            continue;
+        }
+        // /memories: list stored notes with their 1-based indexes.
+        if (!strcmp(line, "/memories")) {
+            if (g_mem_n == 0) {
+                emit_sentinel_str("INFO", "no memories stored - use /remember <fact>");
+            } else {
+                for (int mi = 0; mi < g_mem_n; mi++) {
+                    char info[224];
+                    snprintf(info, sizeof(info), "%d. %s", mi + 1, g_mem[mi]);
+                    emit_sentinel_str("INFO", info);
+                }
+            }
+            emit_sentinel_str("EOT", "0");
+            continue;
+        }
+        // /forget <n>: remove note n (as numbered by /memories).
+        if (!strncmp(line, "/forget ", 8)) {
+            int idx = atoi(line + 8);
+            char info[96];
+            if (mem_forget(idx)) {
+                mem_save();
+                snprintf(info, sizeof(info), "forgot note %d (%d left)", idx, g_mem_n);
+            } else {
+                snprintf(info, sizeof(info), "no note %d - see /memories", idx);
+            }
+            emit_sentinel_str("INFO", info);
+            emit_sentinel_str("EOT", "0");
+            continue;
+        }
+        // /memfile <path>: point at a different notes file, reload it, and
+        // rebuild the prefix immediately. Drops conversation history.
+        if (!strncmp(line, "/memfile ", 9)) {
+            snprintf(g_mem_path, sizeof(g_mem_path), "%s", line + 9);
+            mem_load(g_mem_path);
+            compose_prefix(prefix_buf, sizeof(prefix_buf), sys_text);
+            PREFILL_AND_SNAPSHOT(prefix_buf);
+            g_mem_dirty = 0;
+            turn_idx = 0;
+            thread_summary[0] = 0;
+            char info[128];
+            snprintf(info, sizeof(info), "memory file loaded (%d notes)", g_mem_n);
+            emit_sentinel_str("INFO", info);
+            emit_sentinel_str("EOT", "0");
+            continue;
+        }
+        // /replay <user>\t<assistant>: prefill a past exchange into the KV
+        // cache without generating. Lets the GUI restore a saved chat so
+        // the model actually remembers it. Emits EOT 0 when done.
+        if (!strncmp(line, "/replay ", 8)) {
+            char *tab = strchr(line + 8, '\t');
+            if (!tab) {
+                emit_sentinel_str("INFO", "replay needs <user>\\t<assistant>");
+                emit_sentinel_str("EOT", "0");
+                continue;
+            }
+            *tab = 0;
+            const char *ru = line + 8;
+            const char *ra = tab + 1;
+            if (turn_idx == 0) {
+                snprintf(turn_buf, sizeof(turn_buf), "%s%s%s", ru, PROMPT_SUFFIX, ra);
+            } else {
+                snprintf(turn_buf, sizeof(turn_buf), "\n\nQ: %s%s%s", ru, PROMPT_SUFFIX, ra);
+            }
+            int rn = nct_encode(T, turn_buf, prompt_ids,
+                                (int)(sizeof(prompt_ids)/sizeof(int)) - 8);
+            if (S.seq_pos + rn + 96 >= ctx_max) {
+                emit_sentinel_str("INFO", "context full, replay skipped");
+                emit_sentinel_str("EOT", "0");
+                continue;
+            }
+            for (int ri = 0; ri < rn; ri++) forward_one(&S, prompt_ids[ri]);
+            {
+                char qline[140];
+                snprintf(qline, sizeof(qline), "Q:%.100s", ru);
+                summary_append_turn(thread_summary, sizeof(thread_summary), qline);
+                snprintf(qline, sizeof(qline), "A:%.100s", ra);
+                summary_append_turn(thread_summary, sizeof(thread_summary), qline);
+            }
+            turn_idx++;
+            emit_sentinel_str("INFO", "turn replayed");
             emit_sentinel_str("EOT", "0");
             continue;
         }
@@ -1511,12 +1737,13 @@ int main(int argc, char **argv) {
         if (!strcmp(line, "/info")) {
             char info[384];
             snprintf(info, sizeof(info),
-                "Bliss d%d %dM (%s) | seq=%d | turn=%d | pos=%d/%d | temp=%.2f top_p=%.2f | max=%d | guard=%d repeat=%.2f | cfg=%s | tmpl=%s v%d",
+                "Bliss d%d %dM (%s) | seq=%d | turn=%d | pos=%d/%d | temp=%.2f top_p=%.2f | max=%d | guard=%d repeat=%.2f | mem=%d | cfg=%s | tmpl=%s v%d",
                 M.n_layer,
                 estimate_model_millions(&M),
                 (M.dtype_code == 1 ? "int8" : "fp32"),
                 M.sequence_len, turn_idx, S.seq_pos, ctx_max,
                 temp, top_p, max_tokens, ramble_guard, repeat_penalty,
+                g_mem_n,
                 cfg.model_config_source,
                 BLISS_PROMPT_TEMPLATE.name,
                 BLISS_PROMPT_TEMPLATE.version);
@@ -1527,9 +1754,16 @@ int main(int argc, char **argv) {
 
         // Estimate worst-case prefill + generate length. If we're within
         // ~64 tokens of ctx_max, force a reset before this turn so we
-        // don't run off the end mid-generation.
+        // don't run off the end mid-generation. Rebuild the prefix when
+        // notes changed so they are not lost across the rollover.
         if (S.seq_pos + 64 >= ctx_max) {
-            state_restore_prefix(&S);
+            if (g_mem_dirty) {
+                compose_prefix(prefix_buf, sizeof(prefix_buf), sys_text);
+                PREFILL_AND_SNAPSHOT(prefix_buf);
+                g_mem_dirty = 0;
+            } else {
+                state_restore_prefix(&S);
+            }
             turn_idx = 0;
             emit_sentinel_str("INFO", "context full, rebuilt from bounded thread summary");
         }
@@ -1560,7 +1794,13 @@ int main(int argc, char **argv) {
         n += nct_encode(T, turn_buf, prompt_ids + n,
                         (int)(sizeof(prompt_ids)/sizeof(int)) - n - 8);
         if (S.seq_pos + n + 64 >= ctx_max) {
-            state_restore_prefix(&S);
+            if (g_mem_dirty) {
+                compose_prefix(prefix_buf, sizeof(prefix_buf), sys_text);
+                PREFILL_AND_SNAPSHOT(prefix_buf);
+                g_mem_dirty = 0;
+            } else {
+                state_restore_prefix(&S);
+            }
             turn_idx = 0;
             emit_sentinel_str("INFO", "context full, rebuilt from bounded thread summary");
             snprintf(turn_buf, sizeof(turn_buf), "%s%s", shaped_line, PROMPT_SUFFIX);
@@ -1592,6 +1832,8 @@ int main(int argc, char **argv) {
         int  answer_chars = 0;
         int  recent_ids[2048];
         int  recent_n = 0;
+        char ans_buf[256];
+        int  ans_n = 0;
         (void)tail_match;
 
         int budget = ctx_max - S.seq_pos;
@@ -1624,6 +1866,7 @@ int main(int argc, char **argv) {
                         break;
                     }
                     answer_chars++;
+                    if (ans_n + 1 < (int)sizeof(ans_buf)) ans_buf[ans_n++] = piece[k];
                     if (hold_n < 3) {
                         hold[hold_n++] = piece[k];
                     } else {
@@ -1688,7 +1931,18 @@ int main(int argc, char **argv) {
             snprintf(eot_msg, sizeof(eot_msg), "%d", gen_count);
             emit_sentinel_str("EOT", eot_msg);
         }
-        summary_append_turn(thread_summary, sizeof(thread_summary), line);
+        // Bounded thread summary keeps BOTH sides of the exchange so a
+        // context rollover can reconstruct what was said, not just asked.
+        {
+            char qline[140];
+            snprintf(qline, sizeof(qline), "Q:%.100s", line);
+            summary_append_turn(thread_summary, sizeof(thread_summary), qline);
+            if (ans_n > 0) {
+                ans_buf[ans_n] = 0;
+                snprintf(qline, sizeof(qline), "A:%.100s", ans_buf);
+                summary_append_turn(thread_summary, sizeof(thread_summary), qline);
+            }
+        }
         turn_idx++;
     }
 
