@@ -207,7 +207,12 @@ static int estimate_model_millions(const nc_model *m) {
     // exports are roughly one byte per parameter plus small scale tables;
     // fp32 exports are roughly four bytes per parameter.
     if (!m || m->blob_len == 0) return 0;
-    double denom = (m->dtype_code == 1) ? 1000000.0 : 4000000.0;
+    // q4 packs ~0.56 byte per matrix weight; with the fp32 scale/rotary
+    // overhead the whole file lands near 0.63 byte per int8-equivalent
+    // "parameter", so the same model reports the same size class in
+    // every quantization.
+    double denom = (m->dtype_code == 2) ? 630000.0
+                 : (m->dtype_code == 1) ? 1000000.0 : 4000000.0;
     return (int)((double)m->blob_len / denom + 0.5);
 }
 
