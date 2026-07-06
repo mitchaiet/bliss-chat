@@ -52,6 +52,7 @@
 #define IDC_REGEN      1031
 #define IDC_EDIT_LAST  1032
 #define IDC_SPEAK_LAST 1033
+#define IDC_REMEMBER   1034
 #define IDC_TASK_SAVE   1040
 #define IDC_TASK_EXPORT 1041
 #define IDC_TASK_IMPORT 1042
@@ -103,6 +104,9 @@
 #define IDM_PERF       2030
 #define IDM_TEMPLATES  2031
 #define IDM_HELPTOPICS 2032
+#define IDM_VIEWMEM    2033
+#define IDM_FORGETMEM  2034
+#define IDM_KNOWLEDGE  2035
 
 // Resource IDs from resource.rc — must stay in sync.
 #define IDD_SETTINGS         200
@@ -211,6 +215,7 @@ static HWND gCopyLastBtn;  // per-message action strip above the transcript
 static HWND gRegenBtn;
 static HWND gEditLastBtn;
 static HWND gSpeakLastBtn;
+static HWND gRememberBtn;
 static HFONT gUiFont;
 static HFONT gTitleFont;
 static HFONT gPaneFont;
@@ -769,6 +774,7 @@ static void update_msg_actions(void) {
     if (gSpeakLastBtn) EnableWindow(gSpeakLastBtn, have_asst);
     if (gRegenBtn)     EnableWindow(gRegenBtn,     have_asst && have_user && ready && idle);
     if (gEditLastBtn)  EnableWindow(gEditLastBtn,  have_user && ready && idle);
+    if (gRememberBtn)  EnableWindow(gRememberBtn,  (have_user || have_asst) && ready && idle);
 }
 
 static void clear_transcript(void) {
@@ -788,7 +794,7 @@ static void clear_transcript(void) {
         rich_append_color(MODEL_LABEL "\r\n", RGB(96, 96, 96), FALSE);
     }
     if (InterlockedCompareExchange(&gBackendReady, 0, 0)) {
-        rich_append_color("Note: this clears the on-screen transcript only. Backend conversation memory persists until exit.\r\n\r\n", RGB(96, 96, 96), FALSE);
+        rich_append_color("Note: this clears the on-screen transcript only. Backend conversation memory persists until exit. Reopening a saved chat restores its recent turns into model context.\r\n\r\n", RGB(96, 96, 96), FALSE);
     } else {
         rich_append_color("Loading model...\r\n\r\n", RGB(96, 96, 96), FALSE);
     }
@@ -921,9 +927,10 @@ static int launch_backend(void) {
     HANDLE backend_err = INVALID_HANDLE_VALUE;
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
-    char command[1024];
+    char command[2048];
     char err_buf[256];
     char err_log_path[MAX_PATH];
+    char mem_path[MAX_PATH + 32];
 
     sa.nLength = sizeof(sa);
     sa.lpSecurityDescriptor = NULL;
@@ -947,9 +954,24 @@ static int launch_backend(void) {
     backend_err = CreateFileA(err_log_path, GENERIC_WRITE, FILE_SHARE_READ,
         &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 
+    // Persistent notes file for /remember — lives next to the chats dir in
+    // %APPDATA%\bliss-chat (same SHGetFolderPathA pattern as chats_resolve_dir,
+    // and the same mkdir-if-missing behavior in case chats haven't run yet).
+    {
+        char appdata[MAX_PATH];
+        if (SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appdata) == S_OK) {
+            char parent[MAX_PATH + 16];
+            snprintf(parent, sizeof(parent), "%s\\bliss-chat", appdata);
+            CreateDirectoryA(parent, NULL);  // ok if it exists
+            snprintf(mem_path, sizeof(mem_path), "%s\\MEMORY.TXT", parent);
+        } else {
+            snprintf(mem_path, sizeof(mem_path), "%s\\MEMORY.TXT", gAppDir);
+        }
+    }
+
     snprintf(command, sizeof(command),
-        "\"%s\\%s\" \"%s\\%s\" \"%s\\%s\" -c 256 -t 0.8 -p 0.95",
-        gAppDir, gBackendExe, gAppDir, MODEL_FILE, gAppDir, TOKENIZER_FILE);
+        "\"%s\\%s\" \"%s\\%s\" \"%s\\%s\" -c 256 -t 0.8 -p 0.95 -m \"%s\"",
+        gAppDir, gBackendExe, gAppDir, MODEL_FILE, gAppDir, TOKENIZER_FILE, mem_path);
 
     dbg_log("GUI", "selected backend: %s (%s)", gBackendExe, gBackendFlavor);
     dbg_log("GUI", "spawning backend: %s", command);
@@ -1163,29 +1185,112 @@ static int try_answer_local_tool(const char *user_prompt) {
     return 0;
 }
 
-static int has_query_word(const char *query, const char *text) {
-    char word[64];
+// ---------- knowledge retrieval v2 ----------
+// The user prompt is tokenized into distinct lowercase terms; every
+// *.txt/*.md/*.html file under <appdir>\Knowledge is scored by how many
+// distinct prompt terms it contains, and snippets from the top two files
+// are prepended to the prompt as one "Context: ..." line (the model's
+// training format). v1 emitted multi-line "Local knowledge snippets:"
+// blocks instead. The file names used are remembered in gKnowledgeSources
+// so WM_RUN_DONE can append a gray "Sources: ..." footer under the reply.
+
+#define KNOW_TERMS_MAX   32
+#define KNOW_TERM_LEN    32
+#define KNOW_FILE_MAX    65536
+#define KNOW_SNIPPET_MAX 240
+
+typedef struct {
+    char name[MAX_PATH];
+    char snippet[KNOW_SNIPPET_MAX + 1];
+    int  score;
+} KnowledgeHit;
+
+// Names of the knowledge files backing the in-flight prompt, rendered as
+// "file1.txt, file2.txt". Empty = the current prompt had no knowledge hits.
+static char gKnowledgeSources[2 * MAX_PATH + 4];
+
+static const char *kKnowStopwords[] = {
+    "the", "and", "for", "are", "but", "not", "you", "all", "can", "her",
+    "was", "one", "our", "out", "day", "get", "has", "him", "his", "how",
+    "man", "new", "now", "old", "see", "two", "way", "who", "its", "did",
+    "yes", "she", "may", "say", "each", "which", "their", "time", "will",
+    "about", "what", "when", "your", "them", "then", "this", "that", "with",
+    "from", "have", "does", "were", "been", "than", "into", "some", "could",
+    "would", "where", "there"
+};
+
+static int know_is_stopword(const char *w) {
+    int i;
+    for (i = 0; i < (int)(sizeof(kKnowStopwords) / sizeof(kKnowStopwords[0])); i++) {
+        if (!strcmp(w, kKnowStopwords[i])) return 1;
+    }
+    return 0;
+}
+
+// Split the prompt into distinct lowercase [a-z0-9]+ terms of length >= 3,
+// skipping stopwords. Returns the number of terms stored.
+static int know_extract_terms(const char *prompt, char terms[][KNOW_TERM_LEN], int max_terms) {
+    char word[KNOW_TERM_LEN];
     int wi = 0;
+    int count = 0;
     const char *p;
-    for (p = query; ; p++) {
-        int c = *p;
-        if (isalnum((unsigned char)c)) {
-            if (wi + 1 < (int)sizeof(word)) word[wi++] = (char)tolower((unsigned char)c);
+    for (p = prompt; ; p++) {
+        int c = (unsigned char)*p;
+        if (isalnum(c)) {
+            if (wi + 1 < KNOW_TERM_LEN) word[wi++] = (char)tolower(c);
         } else {
-            if (wi >= 4) {
-                const char *h;
+            if (wi >= 3) {
+                int k, dup = 0;
                 word[wi] = 0;
-                for (h = text; *h; h++) {
-                    int i = 0;
-                    while (word[i] && h[i] && tolower((unsigned char)h[i]) == word[i]) i++;
-                    if (!word[i]) return 1;
+                for (k = 0; k < count; k++) {
+                    if (!strcmp(word, terms[k])) { dup = 1; break; }
+                }
+                if (!dup && !know_is_stopword(word) && count < max_terms) {
+                    strcpy(terms[count++], word);
                 }
             }
             wi = 0;
             if (!c) break;
         }
     }
-    return 0;
+    return count;
+}
+
+// Case-insensitive substring search. Returns the byte offset of the first
+// match, or -1 if absent. `needle` is already lowercase.
+static int know_find_term(const char *haystack, const char *needle) {
+    size_t i;
+    for (i = 0; haystack[i]; i++) {
+        size_t j = 0;
+        while (needle[j] && haystack[i + j] &&
+               tolower((unsigned char)haystack[i + j]) == (unsigned char)needle[j]) j++;
+        if (!needle[j]) return (int)i;
+    }
+    return -1;
+}
+
+// Copy up to KNOW_SNIPPET_MAX chars around offset `off` in `text`, backing
+// up to the previous space so the snippet starts on a word boundary.
+// Whitespace runs (and control bytes) are flattened into single spaces.
+static void know_extract_snippet(const char *text, int off, char *out, int outsz) {
+    int start = off - KNOW_SNIPPET_MAX / 2;
+    int o = 0;
+    int sp = 1;  // suppress leading space
+    const char *p;
+    if (start < 0) start = 0;
+    while (start > 0 && !isspace((unsigned char)text[start - 1])) start--;
+    for (p = text + start; *p && o + 1 < outsz; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c <= ' ' || c == 0x7f) {
+            if (!sp) out[o++] = ' ';
+            sp = 1;
+        } else {
+            out[o++] = (char)c;
+            sp = 0;
+        }
+    }
+    while (o > 0 && out[o - 1] == ' ') o--;
+    out[o] = 0;
 }
 
 static void strip_html_inplace(char *s) {
@@ -1200,60 +1305,123 @@ static void strip_html_inplace(char *s) {
     *w = 0;
 }
 
-static void knowledge_scan_pattern(Buffer *hits, const char *query, const char *pattern) {
+// Score one Knowledge\<pattern> file set against the prompt terms and fold
+// any file with score >= 1 into the running top-2 leaderboard. A file's
+// score is the number of DISTINCT prompt terms it contains; the snippet is
+// centered on the first occurrence of the first matching term.
+static void knowledge_scan_pattern(KnowledgeHit best[2], char terms[][KNOW_TERM_LEN],
+                                   int nterms, const char *pattern) {
     char search[MAX_PATH * 2];
     WIN32_FIND_DATAA fd;
     HANDLE h;
+    char *buf;
     snprintf(search, sizeof(search), "%s\\Knowledge\\%s", gAppDir, pattern);
     h = FindFirstFileA(search, &fd);
     if (h == INVALID_HANDLE_VALUE) return;
+    buf = (char *)malloc(KNOW_FILE_MAX + 1);
+    if (!buf) { FindClose(h); return; }
     do {
         char path[MAX_PATH * 2];
         FILE *fp;
-        char buf[1600];
         size_t n;
+        int t, score = 0, first_off = -1;
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
         snprintf(path, sizeof(path), "%s\\Knowledge\\%s", gAppDir, fd.cFileName);
         fp = fopen(path, "rb");
         if (!fp) continue;
-        n = fread(buf, 1, sizeof(buf) - 1, fp);
+        n = fread(buf, 1, KNOW_FILE_MAX, fp);
         fclose(fp);
         buf[n] = 0;
-        if (strstr(pattern, "html")) strip_html_inplace(buf);
-        if (has_query_word(query, buf)) {
-            if (hits->len == 0) buffer_append(hits, "Local knowledge snippets:\n", 26);
-            buffer_append(hits, "Source: ", 8);
-            buffer_append(hits, fd.cFileName, strlen(fd.cFileName));
-            buffer_append(hits, "\n", 1);
-            buffer_append(hits, buf, strlen(buf) > 650 ? 650 : strlen(buf));
-            buffer_append(hits, "\n---\n", 5);
-            if (hits->len > 2200) break;
+        if (strstr(pattern, "htm")) strip_html_inplace(buf);
+        for (t = 0; t < nterms; t++) {
+            int off = know_find_term(buf, terms[t]);
+            if (off >= 0) {
+                score++;
+                if (first_off < 0) first_off = off;
+            }
+        }
+        if (score < 1) continue;
+        // Fold into the top-2 leaderboard (ties keep the earlier file).
+        if (score > best[0].score) {
+            best[1] = best[0];
+            best[0].score = score;
+            snprintf(best[0].name, sizeof(best[0].name), "%s", fd.cFileName);
+            know_extract_snippet(buf, first_off, best[0].snippet, sizeof(best[0].snippet));
+        } else if (score > best[1].score) {
+            best[1].score = score;
+            snprintf(best[1].name, sizeof(best[1].name), "%s", fd.cFileName);
+            know_extract_snippet(buf, first_off, best[1].snippet, sizeof(best[1].snippet));
         }
     } while (FindNextFileA(h, &fd));
+    free(buf);
     FindClose(h);
 }
 
+// Build the backend prompt for `user_prompt`. If Knowledge files match, the
+// result is a single line in the model's training format:
+//   Context: <snippet1> <snippet2> <original user prompt>
+// capped at the PROMPT_MAX send buffer (snippet2 is dropped first, then
+// snippet1 truncated). Caller frees the returned string. Sets
+// gKnowledgeSources for the end-of-turn footer; clears it when the prompt
+// has no knowledge hits.
 static char *augment_prompt_with_knowledge(const char *user_prompt) {
-    Buffer hits;
     Buffer out;
-    DWORD attr;
+    KnowledgeHit best[2];
+    char terms[KNOW_TERMS_MAX][KNOW_TERM_LEN];
+    char snip1[KNOW_SNIPPET_MAX + 1];
+    const char *snip2;
     char dir[MAX_PATH * 2];
+    DWORD attr;
+    int nterms;
+    size_t plen, budget;
+
+    gKnowledgeSources[0] = 0;
     snprintf(dir, sizeof(dir), "%s\\Knowledge", gAppDir);
     attr = GetFileAttributesA(dir);
     if (attr == INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_DIRECTORY)) return dup_text(user_prompt);
-    buffer_init(&hits);
-    knowledge_scan_pattern(&hits, user_prompt, "*.txt");
-    knowledge_scan_pattern(&hits, user_prompt, "*.md");
-    knowledge_scan_pattern(&hits, user_prompt, "*.html");
-    knowledge_scan_pattern(&hits, user_prompt, "*.htm");
-    if (!hits.data || hits.len == 0) { if (hits.data) free(hits.data); return dup_text(user_prompt); }
+    nterms = know_extract_terms(user_prompt, terms, KNOW_TERMS_MAX);
+    if (nterms == 0) return dup_text(user_prompt);
+
+    ZeroMemory(best, sizeof(best));
+    knowledge_scan_pattern(best, terms, nterms, "*.txt");
+    knowledge_scan_pattern(best, terms, nterms, "*.md");
+    knowledge_scan_pattern(best, terms, nterms, "*.html");
+    knowledge_scan_pattern(best, terms, nterms, "*.htm");
+    if (best[0].score < 1 || !best[0].snippet[0]) return dup_text(user_prompt);
+
+    // Budget: the whole augmented line must fit the PROMPT_MAX send buffer.
+    // Fixed parts are "Context: " (9 chars), one separating space per
+    // snippet, and the untouched user prompt.
+    plen = strlen(user_prompt);
+    budget = PROMPT_MAX - 1;
+    snprintf(snip1, sizeof(snip1), "%s", best[0].snippet);
+    snip2 = (best[1].score >= 1 && best[1].snippet[0]) ? best[1].snippet : NULL;
+    if (snip2 && 9 + strlen(snip1) + 1 + strlen(snip2) + 1 + plen > budget) snip2 = NULL;
+    if (9 + strlen(snip1) + 1 + plen > budget) {
+        size_t keep = (budget > 9 + 1 + plen) ? budget - 9 - 1 - plen : 0;
+        snip1[keep] = 0;
+        if (!snip1[0]) return dup_text(user_prompt);  // no room for any context
+    }
+
     buffer_init(&out);
-    buffer_append(&out, hits.data, hits.len);
-    buffer_append(&out, "\nUse the local knowledge above only if relevant.\nUser: ", 54);
-    buffer_append(&out, user_prompt, strlen(user_prompt));
-    free(hits.data);
-    diagnostics_appendf("Knowledge context injected.");
-    return out.data ? out.data : dup_text(user_prompt);
+    buffer_append(&out, "Context: ", 9);
+    buffer_append(&out, snip1, strlen(snip1));
+    if (snip2) {
+        buffer_append(&out, " ", 1);
+        buffer_append(&out, snip2, strlen(snip2));
+    }
+    buffer_append(&out, " ", 1);
+    buffer_append(&out, user_prompt, plen);
+    if (!out.data) return dup_text(user_prompt);
+
+    if (snip2) {
+        snprintf(gKnowledgeSources, sizeof(gKnowledgeSources), "%s, %s",
+                 best[0].name, best[1].name);
+    } else {
+        snprintf(gKnowledgeSources, sizeof(gKnowledgeSources), "%s", best[0].name);
+    }
+    diagnostics_appendf("Knowledge context injected: %s", gKnowledgeSources);
+    return out.data;
 }
 
 // ---------- send a turn ----------
@@ -1397,6 +1565,10 @@ static void make_menu(HWND hwnd) {
 
     AppendMenuA(tools, MF_STRING, IDM_TEMPLATES, "Templates");
     AppendMenuA(tools, MF_STRING, IDM_FIND, "Find...\tCtrl+F");
+    AppendMenuA(tools, MF_SEPARATOR, 0, NULL);
+    AppendMenuA(tools, MF_STRING, IDM_VIEWMEM, "View Memories");
+    AppendMenuA(tools, MF_STRING, IDM_FORGETMEM, "Forget a Memory...");
+    AppendMenuA(tools, MF_STRING, IDM_KNOWLEDGE, "Open Knowledge Folder");
 
     AppendMenuA(help, MF_STRING, IDM_HELPTOPICS, "Help Topics");
     AppendMenuA(help, MF_STRING, IDM_SHORTCUTS, "Keyboard Shortcuts...");
@@ -1908,14 +2080,17 @@ static void create_controls(HWND hwnd) {
     gSpeakLastBtn = make_control("BUTTON", "Speak last reply",BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_SPEAK_LAST, hwnd);
     gRegenBtn     = make_control("BUTTON", "Regenerate",      BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_REGEN,      hwnd);
     gEditLastBtn  = make_control("BUTTON", "Edit last prompt",BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_EDIT_LAST,  hwnd);
+    gRememberBtn  = make_control("BUTTON", "Remember",        BS_PUSHBUTTON | BS_FLAT | WS_TABSTOP, 0, IDC_REMEMBER,   hwnd);
     EnableWindow(gCopyLastBtn,  FALSE);
     EnableWindow(gSpeakLastBtn, FALSE);
     EnableWindow(gRegenBtn,     FALSE);
     EnableWindow(gEditLastBtn,  FALSE);
+    EnableWindow(gRememberBtn,  FALSE);
     ShowWindow(gCopyLastBtn,  SW_HIDE);
     ShowWindow(gSpeakLastBtn, SW_HIDE);
     ShowWindow(gRegenBtn,     SW_HIDE);
     ShowWindow(gEditLastBtn,  SW_HIDE);
+    ShowWindow(gRememberBtn,  SW_HIDE);
 
     // Chat history sidebar. Layout (top -> bottom):
     //   [search edit]    <- filter; placeholder cue banner
@@ -2110,10 +2285,13 @@ static void layout_controls(HWND hwnd) {
         MoveWindow(gRegenBtn, action_x, action_y, 92, action_h, TRUE);
         action_x += 92 + action_gap;
         MoveWindow(gEditLastBtn, action_x, action_y, 104, action_h, TRUE);
+        action_x += 104 + action_gap;
+        MoveWindow(gRememberBtn, action_x, action_y, 84, action_h, TRUE);
         ShowWindow(gCopyLastBtn, SW_SHOW);
         ShowWindow(gSpeakLastBtn, SW_SHOW);
         ShowWindow(gRegenBtn, SW_SHOW);
         ShowWindow(gEditLastBtn, SW_SHOW);
+        ShowWindow(gRememberBtn, SW_SHOW);
         MoveWindow(gTranscript,
             gRcConversationPane.left + 10, transcript_y,
             gRcConversationPane.right - gRcConversationPane.left - 20,
@@ -2202,10 +2380,10 @@ static void layout_controls(HWND hwnd) {
 //
 // gChats[] mirrors the on-disk list, sorted newest first. gActiveIdx
 // is the chat to which new turns get appended. Selecting a different
-// chat in the sidebar switches active (sends /reset to the backend so
-// the cache matches the empty state, and replays the historical text
-// into the transcript view — but we do NOT replay tokens through the
-// model, so previous-turn context is lost; this is the v1 trade-off).
+// chat in the sidebar switches active (sends /reset to the backend,
+// re-renders the historical text into the transcript view, and re-feeds
+// the last few user/assistant pairs through /replay so the model's
+// context matches the restored conversation).
 
 // (gChats / gChatCount / gActiveIdx / gChatsDir declared near the top.)
 
@@ -2575,6 +2753,105 @@ static void chats_load_into_view(int idx) {
     }
     fclose(fp);
     rich_append_color("\r\n", RGB(0, 0, 0), FALSE);
+}
+
+// ---------- session-restore replay ----------
+// Re-feed the last REPLAY_MAX_PAIRS completed user/assistant exchanges of
+// a saved chat into the backend via "/replay <user>\t<assistant>" (oldest
+// first) so the model context matches the restored transcript. Both sides
+// are flattened to single lines and capped at REPLAY_SIDE_MAX chars.
+// Callers only invoke this while the backend is ready and idle.
+#define REPLAY_MAX_PAIRS 6
+#define REPLAY_SIDE_MAX  600
+
+typedef struct {
+    char user[REPLAY_SIDE_MAX + 1];
+    char asst[REPLAY_SIDE_MAX + 1];
+} ReplayPair;
+
+// Append one fgets record to `dst` (REPLAY_SIDE_MAX+1 bytes), flattening
+// newlines/tabs/control bytes to spaces and collapsing runs. The line's
+// own trailing newline becomes the separator before the next line.
+static void replay_accum(char *dst, const char *line) {
+    size_t o = strlen(dst);
+    int sp = (o == 0 || dst[o - 1] == ' ');
+    const char *p;
+    for (p = line; *p && o + 1 < REPLAY_SIDE_MAX + 1; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c <= ' ' || c == 0x7f) {
+            if (!sp) dst[o++] = ' ';
+            sp = 1;
+        } else {
+            dst[o++] = (char)c;
+            sp = 0;
+        }
+    }
+    dst[o] = 0;
+}
+
+// Push `cur` into the pairs ring if both sides are non-empty (after
+// trimming the trailing separator space). Oldest pair falls off the
+// front once the ring holds REPLAY_MAX_PAIRS. Returns the new count.
+static int replay_push(ReplayPair *pairs, int count, ReplayPair *cur) {
+    size_t n;
+    n = strlen(cur->user);
+    while (n > 0 && cur->user[n - 1] == ' ') cur->user[--n] = 0;
+    n = strlen(cur->asst);
+    while (n > 0 && cur->asst[n - 1] == ' ') cur->asst[--n] = 0;
+    if (!cur->user[0] || !cur->asst[0]) return count;
+    if (count == REPLAY_MAX_PAIRS) {
+        memmove(&pairs[0], &pairs[1], sizeof(ReplayPair) * (REPLAY_MAX_PAIRS - 1));
+        count--;
+    }
+    pairs[count++] = *cur;
+    return count;
+}
+
+static void chats_replay_context(int idx) {
+    ReplayPair pairs[REPLAY_MAX_PAIRS];
+    ReplayPair cur;
+    char line[8192];
+    char cmd[REPLAY_SIDE_MAX * 2 + 32];
+    FILE *fp;
+    int count = 0, in_user = 0, in_asst = 0, past_header = 0, i;
+
+    if (idx < 0 || idx >= gChatCount) return;
+    fp = fopen(gChats[idx].path, "rb");
+    if (!fp) return;
+    ZeroMemory(&cur, sizeof(cur));
+    while (fgets(line, sizeof(line), fp)) {
+        if (!past_header) {
+            if (!strncmp(line, "---", 3)) past_header = 1;
+            continue;
+        }
+        if (!strncmp(line, "[USER]", 6)) {
+            // A finished user+assistant pair rolls into the ring buffer;
+            // an unanswered user turn is simply replaced.
+            count = replay_push(pairs, count, &cur);
+            ZeroMemory(&cur, sizeof(cur));
+            in_user = 1; in_asst = 0;
+            continue;
+        }
+        if (!strncmp(line, "[ASSISTANT]", 11)) {
+            // Regenerated replies append a second [ASSISTANT] block for
+            // the same user turn -- keep only the latest one.
+            cur.asst[0] = 0;
+            in_user = 0;
+            in_asst = cur.user[0] ? 1 : 0;
+            continue;
+        }
+        if (in_user) replay_accum(cur.user, line);
+        else if (in_asst) replay_accum(cur.asst, line);
+    }
+    fclose(fp);
+    count = replay_push(pairs, count, &cur);
+    if (count == 0) return;
+    for (i = 0; i < count; i++) {
+        snprintf(cmd, sizeof(cmd), "/replay %.600s\t%.600s", pairs[i].user, pairs[i].asst);
+        backend_send_line(cmd);
+    }
+    diagnostics_appendf("Restored %d turn(s) into model context.", count);
+    set_status("Chat context restored.");
 }
 
 // Send a single line to the backend's stdin (the line should NOT include
@@ -3466,6 +3743,15 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
             }
             rich_append_color(foot, RGB(96, 96, 96), FALSE);
         }
+        // Knowledge sources footer -- same muted style as the stats line.
+        // Only rendered under a real reply; always cleared so a stale
+        // source list can't attach to a later slash-command EOT.
+        if (tcount > 0 && gKnowledgeSources[0]) {
+            char src[sizeof(gKnowledgeSources) + 16];
+            snprintf(src, sizeof(src), "Sources: %s\r\n\r\n", gKnowledgeSources);
+            rich_append_color(src, RGB(96, 96, 96), FALSE);
+        }
+        gKnowledgeSources[0] = 0;
         if (message) free(message);
         set_status("Ready");
         update_msg_actions();
@@ -3580,6 +3866,42 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
             send_prompt_text(edited, 1);
             return 0;
         }
+        case IDC_REMEMBER: {
+            // Store the last user message (fall back to the last assistant
+            // body) as a persistent backend note via /remember. The INFO
+            // reply renders through the normal WM_BACKEND_INFO path.
+            char fact[192];
+            char cmd[224];
+            if (!InterlockedCompareExchange(&gBackendReady, 0, 0)) {
+                MessageBeep(MB_ICONWARNING);
+                return 0;
+            }
+            if (InterlockedCompareExchange(&gRunning, 0, 0)) return 0;
+            if (gPendingUser[0]) {
+                snprintf(fact, sizeof(fact), "%.150s", gPendingUser);
+            } else if (gHasAsstTurn && gLastAsstEnd > gLastAsstStart) {
+                char *body = rich_get_range(gLastAsstStart, gLastAsstEnd);
+                if (!body) {
+                    MessageBeep(MB_ICONWARNING);
+                    return 0;
+                }
+                trim_trailing_newlines(body);
+                snprintf(fact, sizeof(fact), "%.150s", body);
+                free(body);
+            } else {
+                MessageBeep(MB_ICONWARNING);
+                return 0;
+            }
+            sanitize_user(fact);  // flatten any newlines to spaces
+            if (!input_has_text(fact)) {
+                MessageBeep(MB_ICONWARNING);
+                return 0;
+            }
+            snprintf(cmd, sizeof(cmd), "/remember %s", fact);
+            backend_send_line(cmd);
+            set_status("Saving memory...");
+            return 0;
+        }
         case IDM_ABOUT:
             MessageBoxA(hwnd,
                 APP_NAME "\n\nReal LLM running natively on Windows XP.\n"
@@ -3635,11 +3957,17 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
                 if (row >= 0 && row < gFilteredCount) {
                     int sel = gFilteredIndices[row];
                     if (sel >= 0 && sel < gChatCount && sel != gActiveIdx) {
-                        if (InterlockedCompareExchange(&gBackendReady, 0, 0)) {
+                        BOOL ready = InterlockedCompareExchange(&gBackendReady, 0, 0) != 0;
+                        BOOL idle  = !InterlockedCompareExchange(&gRunning, 0, 0);
+                        if (ready) {
                             backend_send_line("/reset");
                         }
                         gActiveIdx = sel;
                         chats_load_into_view(sel);
+                        // Re-feed the last few saved exchanges so the model
+                        // remembers the restored conversation. Skipped
+                        // silently while a generation is in flight.
+                        if (ready && idle) chats_replay_context(sel);
                     }
                 }
             }
@@ -3726,6 +4054,41 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
                             MB_ICONINFORMATION | MB_OK);
             }
             return 0;
+        case IDM_VIEWMEM:
+            // List the stored persistent notes; the backend replies with
+            // one INFO line per note.
+            if (InterlockedCompareExchange(&gBackendReady, 0, 0)) {
+                backend_send_line("/memories");
+            } else {
+                MessageBoxA(hwnd, "Backend not ready yet.", APP_NAME,
+                            MB_ICONINFORMATION | MB_OK);
+            }
+            return 0;
+        case IDM_FORGETMEM:
+            // Show the numbered note list, then pre-fill the input with
+            // "/forget " so the user just types the number and hits Enter.
+            if (InterlockedCompareExchange(&gBackendReady, 0, 0)) {
+                backend_send_line("/memories");
+                SetWindowTextA(gInput, "/forget ");
+                SetFocus(gInput);
+                {
+                    int len = GetWindowTextLengthA(gInput);
+                    SendMessageA(gInput, EM_SETSEL, (WPARAM)len, (LPARAM)len);
+                }
+            } else {
+                MessageBoxA(hwnd, "Backend not ready yet.", APP_NAME,
+                            MB_ICONINFORMATION | MB_OK);
+            }
+            return 0;
+        case IDM_KNOWLEDGE: {
+            // Create <appdir>\Knowledge if missing, then open it in Explorer
+            // so the user can drop reference .txt/.md/.html files in.
+            char dir[MAX_PATH * 2];
+            snprintf(dir, sizeof(dir), "%s\\Knowledge", gAppDir);
+            CreateDirectoryA(dir, NULL);  // ok if it exists
+            ShellExecuteA(hwnd, "open", dir, NULL, NULL, SW_SHOWNORMAL);
+            return 0;
+        }
         }
         break;
 
