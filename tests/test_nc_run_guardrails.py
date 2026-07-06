@@ -27,6 +27,14 @@ class NcRunGuardrailSourceTests(unittest.TestCase):
         self.assertIn('apply_repetition_penalty', self.source)
         self.assertRegex(self.source, r"sample\(&S,\s*temp,\s*top_p,\s*recent_ids")
 
+    def test_thread_context_is_kept_between_turns_until_reset(self):
+        # The backend must not restore the clean prefix before every normal
+        # prompt; otherwise the model cannot use earlier messages in a thread.
+        self.assertIn('Multi-turn: keep the KV cache across turns', self.source)
+        self.assertNotIn('Fresh one-shot semantics for each user turn', self.source)
+        self.assertNotRegex(self.source, r"state_restore_prefix\(&S\);\s*turn_idx\s*=\s*0;\s*char shaped_line")
+        self.assertIn('context full, rebuilt from bounded thread summary', self.source)
+
 
 if __name__ == "__main__":
     unittest.main()
