@@ -226,9 +226,13 @@ is kept for inference for fidelity.
 
 - **Greedy** (`temperature == 0`): argmax of logits.
 - **Temperature**: divide logits by `T`, softmax to get probs.
-- **Top-p**: if `p < 1.0`, sort indices by prob descending, take the
-  smallest prefix whose cumulative prob ≥ `p`, sample from that prefix
-  weighted by their original probs.
+- **Top-p** (real nucleus sampling as of v1.3.0): if `p < 1.0`, sort
+  all 32K vocab indices by prob descending (full index `qsort`, well
+  under a millisecond even on the P4 — noise next to the ~200 ms
+  forward pass), zero everything past the smallest prefix whose
+  cumulative prob ≥ `p`, renormalize, inverse-CDF sample from the rest.
+  From v1.0 through v1.2.3 this was a stub — `/topp` stored the value
+  but the sampler was temperature-only.
 - **Pure** sampling (`p >= 1.0`): inverse-CDF sample.
 
 RNG is xorshift32 keyed off the `-s` flag. Deterministic given seed.
@@ -251,17 +255,21 @@ All buffers are heap allocations done once at `state_init`:
 | `logits` | `pad_vocab × 4` | output logits |
 | `probs`, `ranking` | `vocab × 4` (×2) | sampling |
 
-For d12 (n_layer=12, n_embd=768, kv_dim=384, seq_len=1024):
-- KV cache: 12 × 1024 × 384 × 4 × 2 = 36 MB
+For d12 (n_layer=12, n_embd=768, n_kv_head=6 × head_dim=128 →
+kv_dim=768, seq_len=1024):
+- KV cache: 12 × 1024 × 768 × 4 × 2 = 72 MB
 - Other buffers: ~250 KB
 
-So inference adds ~36 MB on top of the ~280 MB int8 weights.
+So inference adds ~72 MB on top of the ~280 MB int8 weights.
 
 ## What's intentionally missing
 
-- **No SIMD intrinsics**. The P4's SSE3 is too weak to beat scalar for
-  these tiny models. Tested both with and without `__SSE3__` paths in
-  ggml; scalar won for d6.
+- **No SIMD beyond SSE2**. Hand-written SSE2 kernels cover the hot
+  paths — `matmul_fp32`, `matmul_int8`, `dot_fp32`, `axpy_fp32`
+  (`nc_run.c` ~566–714) — gated on `__SSE2__` with scalar fallbacks,
+  built with `-march=pentium-m` / `-march=pentium4`. Nothing newer:
+  SSE3+ isn't assumed on the target CPUs, and an earlier draft of
+  this doc wrongly claimed no SIMD at all.
 - **No threading**. Single-threaded keeps things simple and the P4's
   single-core hyperthreading didn't help in practice (memory-bandwidth
   bound, not compute bound).

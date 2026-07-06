@@ -4,16 +4,16 @@ Goal: evolve Bliss Chat from an offline XP chatbot demo into a useful local XP a
 
 ## Phase 1 — Local assistant substrate
 
-1. Chat history memory
+1. Chat history memory — done (shipped v1.3.0)
    - Existing native GUI already persists chats under `%APPDATA%\\bliss-chat\\chats`.
-   - Next: add explicit `Remember this` notes and a small `memory.txt`/`memory.jsonl` store.
-   - Retrieval: prepend 1-3 relevant memory snippets to the prompt.
+   - Next: add explicit `Remember this` notes and a small `memory.txt`/`memory.jsonl` store. — done (shipped v1.3.0: `/remember` notes, `memory.txt` via `-m`)
+   - Retrieval: prepend 1-3 relevant memory snippets to the prompt. — done (shipped v1.3.0: notes render as a `Notes:` line in the system prefix)
 
-2. RAG / Knowledge folder
+2. RAG / Knowledge folder — done (shipped in C at v1.3.0 quality)
    - Drop `.txt`, `.md`, `.html` files into a local `knowledge/` folder.
    - Search lexical snippets before generation.
    - Prepend compact context to the prompt so the tiny model can answer from local facts.
-   - First implementation lives in `server/bliss_xp_web_chat.py`; port the same logic to `XPCHAT.EXE` after behavior is proven.
+   - First implementation lives in `server/bliss_xp_web_chat.py`; port the same logic to `XPCHAT.EXE` after behavior is proven. — done (ported to `XPCHAT.EXE`, shipped v1.3.0)
 
 3. Tool calling
    - Safe direct tools first: calculator, date/time, file/folder listing, text search.
@@ -23,7 +23,7 @@ Goal: evolve Bliss Chat from an offline XP chatbot demo into a useful local XP a
 ## Phase 2 — Runtime quality and speed
 
 4. Sampling/runtime controls
-   - Wire real top-p in `nc_run.c`.
+   - Wire real top-p in `nc_run.c`. — done (shipped v1.3.0)
    - Add better anti-repeat and answer-length controls.
    - Keep `Coherent mode` as the default.
 
@@ -40,8 +40,8 @@ Goal: evolve Bliss Chat from an offline XP chatbot demo into a useful local XP a
 ## Phase 3 — Native XP integration
 
 7. Port web-proven RAG/tools into `XPCHAT.EXE`.
-8. Add Knowledge folder UI: Open Folder, Re-index, Sources shown under answer.
-9. Add Memory UI: Remember, Forget, View Memories.
+8. Add Knowledge folder UI: Open Folder, Re-index, Sources shown under answer. — partial (shipped v1.3.0: Open Folder + Sources footer under answers; Re-index still open)
+9. Add Memory UI: Remember, Forget, View Memories. — done (shipped v1.3.0)
 10. Add tool approval UI and audit log.
 
 ## Phase 4 — Model/data improvement

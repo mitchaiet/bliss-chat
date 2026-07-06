@@ -426,3 +426,71 @@ two new technical references (`context/01-data-formats.md` and
 The repo is shippable as-is. Next concrete event is the d12-chinchilla
 training landing around 00:42 — that result decides direction (more
 training, bigger model, or alternative SFT attempts).
+
+---
+
+# 2026-07-06 — v1.3.0 memory (overnight session)
+
+Overnight session that shipped v1.3.0: persistent memory, real
+top-p, and a retrained model.
+
+## Root cause
+
+Post-hoc SFT is officially dead: 22 failed checkpoints across every
+variation tried. The recipe that works is **curated-mix-into-
+pretraining** — bake the chat/memory behavior into the pretrain data
+mixture instead of bolting it on afterward.
+
+## v2 curated dataset
+
+8,384 distinct conversations: multi-turn recall 3,000, notes-recall
+~1,160, Context-grounded 1,250, reasoning ~1,480, factual ~1,000,
+behavior 500, app-aware 250. Rendered by
+`tools/build_bliss_pretrain_curated_v2.py`, oversampled 6× vs the
+100k v1 docs, mixed in at `BLISS_CURATED_PROB=0.35`.
+
+## Track A — continued pretrain
+
+Continued pretrain of `bliss-d12-curated-c20-v1`, +4,000 steps at
+tail LR on the RTX PRO 6000 (~22 min). val bpb 0.818168 → 0.817234.
+
+**Results (before → after):**
+
+| Metric | Before | After |
+|---|---|---|
+| bench correct | 57 % | 77 % |
+| math | 6.7 % | 53.3 % |
+| factual | 60 % | 95 % |
+| multi-turn memory | 27/40 | 37/40 |
+| notes | 21/25 | 22/25 |
+| persona | 5/8 | 8/8 |
+| coherence | 99 % | 100 % |
+
+## Engine work
+
+- Persistent notes: `-m <memfile>` flag + `/remember` family; notes
+  render as a `Notes: ...` line injected into the system prefix.
+- Real top-p (nucleus) sampling — `/topp` finally honored.
+- KV snapshot copies eliminated, saving ~72 MB.
+- `/replay <user>\t<assistant>` — prefill stored exchanges without
+  generating, for session restore.
+- Both-sides thread summary (Q and A halves tracked).
+
+## GUI work
+
+- Remember button + Tools memory menu.
+- Knowledge retrieval v2 with `Context:` format + Sources footer.
+- Session-restore replay on chat switch.
+- 1.3.0 resources.
+
+## Release
+
+Shipped as **v1.3.0** with
+`bliss-chat-xp-v1.3.0-memory-portable.exe`
+(sha `8890ea06c3bf34a8c9328c1b3455a38306d1a00510b17c46ed3c19740065863d`).
+Tested on Win11 — the real XP box was offline.
+
+## Track B — left running
+
+Full c20 retrain with the v2 mixture, tag `bliss-d12-mem-c20-v2b`,
+left training for a possible v1.3.1.
