@@ -24,7 +24,12 @@ class WebAssistantUpgradeTests(unittest.TestCase):
         self.assertEqual(len(hits), 1)
         self.assertEqual(hits[0]["file"], "pc.txt")
         self.assertIn("Microsoft Sam", shaped)
-        self.assertIn("Question: What voice does the XP laptop use?", shaped)
+        # v1.3.0 contract: single-line "Context: <snippets> <question>" so the
+        # one-line stdin protocol survives and the shape matches the v2
+        # curated training format.
+        self.assertTrue(shaped.startswith("Context: "))
+        self.assertTrue(shaped.endswith("What voice does the XP laptop use?"))
+        self.assertNotIn("\n", shaped)
 
 
 if __name__ == "__main__":

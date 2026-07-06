@@ -204,12 +204,16 @@ def augment_prompt_with_knowledge(prompt: str, knowledge_dir: Path = KNOWLEDGE_D
         snippet = " ".join(plain.split())[:500]
         hits.append({"file": str(path.relative_to(knowledge_dir)), "score": score, "snippet": snippet})
     hits.sort(key=lambda h: (-h["score"], h["file"]))
-    hits = hits[:3]
+    hits = hits[:2]
     if not hits:
         return prompt, []
-    context = "\n".join(f"[{h['file']}] {h['snippet']}" for h in hits)
-    shaped = f"Use this local knowledge if helpful:\n{context}\n\nQuestion: {prompt}\nAnswer briefly:"
-    return shaped, hits
+    # Single-line "Context: ..." shape — matches both the v2 curated
+    # training format and the C GUI's injection, and keeps the one-line
+    # stdin protocol intact (multi-line prompts would be split into
+    # separate model turns by nc_run's read_line).
+    context = " ".join(h["snippet"][:240] for h in hits)
+    shaped = f"Context: {context} {prompt}"
+    return " ".join(shaped.split()), hits
 
 
 class BlissBackend:
@@ -235,8 +239,14 @@ class BlissBackend:
         tool_answer = answer_tool_prompt(line)
         if tool_answer is not None:
             return tool_answer
-        augmented_line, knowledge_hits = augment_prompt_with_knowledge(line)
-        shaped_line = shape_prompt(augmented_line)
+        # Shape the RAW prompt first: shape_prompt keys on user phrasing
+        # ("compliment", "guitar fact") and must not see retrieved snippets,
+        # which used to discard the whole RAG context on a keyword hit.
+        shaped_line = shape_prompt(line)
+        if shaped_line == line:
+            shaped_line, knowledge_hits = augment_prompt_with_knowledge(line)
+        else:
+            knowledge_hits = []
         with self.lock:
             cmd = [str(BACKEND), str(MODEL), str(TOKENIZER), "-c", str(self.ctx), "-t", str(self.temp), "-p", str(self.top_p)]
             if self.seed is not None:
