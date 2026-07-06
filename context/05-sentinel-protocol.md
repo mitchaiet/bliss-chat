@@ -110,16 +110,33 @@ Re-seeds the RNG. Sampling becomes reproducible from this point
 
 ### `/topp <float>\n`
 
-Sets the nucleus sampling cutoff. **Currently stored but not
-honored** — the sampler is temperature-only. The GUI's Settings
-dialog persists this to registry and pushes it on every backend
-ready event, so the UI is honest about what the user picked.
+Sets the nucleus sampling cutoff. **Honored for real since v1.3.0**
+— the sampler does full nucleus filtering (index sort of the vocab
+by prob, truncate at cumulative `p`, renormalize). From v1.0 through
+v1.2.3 the value was stored but ignored (temperature-only sampler).
+The GUI's Settings dialog persists this to registry and pushes it on
+every backend ready event.
 
 ### `/maxtok <int>\n`
 
 Per-turn generation cap, clamped to `[0, 2048]`. `0` means "no cap,
 use context budget" (the previous behavior). Applied as `min(budget,
 maxtok)` inside the generation loop.
+
+### `/rambleguard <0|1>\n`
+
+Enables/disables the runtime loop suppressor (default on; since
+v1.2.0): generation hard-stops when the same token repeats 4+ times
+in a row, or when the just-finished 2/3/4-gram has already appeared
+twice earlier in the answer. `0` restores the old let-it-ramble
+behavior. Emits `INFO ramble_guard = N` + EOT 0.
+
+### `/repeat <float>\n`
+
+Sets the repetition penalty applied to tokens seen recently in the
+generated answer (last 64 tokens; prompt/history logits untouched).
+Clamped to `[1.0, 2.0]`; `1.0` disables it. Since v1.2.0. Emits
+`INFO repeat_penalty = X.XXX` + EOT 0.
 
 ### `/system <one-line-text>\n`
 
@@ -134,6 +151,53 @@ as a newline escape since the wire format is line-oriented. Backend:
 Used by the GUI's Settings → System Prompt control. The default
 prefix in `nc_run.c::FEWSHOT_PREFIX` stays the fallback if `/system`
 is never sent.
+
+### `/remember <fact>\n` (v1.3.0)
+
+Stores a short persistent note (max 12 notes, 160 chars each). Notes
+survive across conversations and app restarts: they're saved to the
+notes file (the path given by `-m` or `/memfile`) and rendered as a
+single `Notes: a; b; c` line inside the system prefix — the curated
+training mixture teaches the model to read this exact `Notes:`
+format. The new note takes effect in the prefilled prefix at the
+next `/reset`, context rollover, or restart (the current
+conversation already contains the fact naturally). Emits
+`INFO noted (n/12): <fact>` + EOT 0 (or `memory full` /
+`nothing to remember`).
+
+### `/memories\n` (v1.3.0)
+
+Lists stored notes, one `INFO <n>. <fact>` line per note (1-based
+indexes), then EOT 0. Empty store gets a hint pointing at
+`/remember`.
+
+### `/forget <n>\n` (v1.3.0)
+
+Removes note `n` (as numbered by `/memories`) and rewrites the notes
+file. Emits `INFO forgot note N (K left)` + EOT 0, or
+`INFO no note N - see /memories` if out of range.
+
+### `/memfile <path>\n` (v1.3.0)
+
+Points the backend at a different notes file, reloads it, and
+immediately rebuilds + re-prefills the prefix (system text + fresh
+`Notes:` line). Conversation history is dropped. Emits
+`INFO memory file loaded (N notes)` + EOT 0.
+
+The same file can be set at startup via the **`-m <memfile>` CLI
+flag** — the GUI passes its notes file this way so stored notes are
+in the prefix from the very first prompt.
+
+### `/replay <user>\t<assistant>\n` (v1.3.0)
+
+Prefills a stored exchange into the KV cache **without generating**.
+The user and assistant halves are separated by a literal tab. The
+pair is formatted through the normal Q/A turn template, forwarded
+token by token, appended to the thread summary, and `turn_idx`
+advances — so the model genuinely "remembers" the exchange. Used by
+the GUI to restore a saved chat on sidebar switch. Replies
+`INFO turn replayed` then EOT 0; if the context is nearly full the
+replay is skipped with `INFO context full, replay skipped` + EOT 0.
 
 ### `\x01STOP\n`
 
