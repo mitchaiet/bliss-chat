@@ -310,12 +310,20 @@ roundtrip:
 | Command | Effect |
 |---|---|
 | `/reset` | Drop the running KV cache, start a fresh conversation |
-| `/info`  | Show model size, dtype, current turn index, KV occupancy |
+| `/info`  | Show model size, dtype, current turn index, KV occupancy, note count |
 | `/help`  | List the available slash commands |
+| `/remember <fact>` | Store a short persistent note (survives restarts) |
+| `/memories` | List stored notes with their numbers |
+| `/forget <n>` | Remove note n |
+
+Persistent notes live in `%APPDATA%\bliss-chat\MEMORY.TXT` (plain text,
+one note per line) and are injected into the model's system prefix as a
+`Notes:` line, so Bliss can use them in any conversation. New notes take
+effect at the next `/reset`, context rollover, or app start.
 
 The backend also auto-resets when the KV cache is within 64 tokens of
-`sequence_len`, with a `[INFO] context full, conversation reset`
-notice.
+`sequence_len`, rebuilding from a bounded thread summary that now keeps
+both the questions and the answers.
 
 ## Model variants
 
