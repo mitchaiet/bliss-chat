@@ -211,7 +211,8 @@ static int estimate_model_millions(const nc_model *m) {
     // overhead the whole file lands near 0.63 byte per int8-equivalent
     // "parameter", so the same model reports the same size class in
     // every quantization.
-    double denom = (m->dtype_code == 2) ? 630000.0
+    double denom = (m->dtype_code == 3) ? 775000.0
+                 : (m->dtype_code == 2) ? 630000.0
                  : (m->dtype_code == 1) ? 1000000.0 : 4000000.0;
     return (int)((double)m->blob_len / denom + 0.5);
 }
@@ -558,7 +559,7 @@ static int model_load(nc_model *m, const char *path) {
     m->softcap         = h->softcap;
 
     g_dtype_code = m->dtype_code;
-    if (m->dtype_code != 0 && m->dtype_code != 1 && m->dtype_code != 2) {
+    if (m->dtype_code < 0 || m->dtype_code > 3) {
         fprintf(stderr, "[nc_run] unsupported dtype_code=%d\n", m->dtype_code);
         return 0;
     }
@@ -582,15 +583,18 @@ static int model_load(nc_model *m, const char *path) {
     //   fp32: rows*cols floats
     //   int8: rows*cols int8 + rows fp32 scales (per-row symmetric quant)
     //   q4:   rows*cols/2 packed nibbles + rows*(cols/32) fp32 group scales
+    // dtype 3 (mixed): matmul matrices are int8, value-embedding tables are
+    // q4 — take_dt below carries the per-section effective dtype.
+    int take_dt = (m->dtype_code == 3) ? 1 : m->dtype_code;
     #define TAKE_MATRIX(rows_, cols_, qslot_, sslot_, fpslot_)                    \
         do {                                                                       \
             size_t _r = (size_t)(rows_), _c = (size_t)(cols_);                     \
-            if (m->dtype_code == 0) {                                              \
+            if (take_dt == 0) {                                                    \
                 size_t _b = _r * _c * sizeof(float);                               \
                 if (p + _b > end) { fprintf(stderr,"[nc_run] truncated matrix\n"); return 0; } \
                 (fpslot_) = (float *)p; p += _b;                                   \
                 (qslot_) = NULL; (sslot_) = NULL;                                  \
-            } else if (m->dtype_code == 2) {                                       \
+            } else if (take_dt == 2) {                                             \
                 if (_c % 32) { fprintf(stderr,"[nc_run] q4 needs cols%%32==0\n"); return 0; } \
                 size_t _b = _r * _c / 2;                                           \
                 size_t _bs = _r * (_c / 32) * sizeof(float);                       \
@@ -631,7 +635,9 @@ static int model_load(nc_model *m, const char *path) {
         m->L[i].window = is_long ? m->long_window : m->short_window;
     }
 
-    // Value embeddings (matrix, dtype-aware) for VE layers
+    // Value embeddings (matrix, dtype-aware) for VE layers. In mixed mode
+    // (dtype 3) these are the q4 section — row lookups only, never matmuls.
+    if (m->dtype_code == 3) take_dt = 2;
     for (int i = 0; i < m->n_layer; i++) {
         if (has_ve_layer(i, m->ve_layer_mask)) {
             TAKE_MATRIX(V, KD, m->L[i].ve_q, m->L[i].ve_scales, m->L[i].ve_fp32);
@@ -639,6 +645,7 @@ static int model_load(nc_model *m, const char *path) {
             m->L[i].ve_fp32 = NULL; m->L[i].ve_q = NULL; m->L[i].ve_scales = NULL;
         }
     }
+    if (m->dtype_code == 3) take_dt = 1;
 
     // Per-layer scalars
     m->resid_lambdas = TAKE_FP32(m->n_layer);
@@ -1099,7 +1106,7 @@ static void forward_one(nc_state *s, int token_id) {
             const float *ve;
             if (m->L[li].ve_fp32) {
                 ve = m->L[li].ve_fp32 + (size_t)token_id * KD;
-            } else if (g_dtype_code == 2) {
+            } else if (g_dtype_code == 2 || g_dtype_code == 3) {
                 const uint8_t *row = (const uint8_t *)m->L[li].ve_q + (size_t)token_id * (KD / 2);
                 q4_dequant_row(row, m->L[li].ve_scales + (size_t)token_id * (KD / 32), ve_buf, KD);
                 ve = ve_buf;
@@ -1466,7 +1473,8 @@ int main(int argc, char **argv) {
         snprintf(info, sizeof(info), "Bliss d%d %dM (%s)",
                  M.n_layer,
                  estimate_model_millions(&M),
-                 M.dtype_code == 2 ? "q4" : (M.dtype_code == 1 ? "int8" : "fp32"));
+                 M.dtype_code == 3 ? "int8+q4ve" :
+                 (M.dtype_code == 2 ? "q4" : (M.dtype_code == 1 ? "int8" : "fp32")));
         emit_sentinel_str("INFO", info);
     }
 
@@ -1851,7 +1859,8 @@ int main(int argc, char **argv) {
                 "Bliss d%d %dM (%s) | seq=%d | turn=%d | pos=%d/%d | temp=%.2f top_p=%.2f | max=%d | guard=%d repeat=%.2f | mem=%d | cfg=%s | tmpl=%s v%d",
                 M.n_layer,
                 estimate_model_millions(&M),
-                (M.dtype_code == 2 ? "q4" : (M.dtype_code == 1 ? "int8" : "fp32")),
+                (M.dtype_code == 3 ? "int8+q4ve" :
+                 (M.dtype_code == 2 ? "q4" : (M.dtype_code == 1 ? "int8" : "fp32"))),
                 M.sequence_len, turn_idx, S.seq_pos, ctx_max,
                 temp, top_p, max_tokens, ramble_guard, repeat_penalty,
                 g_mem_n,
