@@ -10,7 +10,7 @@
 ; the Pentium 4) or the bigger d12 model (~280 MB, more coherent).
 
 !ifndef OUTFILE
-  !define OUTFILE "bliss-chat-xp-v1.2.3-coherence-speech-portable.exe"
+  !define OUTFILE "bliss-chat-xp-v1.3.0-memory-portable.exe"
 !endif
 
 !ifndef MODEL
@@ -49,13 +49,13 @@ SetCompressorDictSize 64
 ; (NSIS itself runs fine on XP/2000/Win9x; we only need our payload there.)
 
 ; The XP About dialog uses these via VerInfoKey
-VIProductVersion "1.2.3.0"
+VIProductVersion "1.3.0.0"
 VIAddVersionKey "ProductName"     "Bliss Chat XP"
-VIAddVersionKey "FileDescription" "Bliss Chat XP portable - coherence, thread memory, Microsoft Sam TTS"
+VIAddVersionKey "FileDescription" "Bliss Chat XP portable - persistent memory, knowledge Context RAG, Microsoft Sam TTS"
 VIAddVersionKey "LegalCopyright"  ""
-VIAddVersionKey "FileVersion"     "1.2.3"
-VIAddVersionKey "ProductVersion"  "1.2.3"
-VIAddVersionKey "ModelName"       "bliss-d12-curated-c20-v1"
+VIAddVersionKey "FileVersion"     "1.3.0"
+VIAddVersionKey "ProductVersion"  "1.3.0"
+VIAddVersionKey "ModelName"       "bliss-d12-mem-c20-v2a"
 
 Section
   ; $PLUGINSDIR is a per-invocation temp dir that NSIS cleans up on exit.
