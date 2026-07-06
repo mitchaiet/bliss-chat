@@ -211,7 +211,7 @@ static int estimate_model_millions(const nc_model *m) {
     // overhead the whole file lands near 0.63 byte per int8-equivalent
     // "parameter", so the same model reports the same size class in
     // every quantization.
-    double denom = (m->dtype_code == 3) ? 775000.0
+    double denom = (m->dtype_code == 3) ? 803000.0
                  : (m->dtype_code == 2) ? 630000.0
                  : (m->dtype_code == 1) ? 1000000.0 : 4000000.0;
     return (int)((double)m->blob_len / denom + 0.5);
