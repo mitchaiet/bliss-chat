@@ -393,7 +393,7 @@ static void mem_load(const char *path) {
     while (g_mem_n < MEM_MAX && fgets(buf, sizeof(buf), f)) {
         mem_strip(buf);
         if (!buf[0]) continue;
-        snprintf(g_mem[g_mem_n], MEM_LINE, "%s", buf);
+        snprintf(g_mem[g_mem_n], MEM_LINE, "%.*s", MEM_LINE - 1, buf);
         g_mem_n++;
     }
     fclose(f);
@@ -413,10 +413,10 @@ static int mem_save(void) {
 static int mem_add(const char *text) {
     char buf[512];
     if (g_mem_n >= MEM_MAX) return -1;
-    snprintf(buf, sizeof(buf), "%s", text ? text : "");
+    snprintf(buf, sizeof(buf), "%.*s", (int)sizeof(buf) - 1, text ? text : "");
     mem_strip(buf);
     if (!buf[0]) return 0;
-    snprintf(g_mem[g_mem_n], MEM_LINE, "%s", buf);
+    snprintf(g_mem[g_mem_n], MEM_LINE, "%.*s", MEM_LINE - 1, buf);
     g_mem_n++;
     g_mem_dirty = 1;
     return 1;
@@ -1658,7 +1658,7 @@ int main(int argc, char **argv) {
             } else {
                 for (int mi = 0; mi < g_mem_n; mi++) {
                     char info[224];
-                    snprintf(info, sizeof(info), "%d. %s", mi + 1, g_mem[mi]);
+                    snprintf(info, sizeof(info), "%d. %.200s", mi + 1, g_mem[mi]);
                     emit_sentinel_str("INFO", info);
                 }
             }
@@ -1682,7 +1682,8 @@ int main(int argc, char **argv) {
         // /memfile <path>: point at a different notes file, reload it, and
         // rebuild the prefix immediately. Drops conversation history.
         if (!strncmp(line, "/memfile ", 9)) {
-            snprintf(g_mem_path, sizeof(g_mem_path), "%s", line + 9);
+            snprintf(g_mem_path, sizeof(g_mem_path), "%.*s",
+                     (int)sizeof(g_mem_path) - 1, line + 9);
             mem_load(g_mem_path);
             compose_prefix(prefix_buf, sizeof(prefix_buf), sys_text);
             PREFILL_AND_SNAPSHOT(prefix_buf);
