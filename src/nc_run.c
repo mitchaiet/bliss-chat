@@ -36,7 +36,7 @@
 typedef struct {
     char     magic[8];        // "NCB1\0\0\0\0"
     int32_t  version;
-    int32_t  dtype_code;      // 0=fp32, 1=int8
+    int32_t  dtype_code;      // 0=fp32, 1=int8, 2=q4 group-32
     int32_t  vocab_size;
     int32_t  pad_vocab_size;
     int32_t  n_layer;
@@ -155,7 +155,7 @@ typedef struct {
     int short_window, long_window;
     uint64_t ve_layer_mask;
     uint64_t window_pattern_mask;
-    int dtype_code;        // 0=fp32, 1=int8
+    int dtype_code;        // 0=fp32, 1=int8, 2=q4 group-32
     int softcap;
 
     // Owned buffer for the whole file (we read it in)
@@ -547,7 +547,8 @@ static int model_load(nc_model *m, const char *path) {
     m->kv_dim          = m->n_kv_head * m->head_dim;
     m->softcap         = h->softcap;
 
-    if (m->dtype_code != 0 && m->dtype_code != 1) {
+    g_dtype_code = m->dtype_code;
+    if (m->dtype_code != 0 && m->dtype_code != 1 && m->dtype_code != 2) {
         fprintf(stderr, "[nc_run] unsupported dtype_code=%d\n", m->dtype_code);
         return 0;
     }
@@ -570,6 +571,7 @@ static int model_load(nc_model *m, const char *path) {
     // For matrix W of shape (rows, cols):
     //   fp32: rows*cols floats
     //   int8: rows*cols int8 + rows fp32 scales (per-row symmetric quant)
+    //   q4:   rows*cols/2 packed nibbles + rows*(cols/32) fp32 group scales
     #define TAKE_MATRIX(rows_, cols_, qslot_, sslot_, fpslot_)                    \
         do {                                                                       \
             size_t _r = (size_t)(rows_), _c = (size_t)(cols_);                     \
@@ -578,6 +580,14 @@ static int model_load(nc_model *m, const char *path) {
                 if (p + _b > end) { fprintf(stderr,"[nc_run] truncated matrix\n"); return 0; } \
                 (fpslot_) = (float *)p; p += _b;                                   \
                 (qslot_) = NULL; (sslot_) = NULL;                                  \
+            } else if (m->dtype_code == 2) {                                       \
+                if (_c % 32) { fprintf(stderr,"[nc_run] q4 needs cols%%32==0\n"); return 0; } \
+                size_t _b = _r * _c / 2;                                           \
+                size_t _bs = _r * (_c / 32) * sizeof(float);                       \
+                if (p + _b + _bs > end) { fprintf(stderr,"[nc_run] truncated matrix\n"); return 0; } \
+                (qslot_) = (void *)p; p += _b;                                     \
+                (sslot_) = (float *)p; p += _bs;                                   \
+                (fpslot_) = NULL;                                                  \
             } else {                                                               \
                 size_t _b = _r * _c;                                               \
                 size_t _bs = _r * sizeof(float);                                   \
@@ -703,6 +713,92 @@ static void matmul_fp32(float *y, const float *W, const float *x, int rows, int 
 #endif
 }
 
+// dtype_code of the loaded model, needed by linear() to pick the kernel
+// (the weight slots alone can't distinguish int8 from q4 packing).
+static int g_dtype_code = 0;
+
+// ---- q4 (dtype=2) support: group-wise symmetric int4, group size 32 ----
+// Packing (chosen so the SSE2 kernel needs zero shuffles): each 32-column
+// group is 16 bytes; byte j holds column (g*32 + j) in its LOW nibble and
+// column (g*32 + 16 + j) in its HIGH nibble. Nibbles store q+8 where
+// q in [-7, 7]. One fp32 scale per group: scales[row * (cols/32) + g].
+// At 0.5 byte/weight + fp32/32 scales this is ~0.56 byte/weight vs 1.0 for
+// int8 — on the memory-bandwidth-bound Pentium 4 that is the win.
+
+// Dequantize one q4 row into out[cols]. Used for wte / value-embedding
+// token-row lookups (cheap: one row per token).
+static void q4_dequant_row(const uint8_t *row, const float *srow, float *out, int cols) {
+    int groups = cols / 32;
+    for (int g = 0; g < groups; g++) {
+        const uint8_t *b = row + (size_t)g * 16;
+        float s = srow[g];
+        float *o = out + (size_t)g * 32;
+        for (int j = 0; j < 16; j++) {
+            o[j]      = (float)((int)(b[j] & 0x0F) - 8) * s;
+            o[j + 16] = (float)((int)(b[j] >> 4)   - 8) * s;
+        }
+    }
+}
+
+// Same contract as matmul_int8 but W is q4-packed with per-group scales.
+static void matmul_q4(float *y, const uint8_t *W, const float *scales,
+                      const float *x, int rows, int cols) {
+    int groups = cols / 32;
+#if NC_SSE2
+    const __m128i mask4 = _mm_set1_epi8(0x0F);
+    const __m128i bias8 = _mm_set1_epi8(8);
+    const __m128i z = _mm_setzero_si128();
+    for (int r = 0; r < rows; r++) {
+        const uint8_t *wr = W + (size_t)r * (cols / 2);
+        const float  *sr = scales + (size_t)r * groups;
+        float row_sum = 0.0f;
+        for (int g = 0; g < groups; g++) {
+            __m128i b  = _mm_loadu_si128((const __m128i *)(wr + (size_t)g * 16));
+            // lo nibbles -> columns g*32+0..15, hi nibbles -> g*32+16..31
+            __m128i lo = _mm_sub_epi8(_mm_and_si128(b, mask4), bias8);
+            __m128i hi = _mm_sub_epi8(_mm_and_si128(_mm_srli_epi16(b, 4), mask4), bias8);
+            const float *xg = x + (size_t)g * 32;
+            __m128 acc = _mm_setzero_ps();
+            // process lo (16 int8 -> cols 0..15) then hi (cols 16..31)
+            __m128i v8[2]; v8[0] = lo; v8[1] = hi;
+            for (int half = 0; half < 2; half++) {
+                __m128i sgn8  = _mm_cmpgt_epi8(z, v8[half]);
+                __m128i s16l  = _mm_unpacklo_epi8(v8[half], sgn8);
+                __m128i s16h  = _mm_unpackhi_epi8(v8[half], sgn8);
+                __m128i sgn16l = _mm_cmpgt_epi16(z, s16l);
+                __m128i sgn16h = _mm_cmpgt_epi16(z, s16h);
+                const float *xh = xg + half * 16;
+                acc = _mm_add_ps(acc, _mm_mul_ps(_mm_cvtepi32_ps(_mm_unpacklo_epi16(s16l, sgn16l)), _mm_loadu_ps(xh)));
+                acc = _mm_add_ps(acc, _mm_mul_ps(_mm_cvtepi32_ps(_mm_unpackhi_epi16(s16l, sgn16l)), _mm_loadu_ps(xh + 4)));
+                acc = _mm_add_ps(acc, _mm_mul_ps(_mm_cvtepi32_ps(_mm_unpacklo_epi16(s16h, sgn16h)), _mm_loadu_ps(xh + 8)));
+                acc = _mm_add_ps(acc, _mm_mul_ps(_mm_cvtepi32_ps(_mm_unpackhi_epi16(s16h, sgn16h)), _mm_loadu_ps(xh + 12)));
+            }
+            __m128 t1 = _mm_add_ps(acc, _mm_shuffle_ps(acc, acc, _MM_SHUFFLE(2, 3, 0, 1)));
+            __m128 t2 = _mm_add_ps(t1,  _mm_shuffle_ps(t1,  t1,  _MM_SHUFFLE(1, 0, 3, 2)));
+            row_sum += sr[g] * _mm_cvtss_f32(t2);
+        }
+        y[r] = row_sum;
+    }
+#else
+    for (int r = 0; r < rows; r++) {
+        const uint8_t *wr = W + (size_t)r * (cols / 2);
+        const float  *sr = scales + (size_t)r * groups;
+        double row_sum = 0.0;
+        for (int g = 0; g < groups; g++) {
+            const uint8_t *b = wr + (size_t)g * 16;
+            const float *xg = x + (size_t)g * 32;
+            double acc = 0.0;
+            for (int j = 0; j < 16; j++) {
+                acc += (double)((int)(b[j] & 0x0F) - 8) * xg[j];
+                acc += (double)((int)(b[j] >> 4)   - 8) * xg[j + 16];
+            }
+            row_sum += (double)sr[g] * acc;
+        }
+        y[r] = (float)row_sum;
+    }
+#endif
+}
+
 // Same as matmul_fp32 but W is int8 (rows*cols) with per-row fp32 scales[rows].
 // SSE2 path: load 8 int8 lanes, sign-extend to int16 (via cmpgt trick — no
 // SSSE3/SSE4.1 on Pentium 4), then to two int32 quads, convert to fp32, FMA-
@@ -754,8 +850,9 @@ static void matmul_int8(float *y, const int8_t *W, const float *scales,
 static inline void linear(float *y, const float *x, int rows, int cols,
                           void *q, float *scale, float *fp32) {
     int64_t t0 = now_ns();
-    if (fp32) matmul_fp32(y, fp32, x, rows, cols);
-    else      matmul_int8(y, (const int8_t *)q, scale, x, rows, cols);
+    if (fp32)                    matmul_fp32(y, fp32, x, rows, cols);
+    else if (g_dtype_code == 2)  matmul_q4(y, (const uint8_t *)q, scale, x, rows, cols);
+    else                         matmul_int8(y, (const int8_t *)q, scale, x, rows, cols);
     g_prof.linear_ns += now_ns() - t0;
     g_prof.linear_calls++;
 }
@@ -944,6 +1041,9 @@ static void forward_one(nc_state *s, int token_id) {
     if (m->wte) {
         float *wte_row = m->wte + (size_t)token_id * D;
         memcpy(s->x, wte_row, sizeof(float) * D);
+    } else if (g_dtype_code == 2) {
+        const uint8_t *row = (const uint8_t *)m->wte_q + (size_t)token_id * (D / 2);
+        q4_dequant_row(row, m->wte_scales + (size_t)token_id * (D / 32), s->x, D);
     } else {
         const int8_t *row = (const int8_t *)m->wte_q + (size_t)token_id * D;
         float scale = m->wte_scales[token_id];
@@ -993,6 +1093,10 @@ static void forward_one(nc_state *s, int token_id) {
             const float *ve;
             if (m->L[li].ve_fp32) {
                 ve = m->L[li].ve_fp32 + (size_t)token_id * KD;
+            } else if (g_dtype_code == 2) {
+                const uint8_t *row = (const uint8_t *)m->L[li].ve_q + (size_t)token_id * (KD / 2);
+                q4_dequant_row(row, m->L[li].ve_scales + (size_t)token_id * (KD / 32), ve_buf, KD);
+                ve = ve_buf;
             } else {
                 const int8_t *row = (const int8_t *)m->L[li].ve_q + (size_t)token_id * KD;
                 float scale = m->L[li].ve_scales[token_id];
@@ -1356,7 +1460,7 @@ int main(int argc, char **argv) {
         snprintf(info, sizeof(info), "Bliss d%d %dM (%s)",
                  M.n_layer,
                  estimate_model_millions(&M),
-                 M.dtype_code == 1 ? "int8" : "fp32");
+                 M.dtype_code == 2 ? "q4" : (M.dtype_code == 1 ? "int8" : "fp32"));
         emit_sentinel_str("INFO", info);
     }
 
@@ -1741,7 +1845,7 @@ int main(int argc, char **argv) {
                 "Bliss d%d %dM (%s) | seq=%d | turn=%d | pos=%d/%d | temp=%.2f top_p=%.2f | max=%d | guard=%d repeat=%.2f | mem=%d | cfg=%s | tmpl=%s v%d",
                 M.n_layer,
                 estimate_model_millions(&M),
-                (M.dtype_code == 1 ? "int8" : "fp32"),
+                (M.dtype_code == 2 ? "q4" : (M.dtype_code == 1 ? "int8" : "fp32")),
                 M.sequence_len, turn_idx, S.seq_pos, ctx_max,
                 temp, top_p, max_tokens, ramble_guard, repeat_penalty,
                 g_mem_n,
