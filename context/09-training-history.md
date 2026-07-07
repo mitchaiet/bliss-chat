@@ -296,6 +296,34 @@ deployment remains the Run 7 base `MODEL.NCB`.
 - XP smoke test after first-sentence stop:
   `What is a computer?` -> `A computer is a device that can perform a series of tasks, such as calculations, logical operations, and data storage.`
 
+## Runs 9-11: v2 memory mixture (2026-07-06/07) — **Run 9 shipped as v1.3.0**
+
+All three trained on `bliss_pretrain_curated_v2` (8,384 distinct conversations:
+multi-turn recall, Notes-line selective recall, Context: grounding, small-step
+reasoning, behavior, identity — rendered by
+`tools/build_bliss_pretrain_curated_v2.py`, 6x oversampled next to the 100k v1
+docs). Bench at temp 0.3 seed 42; memory/notes/persona evals greedy
+(`bench/eval_*.py`), all through the same native binary.
+
+| Run | Recipe | bpb | bench | memory | notes | persona |
+|---|---|---|---|---|---|---|
+| baseline | c20-v1 (v1.2.3 model) | 0.8182 | 57% | 27/40 | 21/25 | 5/8 |
+| **9: mem-c20-v2a** | resume v1 @33600, +4k steps, prob 0.35 | **0.8172** | 77% | **37/40** | 22/25 | **8/8** |
+| 10: mem-c20-v2b | full c20 retrain, prob 0.15 | 0.8194 | **81%** | 32/40 | **24/25** | 7/8 |
+| 11: mem-c20-v2c | resume v2b @33600, +4k steps, prob 0.35 | 0.8176 | 74% | 35/40 | 22/25 | 7/8 |
+
+**Lessons**:
+- The v1.1.0 finding held: curated-mix-into-pretraining works where post-hoc
+  SFT never did. A cheap +4k-step finish at prob 0.35 (Run 9) captured most of
+  the value of a full retrain in 1/8 the GPU time — and beat it on memory.
+- The finishing pass does not stack: applying it to the full-retrain
+  checkpoint (Run 11) recovered some memory but regressed list/factual.
+  Distribution-shuffling has hit its ceiling; further gains need better data
+  (bigger, more diverse multi-turn set) or a bigger model.
+- Run 10 is the "accuracy" alternative (best math 73.3%, best notes) kept at
+  `base_checkpoints/bliss-d12-mem-c20-v2b` if a future mixture fixes its
+  memory gap.
+
 ## Future runs to consider
 
 - **Distill a larger Bliss dataset**: many short, one-sentence, XP-friendly
