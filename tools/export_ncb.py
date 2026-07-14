@@ -131,13 +131,48 @@ def write_tensor_int8(f, t: torch.Tensor):
     f.write(s.astype(np.float32).tobytes(order="C"))
 
 
+def quantize_q4_g32(t: torch.Tensor):
+    """
+    Group-wise symmetric int4 quantization, group size 32 along the row.
+    Nibble packing matches nc_run.c's matmul_q4: within each 32-col group,
+    byte j holds col (32g + j) in its LOW nibble and col (32g + 16 + j) in
+    its HIGH nibble, stored as q+8 with q in [-7, 7].
+    Returns (packed uint8 (rows, cols/2), scales fp32 (rows, cols/32)).
+    """
+    arr = t.detach().to(dtype=torch.float32, device="cpu").contiguous()
+    if arr.ndim == 1:
+        arr = arr.unsqueeze(0)
+    rows, cols = arr.shape
+    assert cols % 32 == 0, f"q4 needs cols%32==0, got {cols}"
+    g = arr.reshape(rows, cols // 32, 32)
+    scale = (g.abs().amax(dim=-1, keepdim=True) / 7.0).clamp(min=1e-12)
+    q = (g / scale).round().clamp(-7, 7).to(torch.int16) + 8  # 1..15
+    lo = q[:, :, :16]
+    hi = q[:, :, 16:]
+    packed = (lo | (hi << 4)).to(torch.uint8).reshape(rows, cols // 2)
+    return packed.numpy(), scale.squeeze(-1).numpy()  # (rows, cols/2), (rows, cols/32)
+
+
+def write_tensor_q4(f, t: torch.Tensor):
+    packed, s = quantize_q4_g32(t)
+    # Layout: [packed nibbles row-major][fp32 group scales row-major]
+    f.write(packed.tobytes(order="C"))
+    f.write(s.astype(np.float32).tobytes(order="C"))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", required=True, help="checkpoint dir, e.g. /path/to/nanochat-cache/chat_checkpoints/d6")
     ap.add_argument("--step", type=int, default=None, help="checkpoint step (default: highest)")
     ap.add_argument("--out", required=True, help="output .ncb path")
     ap.add_argument("--int8", action="store_true", help="quantize matrix weights to int8 per-row")
+    ap.add_argument("--q4", action="store_true", help="quantize matrix weights to int4 group-32 (dtype=2)")
+    ap.add_argument("--mixed-ve", action="store_true",
+                    help="int8 matrices + q4 value-embedding tables (dtype=3); VE tables are "
+                         "row-lookups only, so this cuts ~23%% of the file at int8 matmul quality")
     args = ap.parse_args()
+    if sum([args.int8, args.q4, args.mixed_ve]) > 1:
+        sys.exit("--int8, --q4, and --mixed-ve are mutually exclusive")
 
     src = Path(os.path.expanduser(args.src))
     if not src.exists():
@@ -214,10 +249,16 @@ def main():
     # ----- write file -----
     out = Path(os.path.expanduser(args.out))
     out.parent.mkdir(parents=True, exist_ok=True)
-    dtype_code = 1 if args.int8 else 0
-    write = write_tensor_int8 if args.int8 else write_tensor_fp32
+    if args.mixed_ve:
+        dtype_code, write, write_ve, dtype_name = 3, write_tensor_int8, write_tensor_q4, "int8+q4ve"
+    elif args.q4:
+        dtype_code, write, write_ve, dtype_name = 2, write_tensor_q4, write_tensor_q4, "q4"
+    elif args.int8:
+        dtype_code, write, write_ve, dtype_name = 1, write_tensor_int8, write_tensor_int8, "int8"
+    else:
+        dtype_code, write, write_ve, dtype_name = 0, write_tensor_fp32, write_tensor_fp32, "fp32"
 
-    print(f"[export] writing {out} (dtype={'int8' if args.int8 else 'fp32'}, pad_vocab={pad_vocab})", file=sys.stderr)
+    print(f"[export] writing {out} (dtype={dtype_name}, pad_vocab={pad_vocab})", file=sys.stderr)
 
     with out.open("wb") as f:
         write_header(f,
@@ -247,10 +288,11 @@ def main():
                 # ve_gate is tiny (n_kv_head x 12) — keep fp32 for accuracy & simplicity
                 write_tensor_fp32(f, sd[f"{base}.attn.ve_gate.weight"])
 
-        # Value embeddings: quantize when --int8 (per-row scale, lookup is cheap)
+        # Value embeddings: row-lookup-only tables, so they take the more
+        # aggressive quantization in --mixed-ve mode (q4 group-32)
         for i in range(n_layer):
             if has_ve(i, n_layer):
-                write(f, sd[f"value_embeds.{i}.weight"])
+                write_ve(f, sd[f"value_embeds.{i}.weight"])
 
         # Per-layer residual scalars (fp32)
         write_tensor_fp32(f, sd["resid_lambdas"])
