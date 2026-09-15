@@ -1,0 +1,14 @@
+{
+  "gui_sha256": "96890e44683fc6bad9c0d3d78d414f68d712f09cc03321996ba24a93630889fb",
+  "checks": [
+    "memory survives app restart",
+    "document persists and retrieval preview names its source",
+    "800x570 native window controls present",
+    "Enter during generation preserves the next draft",
+    "persistent memory recalled by real model",
+    "forget removes note from durable backend storage",
+    "document-backed answer with source footer"
+  ],
+  "environment": "Wine 9, isolated XP prefix, Xvfb on modern Linux; real frozen RC1 Windows backend/model",
+  "limits": "Not physical XP, Pentium M performance, total target RAM or Luna visual validation."
+}

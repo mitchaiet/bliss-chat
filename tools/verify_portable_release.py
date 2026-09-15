@@ -37,7 +37,7 @@ def main():
     assert (major, minor) <= (5, 1)
     assert not any(re.search(r'api-ms-win|ucrt|vcruntime|libgcc|libwinpthread', d, re.I) for d in dlls)
     report = {
-        'release': 'v2.0.0-rc.1',
+        'release': 'v' + selection.get('version', '2.0.0-rc.1'),
         'portable_exe': {'name': args.exe.name, 'bytes': args.exe.stat().st_size, 'sha256': digest(args.exe)},
         'independent_extraction': '7-Zip NSIS decoder',
         'all_extracted_payload_files_match': True,

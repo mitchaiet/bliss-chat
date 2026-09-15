@@ -1,0 +1,10 @@
+{
+  "windows_binary_sha256": "5d67e94ee4f261f956d6c132c551d05d0fbb96e436c7d44e447d009264634e4d",
+  "model_sha256": "ac4fe748bfa8f61af3b55f13e5435c299ca4c5abad71cd24c233f6ff24a33953",
+  "tokenizer_sha256": "2e9a8349d5242ff0070c060ac9e5d15a05739727f1cd4941d631b23bb881bb2d",
+  "version": "2.0.0-rc.2",
+  "gui_sha256": "96890e44683fc6bad9c0d3d78d414f68d712f09cc03321996ba24a93630889fb",
+  "model_selection": "bench/coherence/frozen-selection.json",
+  "model_selection_sha256": "01d812d06245cb64a143d21764d092066e7ac4edaa7fa4a2a8b871ec743ec814",
+  "change_scope": "Native XP GUI and local retrieval; model, tokenizer and inference backend unchanged from RC1"
+}

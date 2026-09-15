@@ -6,12 +6,12 @@ Unicode false
   !error "Pass -DPAYLOAD=<verified BlissChat2-XP folder>."
 !endif
 !ifndef OUTFILE
-  !define OUTFILE "bliss-chat-xp-v2.0.0-rc.1-portable.exe"
+  !define OUTFILE "bliss-chat-xp-v2.0.0-rc.2-portable.exe"
 !endif
 !ifndef ICON
   !define ICON "..\assets\bliss_chat.ico"
 !endif
-Name "Bliss Chat 2 - Release Candidate 1"
+Name "Bliss Chat 2 - Release Candidate 2"
 Caption "Bliss Chat 2"
 OutFile "${OUTFILE}"
 Icon "${ICON}"
@@ -22,11 +22,11 @@ SetCompressor /SOLID lzma
 ; Keep decompression memory modest on the 512 MB target.
 SetCompressorDictSize 8
 InstallDir "$TEMP\BlissChat2-Extracted"
-VIProductVersion "2.0.0.1"
+VIProductVersion "2.0.0.2"
 VIAddVersionKey "ProductName" "Bliss Chat XP"
-VIAddVersionKey "FileDescription" "Bliss Chat 2 RC1 - offline LFM2.5-350M Q6"
-VIAddVersionKey "FileVersion" "2.0.0-rc.1"
-VIAddVersionKey "ProductVersion" "2.0.0-rc.1"
+VIAddVersionKey "FileDescription" "Bliss Chat 2 RC2 - offline LFM2.5-350M Q6"
+VIAddVersionKey "FileVersion" "2.0.0-rc.2"
+VIAddVersionKey "ProductVersion" "2.0.0-rc.2"
 VIAddVersionKey "LegalCopyright" "See MODEL-LICENSE.txt and NOTICE.txt in the extracted payload."
 Var ExtractOnly
 

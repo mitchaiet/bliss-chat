@@ -65,10 +65,9 @@ class CoherenceConfigSourceTests(unittest.TestCase):
     def test_xpchat_has_native_knowledge_context_injection(self):
         self.assertIn("augment_prompt_with_knowledge", self.xp)
         self.assertIn("Knowledge", self.xp)
-        self.assertIn("Local knowledge snippets", self.xp)
-        self.assertIn("*.txt", self.xp)
-        self.assertIn("*.md", self.xp)
-        self.assertIn("*.html", self.xp)
+        self.assertIn('".txt"', self.xp)
+        self.assertIn('".md"', self.xp)
+        self.assertIn('".html"', self.xp)
         self.assertIn("augment_prompt_with_knowledge(user_prompt)", self.xp)
 
     def test_backend_has_bounded_thread_summary_for_context_rollover(self):

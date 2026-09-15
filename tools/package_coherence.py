@@ -21,6 +21,7 @@ def main():
     for name in ('runtime', 'gui', 'model', 'tokenizer', 'model-card', 'license', 'out'):
         p.add_argument('--' + name, required=True, type=Path)
     p.add_argument('--name', required=True)
+    p.add_argument('--readme', type=Path, help='Release-specific offline user guide to include as README.TXT')
     p.add_argument('--notice', type=Path, help='Publisher attribution and modification notice to include')
     p.add_argument('--selection', type=Path, help='Frozen selection JSON; checks exact chosen model and executables')
     p.add_argument('--data-license', type=Path, help='License for the public adaptation data')
@@ -36,6 +37,8 @@ def main():
         with binary.open('rb') as f:
             if f.read(2) != b'MZ':
                 raise ValueError('Expected a Windows executable: ' + str(binary))
+    if a.readme and not a.readme.is_file():
+        raise FileNotFoundError(a.readme)
     if a.notice and not a.notice.is_file():
         raise FileNotFoundError(a.notice)
     if a.data_license and not a.data_license.is_file():
@@ -71,6 +74,8 @@ def main():
         'were tested on development machines; physical XP startup, memory,\n'
         'and response speed have not yet been verified. See MODEL_CARD.md\n'
         'for evaluation results, model provenance, and known limitations.\n', encoding='ascii')
+    if a.readme:
+        shutil.copyfile(a.readme, a.out / 'README.TXT')
     manifest = {'version': a.version, 'name': a.name,
         'selection_sha256': digest(a.selection) if a.selection else None,
         'hardware_status': 'physical XP validation pending',

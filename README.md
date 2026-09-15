@@ -1,8 +1,9 @@
 # Bliss Chat — XP coherence candidate
 
-**[Download v2.0.0-rc.1](https://github.com/mitchaiet/bliss-chat/releases/tag/v2.0.0-rc.1)** —
+**[Download v2.0.0-rc.2](https://github.com/mitchaiet/bliss-chat/releases/tag/v2.0.0-rc.2)** —
 one portable EXE with the model included, or an extracted-folder ZIP.
-See [release notes](RELEASE_v2.0.0-rc.1.md) for measured improvements and limits.
+See [release notes](RELEASE_v2.0.0-rc.2.md) for the native XP UI and fully local
+documents/memory tools. The model and runtime are unchanged from RC1.
 Physical XP validation is still pending; this release does not replace v1.3.0
 as the stable recommendation.
 
@@ -35,6 +36,8 @@ improvement. This work uses a separate development suite and a fresh final
 acceptance suite, with both objective checks and review of answer meaning.
 
 ## Build and training
+
+- [Native XP local documents and memories](docs/XP_LOCAL_WORKSPACE.md)
 
 - [Side-by-side browser chat](apps/bliss-compare/README.md)
 - [Fresh acceptance suite and review](bench/coherence/FINAL_ACCEPTANCE_REVIEW.md)

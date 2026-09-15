@@ -1,7 +1,13 @@
-# Bliss Chat Knowledge Folder
+# Local document retrieval
 
-Put local `.txt`, `.md`, `.html`, or `.htm` files here.
+In the native Windows app, click **Documents** to import and preview local
+UTF-8/ASCII `.txt`, `.md`, `.html` and `.htm` files. Imported copies persist in
+`%APPDATA%\bliss-chat\Knowledge`, including when using the portable EXE.
 
-The browser test server searches this folder before sending a prompt to the model. When it finds matching snippets, it prepends them as compact local context.
+The native app also searches an existing `Knowledge` folder beside its
+executable for compatibility. The repository's browser prototype uses its own
+configured knowledge folder; importing into the Windows app does not upload
+or synchronize files to it.
 
-This is the first RAG prototype. It is intentionally simple and local-only so the behavior can be tested before porting it into the native Windows XP GUI.
+See [the local workspace guide](../docs/XP_LOCAL_WORKSPACE.md) for retrieval
+limits, source labels, memory controls and validation scope.

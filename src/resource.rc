@@ -1,4 +1,5 @@
 #include <windows.h>
+#include "local_ui_ids.h"
 
 #define IDI_APP 101
 
@@ -129,8 +130,8 @@ BEGIN
 END
 
 1 VERSIONINFO
-FILEVERSION 2,0,0,0
-PRODUCTVERSION 2,0,0,0
+FILEVERSION 2,0,0,2
+PRODUCTVERSION 2,0,0,2
 FILEFLAGSMASK 0x3fL
 FILEFLAGS 0x0L
 FILEOS 0x00040004L
@@ -142,16 +143,53 @@ BEGIN
     BLOCK "040904b0"
     BEGIN
       VALUE "CompanyName", "Bliss Chat"
-      VALUE "FileDescription", "Bliss Chat - native Q4 SSE2 candidate"
-      VALUE "FileVersion", "2.0.0-candidate.20260915"
+      VALUE "FileDescription", "Bliss Chat - native XP local assistant"
+      VALUE "FileVersion", "2.0.0-rc.2"
       VALUE "InternalName", "XPCHAT"
       VALUE "OriginalFilename", "XPCHAT.EXE"
       VALUE "ProductName", "Bliss Chat"
-      VALUE "ProductVersion", "2.0.0-candidate.20260915"
+      VALUE "ProductVersion", "2.0.0-rc.2"
     END
   END
   BLOCK "VarFileInfo"
   BEGIN
     VALUE "Translation", 0x0409, 1200
   END
+END
+
+IDD_KNOWLEDGE DIALOGEX 0, 0, 440, 290
+CAPTION "Bliss Chat - Local Documents"
+FONT 8, "MS Shell Dlg"
+STYLE DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+BEGIN
+    CONTROL "Use &documents in chats", IDC_KNOW_ENABLED, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 10, 10, 165, 12
+    LTEXT "Stored locally. Nothing is sent online.", -1, 225, 10, 205, 12
+    LTEXT "Your library", -1, 10, 30, 128, 12
+    LTEXT "Document / matching passages", -1, 158, 30, 270, 12
+    LISTBOX IDC_KNOW_FILES, 10, 44, 138, 138, LBS_NOTIFY | LBS_SORT | WS_VSCROLL | WS_HSCROLL | WS_TABSTOP | WS_BORDER
+    EDITTEXT IDC_KNOW_PREVIEW, 158, 44, 272, 165, ES_MULTILINE | ES_READONLY | WS_VSCROLL | ES_AUTOVSCROLL
+    PUSHBUTTON "&Import...", IDC_KNOW_IMPORT, 10, 189, 64, 18
+    PUSHBUTTON "&Remove", IDC_KNOW_REMOVE, 80, 189, 68, 18
+    LTEXT "Preview a question:", -1, 10, 218, 92, 12
+    EDITTEXT IDC_KNOW_QUERY, 102, 216, 243, 14, ES_AUTOHSCROLL
+    PUSHBUTTON "&Find passages", IDC_KNOW_SEARCH, 351, 214, 79, 18
+    LTEXT "", IDC_KNOW_STATUS, 10, 240, 420, 23
+    PUSHBUTTON "Open &Folder", IDC_KNOW_FOLDER, 10, 268, 78, 16
+    DEFPUSHBUTTON "Close", IDCANCEL, 370, 268, 60, 16
+END
+
+IDD_MEMORIES DIALOGEX 0, 0, 370, 246
+CAPTION "Bliss Chat - Memories"
+FONT 8, "MS Shell Dlg"
+STYLE DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+BEGIN
+    LTEXT "Facts you choose to save, available across chats. Forgetting a note does not remove it from existing conversations.", -1, 10, 10, 350, 20
+    LISTBOX IDC_MEM_LIST, 10, 34, 350, 94, LBS_NOTIFY | WS_VSCROLL | WS_HSCROLL | WS_TABSTOP | WS_BORDER
+    PUSHBUTTON "&Forget Selected", IDC_MEM_REMOVE, 10, 134, 90, 17
+    PUSHBUTTON "&Refresh", IDC_MEM_REFRESH, 106, 134, 60, 17
+    LTEXT "New memory (one short sentence):", -1, 10, 159, 350, 12
+    EDITTEXT IDC_MEM_TEXT, 10, 174, 277, 16, ES_AUTOHSCROLL
+    PUSHBUTTON "&Remember", IDC_MEM_ADD, 293, 173, 67, 18
+    LTEXT "", IDC_MEM_STATUS, 10, 199, 350, 22
+    DEFPUSHBUTTON "Close", IDCANCEL, 300, 225, 60, 16
 END
