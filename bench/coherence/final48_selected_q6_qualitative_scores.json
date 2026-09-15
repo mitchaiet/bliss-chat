@@ -1,0 +1,538 @@
+{
+  "dimensions": [
+    "relevance_0_2",
+    "correctness_0_2",
+    "coherence_0_2",
+    "instruction_0_2"
+  ],
+  "cases": [
+    {
+      "id": "v2final_conversation_semantics_01",
+      "category": "conversation_semantics",
+      "scores": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "note": "Correctly identifies the lower-volume request."
+    },
+    {
+      "id": "v2final_conversation_semantics_02",
+      "category": "conversation_semantics",
+      "scores": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "note": "Exact correct classification."
+    },
+    {
+      "id": "v2final_conversation_semantics_03",
+      "category": "conversation_semantics",
+      "scores": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "note": "Correct helper, action and object."
+    },
+    {
+      "id": "v2final_conversation_semantics_04",
+      "category": "conversation_semantics",
+      "scores": [
+        2,
+        0,
+        2,
+        2
+      ],
+      "note": "Incorrectly says the email was sent."
+    },
+    {
+      "id": "v2final_conversation_semantics_05",
+      "category": "conversation_semantics",
+      "scores": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "note": "Correctly locates criticism in the writing rather than the person."
+    },
+    {
+      "id": "v2final_conversation_semantics_06",
+      "category": "conversation_semantics",
+      "scores": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "note": "Exact correct action."
+    },
+    {
+      "id": "v2final_conversation_semantics_07",
+      "category": "conversation_semantics",
+      "scores": [
+        2,
+        0,
+        2,
+        2
+      ],
+      "note": "Chooses the fallback drink even though coffee is available."
+    },
+    {
+      "id": "v2final_conversation_semantics_08",
+      "category": "conversation_semantics",
+      "scores": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "note": "Correct hint-level help; does not reveal a solution."
+    },
+    {
+      "id": "v2final_arithmetic_logic_01",
+      "category": "arithmetic_logic",
+      "scores": [
+        2,
+        0,
+        2,
+        2
+      ],
+      "note": "Wrong end time, although HH:MM format is correct."
+    },
+    {
+      "id": "v2final_arithmetic_logic_02",
+      "category": "arithmetic_logic",
+      "scores": [
+        2,
+        0,
+        2,
+        1
+      ],
+      "note": "Wrong final price and missing dollar sign; partially follows numeric format."
+    },
+    {
+      "id": "v2final_arithmetic_logic_03",
+      "category": "arithmetic_logic",
+      "scores": [
+        2,
+        0,
+        2,
+        1
+      ],
+      "note": "Wrong average and missing kg unit."
+    },
+    {
+      "id": "v2final_arithmetic_logic_04",
+      "category": "arithmetic_logic",
+      "scores": [
+        2,
+        0,
+        2,
+        1
+      ],
+      "note": "Wrong quantity and missing mL unit."
+    },
+    {
+      "id": "v2final_arithmetic_logic_05",
+      "category": "arithmetic_logic",
+      "scores": [
+        2,
+        0,
+        2,
+        0
+      ],
+      "note": "Wrong number of vans with a sentence instead of one integer."
+    },
+    {
+      "id": "v2final_arithmetic_logic_06",
+      "category": "arithmetic_logic",
+      "scores": [
+        2,
+        0,
+        2,
+        2
+      ],
+      "note": "Wrongly allows collection without both required documents."
+    },
+    {
+      "id": "v2final_arithmetic_logic_07",
+      "category": "arithmetic_logic",
+      "scores": [
+        2,
+        0,
+        2,
+        2
+      ],
+      "note": "Incorrectly reverses the implication and infers copper from round."
+    },
+    {
+      "id": "v2final_arithmetic_logic_08",
+      "category": "arithmetic_logic",
+      "scores": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "note": "Correct smaller distance and exact output."
+    },
+    {
+      "id": "v2final_instruction_following_01",
+      "category": "instruction_following",
+      "scores": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "note": "Exact uppercase requested word."
+    },
+    {
+      "id": "v2final_instruction_following_02",
+      "category": "instruction_following",
+      "scores": [
+        2,
+        0,
+        2,
+        0
+      ],
+      "note": "Preserves original order and adds spaces rather than reversing with exact delimiters."
+    },
+    {
+      "id": "v2final_instruction_following_03",
+      "category": "instruction_following",
+      "scores": [
+        1,
+        0,
+        2,
+        0
+      ],
+      "note": "Invents cricket, retains plate and violates comma-space filtering constraints."
+    },
+    {
+      "id": "v2final_instruction_following_04",
+      "category": "instruction_following",
+      "scores": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "note": "Valid JSON with exact keys, order and requested value types."
+    },
+    {
+      "id": "v2final_instruction_following_05",
+      "category": "instruction_following",
+      "scores": [
+        1,
+        1,
+        2,
+        0
+      ],
+      "note": "Describes the line contents rather than producing the requested two lines."
+    },
+    {
+      "id": "v2final_instruction_following_06",
+      "category": "instruction_following",
+      "scores": [
+        2,
+        1,
+        2,
+        1
+      ],
+      "note": "Changes only the first can; the second required whole-word replacement is missing."
+    },
+    {
+      "id": "v2final_instruction_following_07",
+      "category": "instruction_following",
+      "scores": [
+        2,
+        0,
+        2,
+        1
+      ],
+      "note": "Correct filenames and delimiter but leaves them in the wrong order."
+    },
+    {
+      "id": "v2final_instruction_following_08",
+      "category": "instruction_following",
+      "scores": [
+        2,
+        0,
+        2,
+        2
+      ],
+      "note": "Selects first rather than last word, while obeying single-word shape."
+    },
+    {
+      "id": "v2final_conversation_memory_01",
+      "category": "conversation_memory",
+      "scores": [
+        0,
+        0,
+        2,
+        0
+      ],
+      "note": "Continues acknowledging with OK instead of recalling the subject."
+    },
+    {
+      "id": "v2final_conversation_memory_02",
+      "category": "conversation_memory",
+      "scores": [
+        2,
+        0,
+        2,
+        2
+      ],
+      "note": "Returns the original lunch instead of applying the swap."
+    },
+    {
+      "id": "v2final_conversation_memory_03",
+      "category": "conversation_memory",
+      "scores": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "note": "Correct local expansion despite a common alternative meaning."
+    },
+    {
+      "id": "v2final_conversation_memory_04",
+      "category": "conversation_memory",
+      "scores": [
+        2,
+        2,
+        2,
+        1
+      ],
+      "note": "All updated items and order are correct, but adds OK and punctuation around the requested list."
+    },
+    {
+      "id": "v2final_conversation_memory_05",
+      "category": "conversation_memory",
+      "scores": [
+        0,
+        0,
+        2,
+        0
+      ],
+      "note": "Acknowledges instead of stating the updated day and time."
+    },
+    {
+      "id": "v2final_conversation_memory_06",
+      "category": "conversation_memory",
+      "scores": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "note": "Correct second title and exact output."
+    },
+    {
+      "id": "v2final_conversation_memory_07",
+      "category": "conversation_memory",
+      "scores": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "note": "Retains the correct parcel reference despite the similar distractor."
+    },
+    {
+      "id": "v2final_conversation_memory_08",
+      "category": "conversation_memory",
+      "scores": [
+        2,
+        2,
+        1,
+        2
+      ],
+      "note": "Correct final host; initial response invents a dialogue despite the brief-acknowledgment request."
+    },
+    {
+      "id": "v2final_note_grounding_01",
+      "category": "note_grounding",
+      "scores": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "note": "Correct rack and east-gate location from notes."
+    },
+    {
+      "id": "v2final_note_grounding_02",
+      "category": "note_grounding",
+      "scores": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "note": "Correct clay-workshop room and exact output."
+    },
+    {
+      "id": "v2final_note_grounding_03",
+      "category": "note_grounding",
+      "scores": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "note": "Copies the complete fictional email address correctly."
+    },
+    {
+      "id": "v2final_note_grounding_04",
+      "category": "note_grounding",
+      "scores": [
+        2,
+        1,
+        2,
+        1
+      ],
+      "note": "Includes both required items but incorrectly adds sheet music that will be supplied."
+    },
+    {
+      "id": "v2final_note_grounding_05",
+      "category": "note_grounding",
+      "scores": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "note": "Correct route segment."
+    },
+    {
+      "id": "v2final_note_grounding_06",
+      "category": "note_grounding",
+      "scores": [
+        2,
+        1,
+        2,
+        1
+      ],
+      "note": "Correct numeric value but omits the time unit, leaving an incomplete duration."
+    },
+    {
+      "id": "v2final_note_grounding_07",
+      "category": "note_grounding",
+      "scores": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "note": "Correct power-supply shutdown instruction."
+    },
+    {
+      "id": "v2final_note_grounding_08",
+      "category": "note_grounding",
+      "scores": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "note": "Correct conditional rain location and exact output."
+    },
+    {
+      "id": "v2final_unknowns_01",
+      "category": "unknowns",
+      "scores": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "note": "Correct known opening time, explicit unknown closing time, and exact field format."
+    },
+    {
+      "id": "v2final_unknowns_02",
+      "category": "unknowns",
+      "scores": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "note": "Correct exact unknown response."
+    },
+    {
+      "id": "v2final_unknowns_03",
+      "category": "unknowns",
+      "scores": [
+        2,
+        0,
+        2,
+        2
+      ],
+      "note": "Invents current helmet use from mere bicycle ownership."
+    },
+    {
+      "id": "v2final_unknowns_04",
+      "category": "unknowns",
+      "scores": [
+        1,
+        0,
+        2,
+        1
+      ],
+      "note": "Copies value placeholders rather than supplying the known job and unknown phone."
+    },
+    {
+      "id": "v2final_unknowns_05",
+      "category": "unknowns",
+      "scores": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "note": "Correctly leaves conflicting door claims unresolved."
+    },
+    {
+      "id": "v2final_unknowns_06",
+      "category": "unknowns",
+      "scores": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "note": "Correctly leaves absent purchase price unknown."
+    },
+    {
+      "id": "v2final_unknowns_07",
+      "category": "unknowns",
+      "scores": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "note": "Correctly retains battery percentage and marks only the unmeasured temperature unknown."
+    },
+    {
+      "id": "v2final_unknowns_08",
+      "category": "unknowns",
+      "scores": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "note": "Correctly identifies the unavailable colour without guessing."
+    }
+  ]
+}

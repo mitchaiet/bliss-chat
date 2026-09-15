@@ -1,0 +1,34 @@
+/* Sequential FIFO logic only; these stubs do not test Win32 synchronization. */
+#include <stdint.h>
+#include <stdio.h>
+#include <assert.h>
+
+typedef int32_t LONG;
+typedef uint32_t ULONG;
+static LONG InterlockedCompareExchange(volatile LONG *value, LONG replacement, LONG expected) {
+    LONG old = *value;
+    if (old == expected) *value = replacement;
+    return old;
+}
+static LONG InterlockedIncrement(volatile LONG *value) { return ++*value; }
+
+/* GUI_QUEUE_SOURCE */
+
+#define CHECK(condition) do { assert(condition); checks++; } while (0)
+int main(void) {
+    int checks = 0;
+    /* /reset then a chat turn must consume their EOTs in that order. */
+    CHECK(queue_backend_request(1));
+    CHECK(queue_backend_request(0));
+    CHECK(take_backend_request() == 1);
+    CHECK(take_backend_request() == 0);
+    /* Full-capacity wraparound, rejected extra request, ordered draining. */
+    for (int i = 0; i < 256; i++) CHECK(queue_backend_request(i % 2));
+    CHECK(!queue_backend_request(0));
+    for (int i = 0; i < 256; i++) CHECK(take_backend_request() == i % 2);
+    CHECK(queue_backend_request(0));
+    CHECK(take_backend_request() == 0);
+    assert(checks == 519);
+    printf("GUI_CONTROL_EOT_QUEUE %d checks passed\n", checks);
+    return 0;
+}

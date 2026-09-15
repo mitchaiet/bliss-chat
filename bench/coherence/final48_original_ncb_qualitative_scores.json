@@ -1,0 +1,538 @@
+{
+  "dimensions": [
+    "relevance_0_2",
+    "correctness_0_2",
+    "coherence_0_2",
+    "instruction_0_2"
+  ],
+  "cases": [
+    {
+      "id": "v2final_conversation_semantics_01",
+      "category": "conversation_semantics",
+      "scores": [
+        1,
+        1,
+        2,
+        1
+      ],
+      "note": "Acknowledges ability to turn it down rather than clearly identifying the requested action; partial meaning."
+    },
+    {
+      "id": "v2final_conversation_semantics_02",
+      "category": "conversation_semantics",
+      "scores": [
+        2,
+        2,
+        2,
+        0
+      ],
+      "note": "Correctly identifies slowness but violates the explicit SLOW/BROKEN-only output."
+    },
+    {
+      "id": "v2final_conversation_semantics_03",
+      "category": "conversation_semantics",
+      "scores": [
+        2,
+        0,
+        2,
+        2
+      ],
+      "note": "Negates the explicitly offered suitcase assistance."
+    },
+    {
+      "id": "v2final_conversation_semantics_04",
+      "category": "conversation_semantics",
+      "scores": [
+        2,
+        2,
+        2,
+        1
+      ],
+      "note": "Correctly says no with the right reason; extra explanation beyond the requested YES/NO response."
+    },
+    {
+      "id": "v2final_conversation_semantics_05",
+      "category": "conversation_semantics",
+      "scores": [
+        0,
+        0,
+        2,
+        0
+      ],
+      "note": "Does not identify the target of criticism."
+    },
+    {
+      "id": "v2final_conversation_semantics_06",
+      "category": "conversation_semantics",
+      "scores": [
+        0,
+        0,
+        1,
+        0
+      ],
+      "note": "Unrelated Ctrl+Alt+Delete advice contradicts the requested archive action and adds malformed EL wording."
+    },
+    {
+      "id": "v2final_conversation_semantics_07",
+      "category": "conversation_semantics",
+      "scores": [
+        1,
+        1,
+        2,
+        0
+      ],
+      "note": "Implies coffee but invents tea unavailability and violates drink-name-only format."
+    },
+    {
+      "id": "v2final_conversation_semantics_08",
+      "category": "conversation_semantics",
+      "scores": [
+        0,
+        0,
+        2,
+        0
+      ],
+      "note": "Polite non-answer without identifying the requested help."
+    },
+    {
+      "id": "v2final_arithmetic_logic_01",
+      "category": "arithmetic_logic",
+      "scores": [
+        2,
+        0,
+        2,
+        0
+      ],
+      "note": "Wrong time and invented schedule attribution, with extra text instead of HH:MM."
+    },
+    {
+      "id": "v2final_arithmetic_logic_02",
+      "category": "arithmetic_logic",
+      "scores": [
+        1,
+        0,
+        2,
+        0
+      ],
+      "note": "Gives wrong discount amount rather than final price and violates format."
+    },
+    {
+      "id": "v2final_arithmetic_logic_03",
+      "category": "arithmetic_logic",
+      "scores": [
+        1,
+        0,
+        2,
+        0
+      ],
+      "note": "Repeats input weights instead of computing average."
+    },
+    {
+      "id": "v2final_arithmetic_logic_04",
+      "category": "arithmetic_logic",
+      "scores": [
+        1,
+        0,
+        2,
+        0
+      ],
+      "note": "Repeats the jug description instead of converting the water quantity."
+    },
+    {
+      "id": "v2final_arithmetic_logic_05",
+      "category": "arithmetic_logic",
+      "scores": [
+        2,
+        0,
+        2,
+        0
+      ],
+      "note": "Wrong number of vans with extra words instead of one integer."
+    },
+    {
+      "id": "v2final_arithmetic_logic_06",
+      "category": "arithmetic_logic",
+      "scores": [
+        2,
+        2,
+        2,
+        1
+      ],
+      "note": "Correctly disallows collection; adds explanation beyond YES/NO."
+    },
+    {
+      "id": "v2final_arithmetic_logic_07",
+      "category": "arithmetic_logic",
+      "scores": [
+        2,
+        1,
+        2,
+        1
+      ],
+      "note": "Correct no, but explanation invents a list instead of respecting the one-way implication."
+    },
+    {
+      "id": "v2final_arithmetic_logic_08",
+      "category": "arithmetic_logic",
+      "scores": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "note": "Contradictory fountain/footbridge claim and violates exact output."
+    },
+    {
+      "id": "v2final_instruction_following_01",
+      "category": "instruction_following",
+      "scores": [
+        0,
+        0,
+        2,
+        0
+      ],
+      "note": "Unrelated acknowledgment instead of the required word."
+    },
+    {
+      "id": "v2final_instruction_following_02",
+      "category": "instruction_following",
+      "scores": [
+        0,
+        0,
+        2,
+        0
+      ],
+      "note": "Non-answer to the reversal task."
+    },
+    {
+      "id": "v2final_instruction_following_03",
+      "category": "instruction_following",
+      "scores": [
+        1,
+        0,
+        2,
+        0
+      ],
+      "note": "Describes the list rather than returning the filtered words."
+    },
+    {
+      "id": "v2final_instruction_following_04",
+      "category": "instruction_following",
+      "scores": [
+        0,
+        0,
+        2,
+        0
+      ],
+      "note": "Unwarranted refusal/non-answer instead of JSON."
+    },
+    {
+      "id": "v2final_instruction_following_05",
+      "category": "instruction_following",
+      "scores": [
+        1,
+        1,
+        2,
+        0
+      ],
+      "note": "Repeats the desired line contents but does not produce two plain lines."
+    },
+    {
+      "id": "v2final_instruction_following_06",
+      "category": "instruction_following",
+      "scores": [
+        0,
+        0,
+        1,
+        0
+      ],
+      "note": "Unrelated fragment rather than the edited sentence."
+    },
+    {
+      "id": "v2final_instruction_following_07",
+      "category": "instruction_following",
+      "scores": [
+        1,
+        0,
+        1,
+        0
+      ],
+      "note": "Invents seven lines and repeats generic sorting advice instead of the requested output."
+    },
+    {
+      "id": "v2final_instruction_following_08",
+      "category": "instruction_following",
+      "scores": [
+        0,
+        0,
+        1,
+        0
+      ],
+      "note": "Unrelated idiom instead of the requested final word."
+    },
+    {
+      "id": "v2final_conversation_memory_01",
+      "category": "conversation_memory",
+      "scores": [
+        1,
+        0,
+        1,
+        0
+      ],
+      "note": "Substitutes the changed recipient for the retained subject and repeats it awkwardly."
+    },
+    {
+      "id": "v2final_conversation_memory_02",
+      "category": "conversation_memory",
+      "scores": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "note": "Garbled echo of the update question, with no swapped meal answer."
+    },
+    {
+      "id": "v2final_conversation_memory_03",
+      "category": "conversation_memory",
+      "scores": [
+        0,
+        0,
+        1,
+        0
+      ],
+      "note": "Invents a speed claim and fails to return the local abbreviation definition."
+    },
+    {
+      "id": "v2final_conversation_memory_04",
+      "category": "conversation_memory",
+      "scores": [
+        1,
+        1,
+        2,
+        0
+      ],
+      "note": "Acknowledges deletion/addition but does not give the complete updated list."
+    },
+    {
+      "id": "v2final_conversation_memory_05",
+      "category": "conversation_memory",
+      "scores": [
+        1,
+        0,
+        2,
+        0
+      ],
+      "note": "Repeats the keep-day instruction without either requested value."
+    },
+    {
+      "id": "v2final_conversation_memory_06",
+      "category": "conversation_memory",
+      "scores": [
+        2,
+        0,
+        1,
+        0
+      ],
+      "note": "Wrong title association with extra text and an unrelated initial acknowledgement."
+    },
+    {
+      "id": "v2final_conversation_memory_07",
+      "category": "conversation_memory",
+      "scores": [
+        2,
+        0,
+        0,
+        0
+      ],
+      "note": "Switches from the correctly acknowledged parcel reference to the explicitly non-parcel distractor."
+    },
+    {
+      "id": "v2final_conversation_memory_08",
+      "category": "conversation_memory",
+      "scores": [
+        2,
+        0,
+        1,
+        0
+      ],
+      "note": "Selects the explicitly removed host and uses awkward wording."
+    },
+    {
+      "id": "v2final_note_grounding_01",
+      "category": "note_grounding",
+      "scores": [
+        1,
+        1,
+        2,
+        1
+      ],
+      "note": "Repeats the venue but omits the actual bicycle-parking location."
+    },
+    {
+      "id": "v2final_note_grounding_02",
+      "category": "note_grounding",
+      "scores": [
+        2,
+        0,
+        1,
+        0
+      ],
+      "note": "Chooses the photography room and adds awkward extra instructions."
+    },
+    {
+      "id": "v2final_note_grounding_03",
+      "category": "note_grounding",
+      "scores": [
+        2,
+        1,
+        1,
+        0
+      ],
+      "note": "Truncates the email domain and adds text instead of the address alone."
+    },
+    {
+      "id": "v2final_note_grounding_04",
+      "category": "note_grounding",
+      "scores": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "note": "Correct complete checklist, with no extra required equipment."
+    },
+    {
+      "id": "v2final_note_grounding_05",
+      "category": "note_grounding",
+      "scores": [
+        1,
+        1,
+        2,
+        1
+      ],
+      "note": "Identifies the route generally but not the requested segment with steps."
+    },
+    {
+      "id": "v2final_note_grounding_06",
+      "category": "note_grounding",
+      "scores": [
+        2,
+        2,
+        2,
+        0
+      ],
+      "note": "Correct loan duration but extra words violate number-and-unit-only request."
+    },
+    {
+      "id": "v2final_note_grounding_07",
+      "category": "note_grounding",
+      "scores": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "note": "Correct power-supply shutdown instruction."
+    },
+    {
+      "id": "v2final_note_grounding_08",
+      "category": "note_grounding",
+      "scores": [
+        1,
+        0,
+        1,
+        0
+      ],
+      "note": "Gives the normal courtyard instead of the rain location and misplaces the saved notes themselves."
+    },
+    {
+      "id": "v2final_unknowns_01",
+      "category": "unknowns",
+      "scores": [
+        1,
+        0,
+        1,
+        0
+      ],
+      "note": "Invents authorship of the notice and does not report the required known/unknown fields."
+    },
+    {
+      "id": "v2final_unknowns_02",
+      "category": "unknowns",
+      "scores": [
+        2,
+        2,
+        2,
+        0
+      ],
+      "note": "Correctly states no date is available but fails the requested UNKNOWN response."
+    },
+    {
+      "id": "v2final_unknowns_03",
+      "category": "unknowns",
+      "scores": [
+        2,
+        0,
+        2,
+        1
+      ],
+      "note": "Invents non-use of a helmet and adds text beyond the requested choice."
+    },
+    {
+      "id": "v2final_unknowns_04",
+      "category": "unknowns",
+      "scores": [
+        0,
+        0,
+        1,
+        0
+      ],
+      "note": "Claims a list exists but provides no requested fields."
+    },
+    {
+      "id": "v2final_unknowns_05",
+      "category": "unknowns",
+      "scores": [
+        2,
+        0,
+        2,
+        0
+      ],
+      "note": "Selects one witness claim without grounds and ignores the requested unresolved option."
+    },
+    {
+      "id": "v2final_unknowns_06",
+      "category": "unknowns",
+      "scores": [
+        0,
+        0,
+        1,
+        0
+      ],
+      "note": "Circular non-answer about a maker price rather than recognizing that price is missing."
+    },
+    {
+      "id": "v2final_unknowns_07",
+      "category": "unknowns",
+      "scores": [
+        1,
+        0,
+        2,
+        0
+      ],
+      "note": "Incorrectly treats known battery charge as unmeasured and omits the requested fields."
+    },
+    {
+      "id": "v2final_unknowns_08",
+      "category": "unknowns",
+      "scores": [
+        2,
+        0,
+        2,
+        0
+      ],
+      "note": "Guesses an unsupported keyring colour despite the explicit instruction not to guess."
+    }
+  ]
+}

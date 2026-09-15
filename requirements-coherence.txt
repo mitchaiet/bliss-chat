@@ -1,0 +1,9 @@
+# Training/export stack verified on the T2, Python 3.10.
+# Install torch==2.9.1 separately from the official cu128 wheel index.
+transformers==4.57.6
+peft==0.17.1
+accelerate==1.13.0
+numpy==1.26.4
+safetensors==0.8.0
+tokenizers==0.22.2
+pyarrow==21.0.0

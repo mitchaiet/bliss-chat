@@ -1,0 +1,40 @@
+{
+  "export": {
+    "format_version": 2,
+    "vocab": 65536,
+    "source_vocab": 64402,
+    "padded_tokens": 1134,
+    "merges": 63683,
+    "added_tokens": 509,
+    "special_tokens": 503,
+    "unicode_ranges": 831,
+    "tokenizers_version": "0.22.2",
+    "tokenizer_bytes": 1692655
+  },
+  "sanitizers": true,
+  "lfm": {
+    "format_version": 2,
+    "vocab": 65536,
+    "fixtures_per_special_mode": 885,
+    "exact_id_cases": 1770,
+    "decode_cases": 1770,
+    "token_metadata_checked": 3348,
+    "padded_metadata_checked": 1134,
+    "bounds_checks": 6,
+    "tokenizer_sha256": "2e9a8349d5242ff0070c060ac9e5d15a05739727f1cd4941d631b23bb881bb2d"
+  },
+  "malformed_files_rejected": 9,
+  "smol_v1_regression": {
+    "format_version": 1,
+    "vocab": 49152,
+    "fixtures_per_special_mode": 169,
+    "exact_id_cases": 338,
+    "decode_cases": 338,
+    "token_metadata_checked": 1094,
+    "padded_metadata_checked": 0,
+    "bounds_checks": 6,
+    "tokenizer_sha256": "bef4ea664f2fe2e577e068b0cd2831177612c4119b0d0f0a0d975a384a233fbf"
+  },
+  "source_sha256": "c0e5db7aa8f741ad9f3fb65f30c3567837220e0ac46edec8a72d245baf421dcd",
+  "weights_loaded": false
+}

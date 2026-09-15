@@ -6,6 +6,8 @@ dist/
 *.NCB
 *.NCT
 *.GGUF
+*.SLM
+*.SLT
 
 # python caches
 __pycache__/
@@ -28,6 +30,7 @@ bench/scored.csv
 
 # OS clutter
 .DS_Store
+._*
 .claude/
 
 # local/private deployment scratch scripts

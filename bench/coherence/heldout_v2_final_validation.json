@@ -1,0 +1,20 @@
+{
+  "cases": 48,
+  "categories": {
+    "conversation_semantics": 8,
+    "arithmetic_logic": 8,
+    "instruction_following": 8,
+    "conversation_memory": 8,
+    "note_grounding": 8,
+    "unknowns": 8
+  },
+  "sha256": "9ef8940b4cacbcecd5d679e0eba90bfb5548eca488b7a37ae8fdcd63a9b1ca41",
+  "reference_passes": 48,
+  "deliberately_wrong_answers_rejected": 96,
+  "empty_answers_rejected": 48,
+  "max_input_words_including_notes": 43,
+  "max_reference_words": 9,
+  "max_user_turns": 2,
+  "model_inference_performed": false,
+  "existing_heldout_questions_or_predictions_inspected": false
+}

@@ -1,0 +1,28 @@
+Bliss Chat 2.0.0-candidate.20260915
+
+Foundation model: LiquidAI/LFM2.5-350M
+Publisher: Liquid AI, Inc.
+Revision: 9e6c6ccf47cd318696e137d381a7ded8fe4df09f
+https://huggingface.co/LiquidAI/LFM2.5-350M
+
+MODEL.NCB is a modified model: assistant-only LoRA adaptation, adapter merge,
+six-bit group quantization, and conversion to Bliss Chat's native format.
+These modifications were prepared for Mitch Aiet's Bliss Chat project on
+September 15, 2026. They are not an official Liquid AI release or endorsement.
+The original publisher checkpoint was preserved unchanged.
+
+TOKENIZER.NCT is a native serialization of the publisher's tokenizer,
+including vocabulary padding required by the model, with tokenization and
+decoding parity checks. See the model card and source documentation.
+
+The full LFM Open License v1.0 is included as MODEL-LICENSE.txt.
+Retain that license and these notices when redistributing the model.
+
+Public adaptation data: HuggingFaceTB/smol-smoltalk (Apache-2.0), revision
+f73fe857d519ff6ac5af2ea67c4d3834da7b8bcc.
+https://huggingface.co/datasets/HuggingFaceTB/smol-smoltalk
+
+Bliss Chat source: https://github.com/mitchaiet/bliss-chat
+Original source commit: 3c21d79c74a75f3404faefaf9a0d0491bcd223c5
+Engineering and data-design assistance: OpenAI Codex / GPT-6 Astra.
+GPT-6 model weights are not included in this package.

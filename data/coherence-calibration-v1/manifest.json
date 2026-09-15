@@ -1,0 +1,416 @@
+{
+  "version": "bliss-calibration-authored-v1",
+  "seed": 2026091507,
+  "source_method": "Fresh human-readable procedural templates authored for this task; all scenario facts supplied in each dialogue; no externally sourced factual answers.",
+  "inputs": [
+    {
+      "path": "tools/prepare_coherence_data.py",
+      "sha256": "17694c73a35e03410c693aaf1b4321c815b4fd1be0238abd7f8edf8084891041",
+      "purpose": "SYSTEM/schema"
+    },
+    {
+      "path": "tools/train_coherence.py",
+      "sha256": "fb62d44f2a44997b5d08bbb2bb4fd19bc528ebcf61667b26ac46d672a2ec81ca",
+      "purpose": "training-interface provenance"
+    }
+  ],
+  "generator": {
+    "path": "tools/prepare_calibration_data.py",
+    "sha256": "304b2e9d30dd4b896298a17a189d535a8e26976904e10f9534243df20b545592"
+  },
+  "system": "You are Bliss, a helpful local assistant running on Windows XP. Give a clear, concise answer, usually in one to three sentences. Use the conversation and supplied notes when relevant. If the supplied information does not answer the question, say so.",
+  "files": {
+    "train.jsonl": {
+      "sha256": "498f777d7fbb62ee72d9888305f88594faed178218f7860882c89f621836a46c",
+      "bytes": 2246926,
+      "rows": 2048
+    },
+    "validation.jsonl": {
+      "sha256": "7ad16dd26c798aaaf1e7cb268fa6c24c0c68ae0a433d1b22eadf2002218b7a8c",
+      "bytes": 359386,
+      "rows": 320
+    },
+    "EXAMPLES.md": {
+      "sha256": "62b00ccdda4b06e8d34d0a117271a081b9a0517501606437fbf7ceefee15ba60",
+      "bytes": 18566
+    }
+  },
+  "splits": {
+    "train": {
+      "dialogues": 2048,
+      "assistant_turns": 2304,
+      "category_counts": {
+        "arithmetic_add_subtract": 128,
+        "arithmetic_groups": 128,
+        "concise_summaries": 128,
+        "conversational_reference": 128,
+        "conversational_repair": 128,
+        "fictional_information": 128,
+        "format_copy": 128,
+        "format_extract": 128,
+        "format_json": 128,
+        "format_reorder": 128,
+        "indirect_requests": 128,
+        "logical_relations": 128,
+        "operational_information": 128,
+        "personal_information": 128,
+        "practical_choices": 128,
+        "requested_only": 128
+      },
+      "family_counts": {
+        "all_members_rule": 64,
+        "availability_slot": 64,
+        "boxes_plus_loose": 64,
+        "cabinet_code_pair": 64,
+        "current_status_from_log": 64,
+        "destination_correction": 64,
+        "division_plus_groups": 64,
+        "explicit_list_membership": 64,
+        "item_count_object": 64,
+        "object_clarification": 64,
+        "parcel_owner_pair": 64,
+        "person_room_object": 64,
+        "pickup_rule": 64,
+        "plural_referent": 64,
+        "polite_request_rewrite": 64,
+        "punctuation_payload": 64,
+        "quoted_spacing_payload": 64,
+        "rank_order": 64,
+        "reverse_sequence": 64,
+        "rows_matching_label": 64,
+        "same_location_relation": 64,
+        "selected_note_fields": 64,
+        "session_minutes": 64,
+        "snack_preference_pair": 64,
+        "stock_movements": 64,
+        "story_book_title_pair": 64,
+        "story_captain_pair": 64,
+        "supplied_code_mapping": 64,
+        "transitive_order": 64,
+        "two_plan_facts": 64,
+        "verbose_note_simplify": 64,
+        "weekend_activity_pair": 64
+      },
+      "wording_shells": 128,
+      "known_rows_in_pairs": 192,
+      "missing_rows_in_pairs": 192,
+      "max_dialogue_characters": 495,
+      "mean_assistant_words": 5.7,
+      "max_assistant_words": 12
+    },
+    "val": {
+      "dialogues": 320,
+      "assistant_turns": 360,
+      "category_counts": {
+        "arithmetic_add_subtract": 20,
+        "arithmetic_groups": 20,
+        "concise_summaries": 20,
+        "conversational_reference": 20,
+        "conversational_repair": 20,
+        "fictional_information": 20,
+        "format_copy": 20,
+        "format_extract": 20,
+        "format_json": 20,
+        "format_reorder": 20,
+        "indirect_requests": 20,
+        "logical_relations": 20,
+        "operational_information": 20,
+        "personal_information": 20,
+        "practical_choices": 20,
+        "requested_only": 20
+      },
+      "family_counts": {
+        "clock_order": 20,
+        "elliptical_other_person": 20,
+        "event_and_stated_reason": 20,
+        "keep_line_filter": 20,
+        "larger_side_label": 20,
+        "marked_two_line_payload": 20,
+        "message_draft_from_intent": 20,
+        "milestone_date_pair": 20,
+        "music_choice_pair": 20,
+        "preference_replacement": 20,
+        "room_constraints": 20,
+        "story_courier_destination_pair": 20,
+        "sufficient_condition": 20,
+        "task_boolean_object": 20,
+        "trays_minus_removed": 20,
+        "voucher_balance": 20
+      },
+      "wording_shells": 64,
+      "known_rows_in_pairs": 30,
+      "missing_rows_in_pairs": 30,
+      "max_dialogue_characters": 508,
+      "mean_assistant_words": 6.38,
+      "max_assistant_words": 14
+    }
+  },
+  "partition": {
+    "unit": "scenario family, entity pool, wording shell, and matched known/unknown pair",
+    "pools": {
+      "train": {
+        "names": [
+          "Ada",
+          "Basil",
+          "Celia",
+          "Dev",
+          "Esme",
+          "Flynn",
+          "Greta",
+          "Hugo",
+          "Ines",
+          "Jonah",
+          "Lena",
+          "Milo",
+          "Nell",
+          "Otis",
+          "Pia",
+          "Rosa",
+          "Seth",
+          "Tess",
+          "Uma",
+          "Vera",
+          "Wade",
+          "Xena",
+          "Yara",
+          "Zeke"
+        ],
+        "places": [
+          "Willow room",
+          "Cedar nook",
+          "Acorn hall",
+          "Beech studio",
+          "Clover loft",
+          "Daisy annex",
+          "Holly cabin",
+          "Juniper office",
+          "Laurel shed",
+          "Moss porch",
+          "Pine cellar",
+          "Thistle booth"
+        ],
+        "items": [
+          "mugs",
+          "socks",
+          "books",
+          "towels",
+          "crayons",
+          "keys",
+          "lamps",
+          "trays",
+          "scarves",
+          "combs",
+          "cups",
+          "maps"
+        ],
+        "colors": [
+          "red",
+          "blue",
+          "green",
+          "yellow",
+          "black",
+          "white"
+        ],
+        "snacks": [
+          "toast",
+          "pretzels",
+          "apples",
+          "crackers",
+          "raisins",
+          "popcorn"
+        ],
+        "activities": [
+          "drawing",
+          "knitting",
+          "jogging",
+          "reading",
+          "gardening",
+          "baking"
+        ]
+      },
+      "val": {
+        "names": [
+          "Alma",
+          "Bruno",
+          "Clio",
+          "Dorian",
+          "Enid",
+          "Faye",
+          "Gus",
+          "Heidi",
+          "Isla",
+          "Jasper",
+          "Keiko",
+          "Lucian"
+        ],
+        "places": [
+          "Kestrel lodge",
+          "Heron alcove",
+          "Osprey tower",
+          "Finch terrace",
+          "Wren pavilion",
+          "Ibis den",
+          "Lark corner",
+          "Swift gallery",
+          "Dove chamber",
+          "Swan passage",
+          "Robin bay",
+          "Tern hut"
+        ],
+        "items": [
+          "spoons",
+          "gloves",
+          "brushes",
+          "baskets",
+          "erasers",
+          "coins",
+          "vases",
+          "plates",
+          "belts",
+          "mirrors",
+          "bowls",
+          "charts"
+        ],
+        "colors": [
+          "teal",
+          "indigo",
+          "violet",
+          "ochre",
+          "coral",
+          "umber"
+        ],
+        "snacks": [
+          "pears",
+          "oatcakes",
+          "walnuts",
+          "plums",
+          "muffins",
+          "scones"
+        ],
+        "activities": [
+          "singing",
+          "weaving",
+          "swimming",
+          "dancing",
+          "carving",
+          "sewing"
+        ]
+      }
+    },
+    "families": {
+      "indirect_requests": [
+        "polite_request_rewrite",
+        "verbose_note_simplify",
+        "message_draft_from_intent"
+      ],
+      "practical_choices": [
+        "availability_slot",
+        "pickup_rule",
+        "room_constraints"
+      ],
+      "conversational_reference": [
+        "plural_referent",
+        "same_location_relation",
+        "elliptical_other_person"
+      ],
+      "conversational_repair": [
+        "destination_correction",
+        "object_clarification",
+        "preference_replacement"
+      ],
+      "personal_information": [
+        "snack_preference_pair",
+        "weekend_activity_pair",
+        "music_choice_pair"
+      ],
+      "fictional_information": [
+        "story_captain_pair",
+        "story_book_title_pair",
+        "story_courier_destination_pair"
+      ],
+      "operational_information": [
+        "parcel_owner_pair",
+        "cabinet_code_pair",
+        "milestone_date_pair"
+      ],
+      "concise_summaries": [
+        "two_plan_facts",
+        "current_status_from_log",
+        "event_and_stated_reason"
+      ],
+      "format_extract": [
+        "selected_note_fields",
+        "rows_matching_label",
+        "keep_line_filter"
+      ],
+      "format_reorder": [
+        "reverse_sequence",
+        "rank_order",
+        "clock_order"
+      ],
+      "format_copy": [
+        "punctuation_payload",
+        "quoted_spacing_payload",
+        "marked_two_line_payload"
+      ],
+      "format_json": [
+        "person_room_object",
+        "item_count_object",
+        "task_boolean_object"
+      ],
+      "requested_only": [
+        "supplied_code_mapping",
+        "explicit_list_membership",
+        "larger_side_label"
+      ],
+      "logical_relations": [
+        "transitive_order",
+        "all_members_rule",
+        "sufficient_condition"
+      ],
+      "arithmetic_add_subtract": [
+        "stock_movements",
+        "session_minutes",
+        "voucher_balance"
+      ],
+      "arithmetic_groups": [
+        "boxes_plus_loose",
+        "division_plus_groups",
+        "trays_minus_removed"
+      ]
+    },
+    "validation_role": "Adaptation validation; never a blind capability benchmark."
+  },
+  "validation": {
+    "checked_records": 2368,
+    "rule_checks": 2368,
+    "complete_known_unknown_pairs": 222,
+    "cross_split_exact_prompt_overlap": 0,
+    "cross_split_max_token_trigram_jaccard": 0.075,
+    "cross_split_max_overlap_pair_ids": [
+      "8f2604dfb1518912f165bf2751ae56d18bf63e48facda2e4e1038b5821ed82cd",
+      "58a9d165dac3b1b04925fd8a854e983c3af20728efb3dff5747cae05dfba2256"
+    ],
+    "cross_split_near_duplicate_rejection_threshold": 0.65,
+    "family_overlap": 0,
+    "wording_id_overlap": 0,
+    "entity_pool_overlap": 0,
+    "deterministic_duplicate_resamples": 27
+  },
+  "not_consumed": [
+    "evaluation/benchmark files",
+    "model predictions",
+    "acceptance tests",
+    "public datasets",
+    "tokenizer files",
+    "network resources"
+  ],
+  "limitations": [
+    "Template-generated supplement; lexical and scenario breadth remains modest.",
+    "No empirical model improvement is claimed and no training was run.",
+    "Checks cover schema, explicit transformations, arithmetic, pairs, and lexical overlap; natural-language quality also needs human review.",
+    "No tokenizer was read, so character and word lengths are reported instead of model token counts.",
+    "Rows explicitly set retention:false; a trainer must honor that flag instead of relying exclusively on the legacy source-name rule.",
+    "SYSTEM names Windows XP, but the examples do not establish hardware fit, runtime speed, or operating-system competence."
+  ]
+}

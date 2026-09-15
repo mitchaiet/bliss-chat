@@ -1,0 +1,167 @@
+/* GUI helpers execute against a bounded fake registry, not the real OS. */
+#include <stdint.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <assert.h>
+#include <math.h>
+
+typedef uint32_t DWORD;
+typedef uint16_t WCHAR;
+typedef unsigned char BYTE;
+typedef int HKEY;
+#define HKEY_CURRENT_USER 1
+#define KEY_READ 1
+#define ERROR_SUCCESS 0
+#define ERROR_FILE_NOT_FOUND 2
+#define ERROR_MORE_DATA 234
+#define REG_SZ 1
+#define REG_BINARY 3
+#define REG_DWORD 4
+
+/* GUI_DEFAULTS_SOURCE */
+static float gTemp = DEFAULT_TEMP, gTopP = DEFAULT_TOPP;
+static DWORD gSeed = DEFAULT_SEED, gMaxTok = DEFAULT_MAXTOK;
+static char gSysPrompt[2048];
+
+typedef struct {
+    const char *name;
+    DWORD type, size;
+    BYTE bytes[4100];
+} FakeValue;
+static FakeValue values[8];
+static size_t value_count;
+static int key_present, context_queries;
+
+static int RegOpenKeyExA(HKEY parent, const char *name, DWORD options, DWORD access, HKEY *key) {
+    (void)parent; (void)options; (void)access;
+    /* The obsolete Settings key is deliberately unavailable. */
+    if (!key_present || strcmp(name, "Software\\bliss-chat\\SettingsCoherentV2")) return ERROR_FILE_NOT_FOUND;
+    *key = 2;
+    return ERROR_SUCCESS;
+}
+static int query(const char *name, DWORD *type, BYTE *bytes, DWORD *size) {
+    if (!strcmp(name, "Context") || !strcmp(name, "Ctx")) context_queries++;
+    for (size_t i = 0; i < value_count; i++) {
+        FakeValue *v = values + i;
+        if (strcmp(v->name, name)) continue;
+        *type = v->type;
+        if (*size < v->size) { *size = v->size; return ERROR_MORE_DATA; }
+        memcpy(bytes, v->bytes, v->size);
+        *size = v->size;
+        return ERROR_SUCCESS;
+    }
+    return ERROR_FILE_NOT_FOUND;
+}
+static int RegQueryValueExA(HKEY key, const char *name, void *unused, DWORD *type, BYTE *bytes, DWORD *size) {
+    (void)key; (void)unused;
+    return query(name, type, bytes, size);
+}
+static int RegQueryValueExW(HKEY key, const void *name, void *unused, DWORD *type, BYTE *bytes, DWORD *size) {
+    (void)key; (void)name; (void)unused;
+    return query("SystemPrompt", type, bytes, size);
+}
+static int RegCloseKey(HKEY key) { (void)key; return ERROR_SUCCESS; }
+static size_t u16len(const WCHAR *text) {
+    size_t n = 0;
+    while (text[n]) n++;
+    return n;
+}
+
+/* GUI_WIDE_CONVERSION_SOURCE */
+/* GUI_SETTINGS_SOURCE */
+/* GUI_MODEL_NAME_SOURCE */
+
+static void reset_fixture(void) {
+    memset(values, 0, sizeof(values));
+    value_count = 0;
+    key_present = 1;
+    context_queries = 0;
+    gTemp = DEFAULT_TEMP;
+    gTopP = DEFAULT_TOPP;
+    gSeed = DEFAULT_SEED;
+    gMaxTok = DEFAULT_MAXTOK;
+    gSysPrompt[0] = 0;
+}
+static FakeValue *value(const char *name, DWORD type, const void *bytes, DWORD size) {
+    FakeValue *v;
+    assert(value_count < sizeof(values) / sizeof(*values));
+    v = values + value_count++;
+    assert(size <= sizeof(v->bytes));
+    v->name = name; v->type = type; v->size = size;
+    memcpy(v->bytes, bytes, size);
+    return v;
+}
+static void number(const char *name, DWORD number) { value(name, REG_DWORD, &number, sizeof(number)); }
+static void assert_defaults(void) {
+    assert(gTemp == 0.0f && gTopP == DEFAULT_TOPP && gSeed == 0 && gMaxTok == 128);
+}
+
+int main(void) {
+    reset_fixture(); key_present = 0; settings_load(); assert_defaults();
+    reset_fixture(); settings_load(); assert_defaults();
+    {
+        const WCHAR prompt[] = {'B','e',' ',0x00e9,0};
+        number("TempMilli", 700); number("TopPMilli", 900);
+        number("Seed", 42); number("MaxTok", 512); number("Context", 1024);
+        value("SystemPrompt", REG_SZ, prompt, sizeof(prompt));
+        settings_load();
+        assert(gTemp == 0.7f && gTopP == 0.9f && gSeed == 42 && gMaxTok == 512);
+        assert(!strcmp(gSysPrompt, "Be \xc3\xa9"));
+        assert(context_queries == 0);
+    }
+    reset_fixture();
+    {
+        DWORD wrong = 1000;
+        unsigned char oversized[8] = {0};
+        value("TempMilli", REG_SZ, &wrong, sizeof(wrong));
+        value("TopPMilli", REG_DWORD, &wrong, 2);
+        value("Seed", REG_BINARY, &wrong, sizeof(wrong));
+        value("MaxTok", REG_DWORD, oversized, sizeof(oversized));
+        settings_load(); assert_defaults();
+    }
+    for (int i = 0; i < 3; i++) {
+        const DWORD invalid[] = {0, 1024, UINT32_MAX};
+        reset_fixture(); number("MaxTok", invalid[i]); settings_load();
+        assert(gMaxTok == DEFAULT_MAXTOK);
+    }
+    for (int i = 0; i < 2; i++) {
+        const DWORD valid[] = {1, 512};
+        reset_fixture(); number("MaxTok", valid[i]); settings_load();
+        assert(gMaxTok == valid[i]);
+    }
+    for (int i = 0; i < 3; i++) {
+        const float invalid[] = {NAN, INFINITY, -1.0f};
+        reset_fixture(); gTemp = invalid[i]; gTopP = invalid[i]; settings_normalize();
+        assert_defaults();
+    }
+    reset_fixture(); gTemp = 5.0f; gTopP = 1.0f; settings_normalize();
+    assert(gTemp == 5.0f && gTopP == 1.0f);
+    gTemp = 6.0f; gTopP = 1.01f; settings_normalize();
+    assert_defaults();
+    gTopP = 0.0f; settings_normalize(); assert(gTopP == DEFAULT_TOPP);
+    {
+        /* REG_SZ does not promise a trailing NUL. Preserve complete text. */
+        const WCHAR no_terminator[] = {'H','i'};
+        reset_fixture(); value("SystemPrompt", REG_SZ, no_terminator, sizeof(no_terminator));
+        settings_load(); assert(!strcmp(gSysPrompt, "Hi"));
+        /* Reject a partial UTF-16 unit, rather than consume an uninitialized tail. */
+        reset_fixture(); value("SystemPrompt", REG_SZ, no_terminator, 3);
+        settings_load(); assert(!gSysPrompt[0]);
+    }
+    {
+        WCHAR too_long[2048];
+        for (size_t i = 0; i < 2048; i++) too_long[i] = 'a';
+        reset_fixture(); value("SystemPrompt", REG_SZ, too_long, sizeof(too_long));
+        settings_load(); assert(!gSysPrompt[0]);
+    }
+    assert(!backend_model_name(NULL));
+    assert(!backend_model_name("MODEL "));
+    assert(!backend_model_name("temp0.00"));
+    assert(!backend_model_name("SOURCE Example/base-revision"));
+    assert(!strcmp(backend_model_name("MODEL Example-0.5B"), "Example-0.5B"));
+    assert(!strcmp(backend_model_name("Qwen2.5 native Q4 SSE2; context512"), "Qwen2.5 native Q4 SSE2; context512"));
+    assert(!strcmp(backend_model_name("SmolLM2 native Q4 SSE2; context512"), "SmolLM2 native Q4 SSE2; context512"));
+    puts("GUI_SETTINGS_COMPATIBILITY passed");
+    return 0;
+}

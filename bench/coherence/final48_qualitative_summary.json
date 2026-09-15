@@ -1,0 +1,256 @@
+{
+  "protocol": "Final48 case identities randomly masked independently per case. All masked scores were written and validated before mapping disclosure. Reviewer had prior familiarity with candidate behavior, so masking does not guarantee inability to recognize models. Same reviewer/rubric; no independent human rater. Selection was frozen before final inference and unchanged after outcomes.",
+  "models": {
+    "original_ncb": {
+      "cases": 48,
+      "dimension_means": {
+        "relevance_0_2": 1.146,
+        "correctness_0_2": 0.458,
+        "coherence_0_2": 1.583,
+        "instruction_0_2": 0.271
+      },
+      "mean_total_out_of_8": 3.458,
+      "fully_correct_final_replies": 7,
+      "by_category": {
+        "arithmetic_logic": {
+          "cases": 8,
+          "dimension_means": {
+            "relevance_0_2": 1.5,
+            "correctness_0_2": 0.375,
+            "coherence_0_2": 1.75,
+            "instruction_0_2": 0.25
+          },
+          "mean_total_out_of_8": 3.875,
+          "fully_correct_final_replies": 1
+        },
+        "conversation_memory": {
+          "cases": 8,
+          "dimension_means": {
+            "relevance_0_2": 1.125,
+            "correctness_0_2": 0.125,
+            "coherence_0_2": 1,
+            "instruction_0_2": 0
+          },
+          "mean_total_out_of_8": 2.25,
+          "fully_correct_final_replies": 0
+        },
+        "conversation_semantics": {
+          "cases": 8,
+          "dimension_means": {
+            "relevance_0_2": 1,
+            "correctness_0_2": 0.75,
+            "coherence_0_2": 1.875,
+            "instruction_0_2": 0.5
+          },
+          "mean_total_out_of_8": 4.125,
+          "fully_correct_final_replies": 2
+        },
+        "instruction_following": {
+          "cases": 8,
+          "dimension_means": {
+            "relevance_0_2": 0.375,
+            "correctness_0_2": 0.125,
+            "coherence_0_2": 1.625,
+            "instruction_0_2": 0
+          },
+          "mean_total_out_of_8": 2.125,
+          "fully_correct_final_replies": 0
+        },
+        "note_grounding": {
+          "cases": 8,
+          "dimension_means": {
+            "relevance_0_2": 1.625,
+            "correctness_0_2": 1.125,
+            "coherence_0_2": 1.625,
+            "instruction_0_2": 0.75
+          },
+          "mean_total_out_of_8": 5.125,
+          "fully_correct_final_replies": 3
+        },
+        "unknowns": {
+          "cases": 8,
+          "dimension_means": {
+            "relevance_0_2": 1.25,
+            "correctness_0_2": 0.25,
+            "coherence_0_2": 1.625,
+            "instruction_0_2": 0.125
+          },
+          "mean_total_out_of_8": 3.25,
+          "fully_correct_final_replies": 1
+        }
+      }
+    },
+    "selected_q6": {
+      "cases": 48,
+      "dimension_means": {
+        "relevance_0_2": 1.854,
+        "correctness_0_2": 1.167,
+        "coherence_0_2": 1.979,
+        "instruction_0_2": 1.562
+      },
+      "mean_total_out_of_8": 6.562,
+      "fully_correct_final_replies": 26,
+      "by_category": {
+        "arithmetic_logic": {
+          "cases": 8,
+          "dimension_means": {
+            "relevance_0_2": 2,
+            "correctness_0_2": 0.25,
+            "coherence_0_2": 2,
+            "instruction_0_2": 1.375
+          },
+          "mean_total_out_of_8": 5.625,
+          "fully_correct_final_replies": 1
+        },
+        "conversation_memory": {
+          "cases": 8,
+          "dimension_means": {
+            "relevance_0_2": 1.5,
+            "correctness_0_2": 1.25,
+            "coherence_0_2": 1.875,
+            "instruction_0_2": 1.375
+          },
+          "mean_total_out_of_8": 6,
+          "fully_correct_final_replies": 5
+        },
+        "conversation_semantics": {
+          "cases": 8,
+          "dimension_means": {
+            "relevance_0_2": 2,
+            "correctness_0_2": 1.5,
+            "coherence_0_2": 2,
+            "instruction_0_2": 2
+          },
+          "mean_total_out_of_8": 7.5,
+          "fully_correct_final_replies": 6
+        },
+        "instruction_following": {
+          "cases": 8,
+          "dimension_means": {
+            "relevance_0_2": 1.75,
+            "correctness_0_2": 0.75,
+            "coherence_0_2": 2,
+            "instruction_0_2": 1
+          },
+          "mean_total_out_of_8": 5.5,
+          "fully_correct_final_replies": 2
+        },
+        "note_grounding": {
+          "cases": 8,
+          "dimension_means": {
+            "relevance_0_2": 2,
+            "correctness_0_2": 1.75,
+            "coherence_0_2": 2,
+            "instruction_0_2": 1.75
+          },
+          "mean_total_out_of_8": 7.5,
+          "fully_correct_final_replies": 6
+        },
+        "unknowns": {
+          "cases": 8,
+          "dimension_means": {
+            "relevance_0_2": 1.875,
+            "correctness_0_2": 1.5,
+            "coherence_0_2": 2,
+            "instruction_0_2": 1.875
+          },
+          "mean_total_out_of_8": 7.25,
+          "fully_correct_final_replies": 6
+        }
+      }
+    }
+  },
+  "paired": {
+    "selected_win": 37,
+    "original_win": 4,
+    "tie": 7
+  },
+  "mechanical": {
+    "original_ncb": {
+      "objective_pass": 3,
+      "cases": 48,
+      "by_category": {
+        "conversation_semantics": [
+          1,
+          8
+        ],
+        "arithmetic_logic": [
+          0,
+          8
+        ],
+        "instruction_following": [
+          0,
+          8
+        ],
+        "conversation_memory": [
+          0,
+          8
+        ],
+        "note_grounding": [
+          2,
+          8
+        ],
+        "unknowns": [
+          0,
+          8
+        ]
+      },
+      "protocol_errors": 0,
+      "peak_backend_rss_kib": 298000,
+      "all_user_turn_latency": {
+        "elapsed_s": {
+          "median": 0.6917931349598803,
+          "p95": 1.0353681520791724
+        },
+        "ttft_visible_s": {
+          "median": 0.5682913364726119,
+          "p95": 0.8319078399799764
+        }
+      },
+      "semantic_review": "required; objective score alone does not establish coherence"
+    },
+    "selected_q6": {
+      "objective_pass": 24,
+      "cases": 48,
+      "by_category": {
+        "conversation_semantics": [
+          5,
+          8
+        ],
+        "arithmetic_logic": [
+          1,
+          8
+        ],
+        "instruction_following": [
+          2,
+          8
+        ],
+        "conversation_memory": [
+          4,
+          8
+        ],
+        "note_grounding": [
+          6,
+          8
+        ],
+        "unknowns": [
+          6,
+          8
+        ]
+      },
+      "protocol_errors": 0,
+      "peak_backend_rss_kib": 293780,
+      "all_user_turn_latency": {
+        "elapsed_s": {
+          "median": 4.575232775066979,
+          "p95": 7.279846354969777
+        },
+        "ttft_visible_s": {
+          "median": 3.666550013993401,
+          "p95": 5.786181199015118
+        }
+      },
+      "semantic_review": "required; objective score alone does not establish coherence"
+    }
+  }
+}

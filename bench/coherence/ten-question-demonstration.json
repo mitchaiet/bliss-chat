@@ -1,0 +1,351 @@
+{
+  "created_utc": "2026-09-15T11:25:43.682488+00:00",
+  "settings": {
+    "context": 512,
+    "temperature": 0,
+    "seed": 42,
+    "max_tokens": 128,
+    "fresh_context_per_question": true,
+    "native_defaults": "Each deployment keeps its own system prompt and stopping rules."
+  },
+  "questions": [
+    "Why does a rainbow appear after rain? Explain simply in one or two sentences.",
+    "My friend failed an important exam and feels discouraged. What could I say to comfort them?",
+    "Ada put her keys in a red box, then moved them to a blue drawer. Where are her keys now?",
+    "Why do most houseplants need sunlight?",
+    "What is 17 plus 26? Answer with just the number.",
+    "A train leaves at 3:20 PM and the journey takes 45 minutes. What time does it arrive?",
+    "Put these words in alphabetical order: pear, apple, banana. Output only the sorted words.",
+    "Summarize this in one sentence: The library normally opens at nine. On Friday it will open at eleven because the staff have a meeting.",
+    "What is my cat's name? I have not told you its name.",
+    "Can a language model run on a computer without an internet connection? Explain briefly."
+  ],
+  "models": {
+    "previous": {
+      "files": {
+        "binary": {
+          "path": "/home/mitch/bliss-runs/20260915-next/artifacts/nc_run_native",
+          "sha256": "f714ec5524e17cc8f8b7ab6a485e356cdcbdc47a4baf9455ac2f10cb1caca096"
+        },
+        "model": {
+          "path": "/home/mitch/bliss-runs/20260915-next/artifacts/MODEL.NCB",
+          "sha256": "11c82d07097f057dbb458a02e4bed8daf748f359b73dfd3abb4dd1df9dc679cc"
+        },
+        "tokenizer": {
+          "path": "/home/mitch/bliss-runs/20260915-next/artifacts/TOKENIZER.NCT",
+          "sha256": "292796d0675114f3bcdf88a80127518fb4bcf365058cee446b3ff827024ebff3"
+        }
+      },
+      "responses": [
+        {
+          "answer": "Rainbow trout are born in water drops, not clouds, so rain falls right after.",
+          "tokens": 18,
+          "elapsed_s": 0.5933095160871744,
+          "ttft_visible_s": 0.30372140009421855,
+          "last_visible_s": 0.593145736027509,
+          "sentinels": [
+            "\u0001PROG 0",
+            "\u0001PROG 1",
+            "\u0001PROG 2",
+            "\u0001PROG 3",
+            "\u0001PROG 3",
+            "\u0001PROG 4",
+            "\u0001PROG 5",
+            "\u0001PROG 6",
+            "\u0001PROG 7",
+            "\u0001PROG 7",
+            "\u0001PROG 8",
+            "\u0001PROG 9",
+            "\u0001PROG 10",
+            "\u0001PROG 10",
+            "\u0001PROG 11",
+            "\u0001PROG 12",
+            "\u0001PROG 13",
+            "\u0001EOT 18"
+          ]
+        },
+        {
+          "answer": "You are not alone.",
+          "tokens": 5,
+          "elapsed_s": 0.40262612502556294,
+          "ttft_visible_s": 0.3520717689534649,
+          "last_visible_s": 0.4025055889505893,
+          "sentinels": [
+            "\u0001PROG 0",
+            "\u0001PROG 1",
+            "\u0001PROG 2",
+            "\u0001PROG 3",
+            "\u0001EOT 5"
+          ]
+        },
+        {
+          "answer": "They are in a red drawer.",
+          "tokens": 7,
+          "elapsed_s": 0.5377744400175288,
+          "ttft_visible_s": 0.43569889094214886,
+          "last_visible_s": 0.5375914139440283,
+          "sentinels": [
+            "\u0001PROG 0",
+            "\u0001PROG 1",
+            "\u0001PROG 2",
+            "\u0001PROG 3",
+            "\u0001PROG 3",
+            "\u0001PROG 4",
+            "\u0001EOT 7"
+          ]
+        },
+        {
+          "answer": "Most plants need sunlight to grow.",
+          "tokens": 7,
+          "elapsed_s": 0.25062139809597284,
+          "ttft_visible_s": 0.14940090000163764,
+          "last_visible_s": 0.25043293507769704,
+          "sentinels": [
+            "\u0001PROG 0",
+            "\u0001PROG 1",
+            "\u0001PROG 2",
+            "\u0001PROG 3",
+            "\u0001PROG 3",
+            "\u0001PROG 4",
+            "\u0001EOT 7"
+          ]
+        },
+        {
+          "answer": "17 plus 26 is 43.",
+          "tokens": 8,
+          "elapsed_s": 0.38609797006938607,
+          "ttft_visible_s": 0.2845623780740425,
+          "last_visible_s": 0.38591441803146154,
+          "sentinels": [
+            "\u0001PROG 0",
+            "\u0001PROG 1",
+            "\u0001PROG 2",
+            "\u0001PROG 3",
+            "\u0001PROG 3",
+            "\u0001PROG 4",
+            "\u0001PROG 5",
+            "\u0001EOT 8"
+          ]
+        },
+        {
+          "answer": "It arrives at 5:00 PM.",
+          "tokens": 9,
+          "elapsed_s": 0.5577753729885444,
+          "ttft_visible_s": 0.43819717201404274,
+          "last_visible_s": 0.557578059961088,
+          "sentinels": [
+            "\u0001PROG 0",
+            "\u0001PROG 1",
+            "\u0001PROG 2",
+            "\u0001PROG 3",
+            "\u0001PROG 3",
+            "\u0001PROG 4",
+            "\u0001PROG 5",
+            "\u0001PROG 6",
+            "\u0001EOT 9"
+          ]
+        },
+        {
+          "answer": "governments, businesses, and individuals.",
+          "tokens": 7,
+          "elapsed_s": 0.4713534030597657,
+          "ttft_visible_s": 0.3699249670607969,
+          "last_visible_s": 0.4711946970783174,
+          "sentinels": [
+            "\u0001PROG 0",
+            "\u0001PROG 1",
+            "\u0001PROG 2",
+            "\u0001PROG 3",
+            "\u0001PROG 3",
+            "\u0001PROG 4",
+            "\u0001EOT 7"
+          ]
+        },
+        {
+          "answer": "That is it! The meeting is at 2.",
+          "tokens": 11,
+          "elapsed_s": 0.6929777269251645,
+          "ttft_visible_s": 0.5222052580211312,
+          "last_visible_s": 0.6928046599496156,
+          "sentinels": [
+            "\u0001PROG 0",
+            "\u0001PROG 1",
+            "\u0001PROG 2",
+            "\u0001PROG 3",
+            "\u0001PROG 3",
+            "\u0001PROG 4",
+            "\u0001PROG 5",
+            "\u0001PROG 6",
+            "\u0001PROG 7",
+            "\u0001PROG 7",
+            "\u0001EOT 11"
+          ]
+        },
+        {
+          "answer": "Your cat is named Noodle.",
+          "tokens": 7,
+          "elapsed_s": 0.38585123291704804,
+          "ttft_visible_s": 0.2844271529465914,
+          "last_visible_s": 0.3856737029273063,
+          "sentinels": [
+            "\u0001PROG 0",
+            "\u0001PROG 1",
+            "\u0001PROG 2",
+            "\u0001PROG 3",
+            "\u0001PROG 3",
+            "\u0001PROG 4",
+            "\u0001EOT 7"
+          ]
+        },
+        {
+          "answer": "A language model can run on a computer without an internet connection, but it might not understand complex sentences.",
+          "tokens": 21,
+          "elapsed_s": 0.6583638470619917,
+          "ttft_visible_s": 0.32113710104022175,
+          "last_visible_s": 0.6581921720644459,
+          "sentinels": [
+            "\u0001PROG 0",
+            "\u0001PROG 1",
+            "\u0001PROG 2",
+            "\u0001PROG 3",
+            "\u0001PROG 3",
+            "\u0001PROG 4",
+            "\u0001PROG 5",
+            "\u0001PROG 6",
+            "\u0001PROG 7",
+            "\u0001PROG 7",
+            "\u0001PROG 8",
+            "\u0001PROG 9",
+            "\u0001PROG 10",
+            "\u0001PROG 10",
+            "\u0001PROG 11",
+            "\u0001PROG 12",
+            "\u0001PROG 13",
+            "\u0001PROG 14",
+            "\u0001PROG 14",
+            "\u0001PROG 15",
+            "\u0001EOT 21"
+          ]
+        }
+      ]
+    },
+    "bliss2": {
+      "files": {
+        "binary": {
+          "path": "/home/mitch/bliss-runs/20260915-next/native/build/slm/variants/128699c1e02a1f78/slm_run",
+          "sha256": "128699c1e02a1f78c60b24af6437a6b58c91ae97b5c860300e41323ae338bf8e"
+        },
+        "model": {
+          "path": "/home/mitch/bliss-runs/20260915-next/native/exports/lfm350-trained-q6/MODEL.SLM",
+          "sha256": "ac4fe748bfa8f61af3b55f13e5435c299ca4c5abad71cd24c233f6ff24a33953"
+        },
+        "tokenizer": {
+          "path": "/home/mitch/bliss-runs/20260915-next/native/exports/lfm350-trained-q6/TOKENIZER.SLT",
+          "sha256": "2e9a8349d5242ff0070c060ac9e5d15a05739727f1cd4941d631b23bb881bb2d"
+        }
+      },
+      "responses": [
+        {
+          "answer": "A rainbow appears after rain because sunlight refracts through raindrops, creating the colorful arc.",
+          "tokens": 19,
+          "elapsed_s": 4.3941544611006975,
+          "ttft_visible_s": 2.1206938080722466,
+          "last_visible_s": 4.099834054009989,
+          "sentinels": [
+            "\u0001EOT 19"
+          ]
+        },
+        {
+          "answer": "You could say, \"I know it's been a tough exam, and I'm sure you're feeling discouraged. But remember, you've studied hard and you have a good chance of passing. You're not alone in this, and many students have overcome similar challenges. Let's focus on what you can control, like your study habits and time management.\"",
+          "tokens": 71,
+          "elapsed_s": 10.461869386024773,
+          "ttft_visible_s": 2.3425065430346876,
+          "last_visible_s": 10.16794941201806,
+          "sentinels": [
+            "\u0001EOT 71"
+          ]
+        },
+        {
+          "answer": "Ada's keys are now in the blue drawer.",
+          "tokens": 11,
+          "elapsed_s": 4.246607779990882,
+          "ttft_visible_s": 2.845479884999804,
+          "last_visible_s": 3.950609978986904,
+          "sentinels": [
+            "\u0001EOT 11"
+          ]
+        },
+        {
+          "answer": "Most houseplants need sunlight because it is essential for photosynthesis, the process by which plants convert light energy into chemical energy to fuel their growth and development. Without sunlight, plants cannot produce the energy they need to thrive.",
+          "tokens": 43,
+          "elapsed_s": 6.441795601975173,
+          "ttft_visible_s": 1.4521296439925209,
+          "last_visible_s": 6.1472543069394305,
+          "sentinels": [
+            "\u0001EOT 43"
+          ]
+        },
+        {
+          "answer": "39",
+          "tokens": 1,
+          "elapsed_s": 2.217914014006965,
+          "ttft_visible_s": 1.9316134529653937,
+          "last_visible_s": 1.9316134529653937,
+          "sentinels": [
+            "\u0001EOT 1"
+          ]
+        },
+        {
+          "answer": "The train arrives at 3:55 PM.",
+          "tokens": 10,
+          "elapsed_s": 4.054342530085705,
+          "ttft_visible_s": 2.7596937800990418,
+          "last_visible_s": 3.763973445049487,
+          "sentinels": [
+            "\u0001EOT 10"
+          ]
+        },
+        {
+          "answer": "apple banana pear",
+          "tokens": 3,
+          "elapsed_s": 3.023596828104928,
+          "ttft_visible_s": 2.5128982590977103,
+          "last_visible_s": 2.73635857203044,
+          "sentinels": [
+            "\u0001EOT 3"
+          ]
+        },
+        {
+          "answer": "The library opens at nine and will open at eleven on Friday due to a staff meeting.",
+          "tokens": 18,
+          "elapsed_s": 5.4724846329772845,
+          "ttft_visible_s": 3.2897571419598535,
+          "last_visible_s": 5.181861056946218,
+          "sentinels": [
+            "\u0001EOT 18"
+          ]
+        },
+        {
+          "answer": "Your cat's name is Whiskers.",
+          "tokens": 9,
+          "elapsed_s": 3.245316451997496,
+          "ttft_visible_s": 2.0623614109354094,
+          "last_visible_s": 2.955817714915611,
+          "sentinels": [
+            "\u0001EOT 9"
+          ]
+        },
+        {
+          "answer": "No, a language model cannot run on a computer without an internet connection. It requires a network to access data, communicate with other models, and perform tasks like processing language.",
+          "tokens": 35,
+          "elapsed_s": 6.213735835044645,
+          "ttft_visible_s": 2.1528860289836302,
+          "last_visible_s": 5.921712526935153,
+          "sentinels": [
+            "\u0001EOT 35"
+          ]
+        }
+      ]
+    }
+  }
+}

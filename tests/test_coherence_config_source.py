@@ -38,8 +38,21 @@ class CoherenceConfigSourceTests(unittest.TestCase):
         self.assertIn("Preset deterministic", self.xp)
         self.assertIn("Preset balanced", self.xp)
         self.assertIn("Preset creative", self.xp)
-        self.assertIn("SetDlgItemTextA(dlg, IDC_TOPP_EDIT", self.xp)
-        self.assertIn("SetDlgItemTextA(dlg, IDC_MAXTOK_EDIT", self.xp)
+        preset = re.search(
+            r"static void apply_settings_preset\([^)]*\)\s*\{(.*?)\n\}",
+            self.xp,
+            re.S,
+        )
+        self.assertIsNotNone(preset)
+        for control, field in (
+            ("IDC_TEMP_EDIT", "temp"),
+            ("IDC_TOPP_EDIT", "top_p"),
+            ("IDC_MAXTOK_EDIT", "max_tok"),
+        ):
+            self.assertIn(
+                f"set_dialog_utf8(dlg, {control}, gSettingsPresets[preset_index].{field})",
+                preset.group(1),
+            )
 
     def test_xpchat_has_local_tools_before_model_generation(self):
         self.assertIn("try_answer_local_tool", self.xp)

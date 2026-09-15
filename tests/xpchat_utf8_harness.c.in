@@ -1,0 +1,102 @@
+/* Host harness: source excerpts are inserted by test_xpchat_transport.py. */
+#include <stdint.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <assert.h>
+
+typedef uint16_t WCHAR;
+typedef struct { char *data; size_t len, cap; } Buffer;
+static size_t u16len(const WCHAR *s) {
+    size_t n = 0;
+    while (s[n]) n++;
+    return n;
+}
+
+/* GUI_CONVERSION_SOURCE */
+/* GUI_BUFFER_SOURCE */
+
+static Buffer posted;
+static void post_chunk(const char *text, size_t len) {
+    size_t pos = 0;
+    /* Each nonempty valid-text notification must end on a complete codepoint.
+       final=0 detects premature posting instead of accepting replacement text. */
+    while (pos < len) {
+        unsigned long cp;
+        int k = utf8_unit((const unsigned char *)text + pos, len - pos, &cp, 0);
+        assert(k > 0 && cp != 0xfffd);
+        pos += (size_t)k;
+    }
+    assert(buffer_append(&posted, text, len));
+}
+
+/* GUI_STREAM_SOURCE */
+
+static void check_result(Buffer *carry, const char *input, size_t len) {
+    assert(carry->len == 0);
+    assert(posted.len == len);
+    assert(!memcmp(posted.data, input, len));
+    free(carry->data);
+    free(posted.data);
+}
+
+int main(void) {
+    const char *examples[] = {
+        "plain ASCII", "caf\xc3\xa9", "\xe6\x9d\xb1\xe4\xba\xac",
+        "\xf0\x9f\xa7\xa0", "quote \xe2\x80\x9c hi \xe2\x80\x9d \xe2\x80\x94 fin",
+        "e\xcc\x81\r\nline"
+    };
+    int checks = 0;
+    for (size_t i = 0; i < sizeof(examples) / sizeof(*examples); i++) {
+        const char *x = examples[i];
+        size_t n = strlen(x);
+        WCHAR *wide = utf8_to_wide(x);
+        char *back;
+        assert(wide);
+        /* Independent known UTF-16 values avoid a mutually wrong round trip. */
+        if (i == 1) assert(wide[3] == 0x00e9 && wide[4] == 0);
+        if (i == 2) assert(wide[0] == 0x6771 && wide[1] == 0x4eac && wide[2] == 0);
+        if (i == 3) assert(wide[0] == 0xd83e && wide[1] == 0xdde0 && wide[2] == 0);
+        if (i == 5) assert(wide[0] == 'e' && wide[1] == 0x0301);
+        back = wide_to_utf8(wide);
+        assert(back && !strcmp(back, x));
+        free(wide);
+        free(back);
+        checks++;
+
+        for (size_t cut = 0; cut <= n; cut++) {
+            Buffer carry;
+            buffer_init(&carry);
+            buffer_init(&posted);
+            post_utf8_chunk(&carry, x, cut, 0);
+            post_utf8_chunk(&carry, x + cut, n - cut, 0);
+            post_utf8_chunk(&carry, NULL, 0, 1);
+            check_result(&carry, x, n);
+            checks++;
+        }
+        {
+            Buffer carry;
+            buffer_init(&carry);
+            buffer_init(&posted);
+            for (size_t j = 0; j < n; j++) post_utf8_chunk(&carry, x + j, 1, 0);
+            post_utf8_chunk(&carry, NULL, 0, 1);
+            check_result(&carry, x, n);
+            checks++;
+        }
+    }
+    {
+        WCHAR *bad = utf8_to_wide("x\xe2\x82");
+        assert(bad && bad[0] == 'x' && bad[1] == 0xfffd && bad[2] == 0xfffd && !bad[3]);
+        free(bad);
+        checks++;
+    }
+    {
+        const unsigned char invalid[] = {0xf0, 0x80, 0x80, 0x80};
+        unsigned long cp;
+        assert(utf8_unit(invalid, sizeof(invalid), &cp, 1) == 1 && cp == 0xfffd);
+        checks++;
+    }
+    assert(checks == 79);
+    printf("UTF8_GUI_BOUNDARY_CHECKS %d passed\n", checks);
+    return 0;
+}

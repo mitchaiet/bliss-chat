@@ -1,0 +1,25 @@
+{
+  "url": "http://127.0.0.1:8877/",
+  "health_check": {
+    "ready": true,
+    "models": [
+      "previous",
+      "new"
+    ]
+  },
+  "browser_test": {
+    "initial_prompt": "Remember that I put my spare key in the green drawer.",
+    "previous_response": "Got it, your spare key is in the green drawer.",
+    "new_response": "I will remember that you put your spare key in the green drawer.",
+    "followup": "Where did I put my spare key?",
+    "previous_followup": "In the green drawer, under the 'Key Spare' folder",
+    "new_followup": "I put it in the green drawer.",
+    "one_input_sent_to_both": true,
+    "both_models_completed": true,
+    "enter_to_send_verified": true,
+    "new_chat_clears_both": true,
+    "final_layout_verified": true,
+    "tab_left_open": true
+  },
+  "model_weights_changed": false
+}

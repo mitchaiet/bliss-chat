@@ -1,6 +1,8 @@
 // bliss-chat — XP-native LLM front-end.
-// Front-end for the custom NC_RUN.EXE inference backend (Karpathy nanochat
-// architecture). Loads MODEL.NCB once and stays resident. Sentinel protocol:
+// Front-end for the native NC_RUN.EXE inference backend.
+// MODEL.NCB contains SLM weights; TOKENIZER.NCT contains matching SLT byte-BPE.
+// Chat strings and backend transport are UTF-8; Windows controls use UTF-16.
+// Sentinel protocol:
 //   stdout: "\x01READY\n"        -> backend has loaded the model
 //   stdout: "\x01INFO <text>\n"  -> backend status / banner / notice
 //   stdout: "\x01PROG <pct>\n"   -> progress 0..100 during load/prefill/gen
@@ -25,6 +27,8 @@
 #include <stdarg.h>
 #include <string.h>
 #include <ctype.h>
+#include <wchar.h>
+#include <time.h>
 
 #define APP_NAME "Bliss Chat"
 #define APP_DISPLAY_NAME "Bliss Chat"
@@ -135,7 +139,7 @@
 #define IDD_SHORTCUTS        230
 #define IDC_SHORTCUTS_TEXT   231
 
-// Defaults that match nc_run.c's CLI defaults.
+// GUI defaults for the 512-token XP deployment. Sampling does not resize KV.
 #define DEFAULT_TEMP   0.0f
 #define DEFAULT_SEED   0  /* 0 = "use clock" */
 #define DEFAULT_TOPP   0.95f
@@ -242,6 +246,7 @@ static char gPcCpu[160] = "Windows XP-era CPU";
 static char gPcMemory[64] = "limited RAM";
 static char gPcThreads[32] = "1";
 static char gModelName[160] = "(loading...)";
+static char gModelSource[192] = "Not reported by backend";
 static char gStatusText[160] = "Loading model...";
 
 static char gAppDir[MAX_PATH];
@@ -280,6 +285,29 @@ static BOOL backend_send_line(const char *line);
 
 static volatile LONG gRunning;
 static volatile LONG gBackendReady;
+// UI thread produces request tags; the pipe reader consumes one per EOT.
+// Control acknowledgements must not complete a subsequently queued chat turn.
+#define REQUEST_QUEUE_SIZE 256
+static unsigned char gRequestKinds[REQUEST_QUEUE_SIZE];
+static volatile LONG gRequestWritten;
+static volatile LONG gRequestRead;
+static int queue_backend_request(int control) {
+    LONG written = InterlockedCompareExchange(&gRequestWritten, 0, 0);
+    LONG read = InterlockedCompareExchange(&gRequestRead, 0, 0);
+    if ((ULONG)written - (ULONG)read >= REQUEST_QUEUE_SIZE) return 0;
+    gRequestKinds[(ULONG)written % REQUEST_QUEUE_SIZE] = (unsigned char)control;
+    InterlockedIncrement(&gRequestWritten);
+    return 1;
+}
+static int take_backend_request(void) {
+    LONG read = InterlockedCompareExchange(&gRequestRead, 0, 0);
+    LONG written = InterlockedCompareExchange(&gRequestWritten, 0, 0);
+    int control;
+    if (read == written) return 0;
+    control = gRequestKinds[(ULONG)read % REQUEST_QUEUE_SIZE];
+    InterlockedIncrement(&gRequestRead);
+    return control;
+}
 static DWORD gRunStarted;
 
 // Per-message action state. The most-recent-assistant-turn body lives in
@@ -297,7 +325,7 @@ static int  gHasAsstTurn   = 0;
 // send_prompt() after one use.
 static int  gRegenLabel = 0;
 // Settings — mirror what we last sent to the backend so the dialog can
-// pre-populate. Persisted in HKCU\Software\bliss-chat\Settings.
+// pre-populate. Persisted in HKCU\Software\bliss-chat\SettingsCoherentV2.
 static float gTemp     = DEFAULT_TEMP;
 static DWORD gSeed     = DEFAULT_SEED;
 static float gTopP     = DEFAULT_TOPP;
@@ -409,6 +437,124 @@ static char * dup_text(const char *text) {
     return dup_text_len(text ? text : "", strlen(text ? text : ""));
 }
 
+// Strict UTF-8 decoding is kept here instead of relying on XP's permissive
+// MultiByteToWideChar behavior, which can silently discard invalid bytes.
+// Return zero for an incomplete streaming suffix; malformed input becomes a
+// visible replacement character. The caller never posts a partial code point.
+static int utf8_unit(const unsigned char *s, size_t n, unsigned long *cp, int final) {
+    unsigned long c;
+    int k, j;
+    if (!n) return 0;
+    c = s[0];
+    if (c < 0x80) { *cp = c; return 1; }
+    k = c >= 0xc2 && c <= 0xdf ? 2 : c >= 0xe0 && c <= 0xef ? 3 : c >= 0xf0 && c <= 0xf4 ? 4 : 0;
+    if (!k) { *cp = 0xfffd; return 1; }
+    for (j = 1; j < k && (size_t)j < n; j++) {
+        if ((s[j] & 0xc0) != 0x80) { *cp = 0xfffd; return 1; }
+    }
+    if (n < (size_t)k) { if (!final) return 0; *cp = 0xfffd; return 1; }
+    c &= (1u << (7 - k)) - 1;
+    for (j = 1; j < k; j++) c = (c << 6) | (s[j] & 63);
+    if ((k == 2 && c < 128) || (k == 3 && c < 2048) || (k == 4 && c < 65536) || c > 0x10ffff || (c >= 0xd800 && c <= 0xdfff)) {
+        *cp = 0xfffd; return 1;
+    }
+    *cp = c;
+    return k;
+}
+
+static WCHAR *utf8_to_wide(const char *text) {
+    size_t n = strlen(text ? text : ""), i = 0, out = 0;
+    WCHAR *w = (WCHAR *)malloc((n + 1) * sizeof(WCHAR));
+    if (!w) return NULL;
+    while (i < n) {
+        unsigned long cp;
+        i += (size_t)utf8_unit((const unsigned char *)text + i, n - i, &cp, 1);
+        if (cp > 0xffff) { cp -= 0x10000; w[out++] = (WCHAR)(0xd800 + (cp >> 10)); w[out++] = (WCHAR)(0xdc00 + (cp & 1023)); }
+        else w[out++] = (WCHAR)cp;
+    }
+    w[out] = 0;
+    return w;
+}
+
+static char *wide_to_utf8(const WCHAR *text) {
+    size_t n = wcslen(text), i = 0, out = 0;
+    char *s = (char *)malloc(n * 3 + 1);
+    if (!s) return NULL;
+    while (i < n) {
+        unsigned long cp = text[i++];
+        if (cp >= 0xd800 && cp <= 0xdbff && i < n && text[i] >= 0xdc00 && text[i] <= 0xdfff) cp = 0x10000 + ((cp - 0xd800) << 10) + (text[i++] - 0xdc00);
+        else if (cp >= 0xd800 && cp <= 0xdfff) cp = 0xfffd;
+        if (cp < 0x80) s[out++] = (char)cp;
+        else if (cp < 0x800) { s[out++] = (char)(0xc0 | (cp >> 6)); s[out++] = (char)(0x80 | (cp & 63)); }
+        else if (cp < 0x10000) { s[out++] = (char)(0xe0 | (cp >> 12)); s[out++] = (char)(0x80 | ((cp >> 6) & 63)); s[out++] = (char)(0x80 | (cp & 63)); }
+        else { s[out++] = (char)(0xf0 | (cp >> 18)); s[out++] = (char)(0x80 | ((cp >> 12) & 63)); s[out++] = (char)(0x80 | ((cp >> 6) & 63)); s[out++] = (char)(0x80 | (cp & 63)); }
+    }
+    s[out] = 0;
+    return s;
+}
+
+static char *window_text_utf8(HWND hwnd) {
+    int n = GetWindowTextLengthW(hwnd);
+    WCHAR *wide = (WCHAR *)calloc((size_t)n + 1, sizeof(WCHAR));
+    char *text;
+    if (!wide) return NULL;
+    GetWindowTextW(hwnd, wide, n + 1);
+    text = wide_to_utf8(wide);
+    free(wide);
+    return text;
+}
+
+static int get_window_utf8(HWND hwnd, char *out, int capacity) {
+    char *text = window_text_utf8(hwnd);
+    size_t n;
+    if (!text || capacity < 1) { if (capacity > 0) out[0] = 0; free(text); return -1; }
+    n = strlen(text);
+    if (n >= (size_t)capacity) { out[0] = 0; free(text); SetLastError(ERROR_INSUFFICIENT_BUFFER); return -1; }
+    memcpy(out, text, n + 1); free(text); return (int)n;
+}
+
+static BOOL set_window_utf8(HWND hwnd, const char *text) {
+    WCHAR *wide = utf8_to_wide(text);
+    BOOL ok = wide ? SetWindowTextW(hwnd, wide) : FALSE;
+    free(wide); return ok;
+}
+
+static int message_box_utf8(HWND owner, const char *text, const WCHAR *caption, UINT style) {
+    WCHAR *wide = utf8_to_wide(text);
+    int result = wide ? MessageBoxW(owner, wide, caption, style) : 0;
+    free(wide);
+    return result;
+}
+
+static int get_dialog_utf8(HWND dlg, int id, char *out, int capacity) { return get_window_utf8(GetDlgItem(dlg, id), out, capacity); }
+static BOOL set_dialog_utf8(HWND dlg, int id, const char *text) { return set_window_utf8(GetDlgItem(dlg, id), text); }
+static void copy_utf8_prefix(char *out, size_t capacity, const char *text) {
+    size_t n = strlen(text), pos = 0;
+    if (!capacity) return;
+    while (pos < n) {
+        unsigned long cp;
+        int k = utf8_unit((const unsigned char *)text + pos, n - pos, &cp, 1);
+        if (pos + (size_t)k >= capacity) break;
+        pos += (size_t)k;
+    }
+    memmove(out, text, pos); out[pos] = 0;
+}
+static void trim_incomplete_utf8_tail(char *text) {
+    size_t n = strlen(text), pos = 0;
+    while (pos < n) {
+        unsigned long cp;
+        int k = utf8_unit((const unsigned char *)text + pos, n - pos, &cp, 0);
+        if (!k) break;
+        pos += (size_t)k;
+    }
+    text[pos] = 0;
+}
+static void replace_selection_utf8(HWND hwnd, const char *text, BOOL undo) {
+    WCHAR *wide = utf8_to_wide(text);
+    if (wide) SendMessageW(hwnd, EM_REPLACESEL, undo, (LPARAM)wide);
+    free(wide);
+}
+
 static void buffer_init(Buffer *b) { b->data = NULL; b->len = 0; b->cap = 0; }
 
 static int buffer_reserve(Buffer *b, size_t need) {
@@ -478,12 +624,12 @@ static int cpu_has_sse3(void) {
 
 static void select_backend_exe(void) {
     int has_sse3 = cpu_has_sse3();
-    if (has_sse3 && file_exists_in_app_dir(BACKEND_SSE3_EXE)) {
-        snprintf(gBackendExe, sizeof(gBackendExe), "%s", BACKEND_SSE3_EXE);
-        snprintf(gBackendFlavor, sizeof(gBackendFlavor), "SSE3");
-    } else if (file_exists_in_app_dir(BACKEND_SSE2_EXE)) {
+    if (file_exists_in_app_dir(BACKEND_SSE2_EXE)) {
         snprintf(gBackendExe, sizeof(gBackendExe), "%s", BACKEND_SSE2_EXE);
         snprintf(gBackendFlavor, sizeof(gBackendFlavor), "SSE2");
+    } else if (has_sse3 && file_exists_in_app_dir(BACKEND_SSE3_EXE)) {
+        snprintf(gBackendExe, sizeof(gBackendExe), "%s", BACKEND_SSE3_EXE);
+        snprintf(gBackendFlavor, sizeof(gBackendFlavor), "SSE3");
     } else {
         snprintf(gBackendExe, sizeof(gBackendExe), "%s", BACKEND_EXE);
         snprintf(gBackendFlavor, sizeof(gBackendFlavor), has_sse3 ? "generic/SSE3 CPU" : "generic/SSE2 CPU");
@@ -497,8 +643,10 @@ static void update_status_bar(void) {
     if (!gStatus) return;
     snprintf(model_part, sizeof(model_part), "Model: %s", gModelName);
     snprintf(thread_part, sizeof(thread_part), "%s thread", gPcThreads);
-    SendMessageA(gStatus, SB_SETTEXTA, 0, (LPARAM)gStatusText);
-    SendMessageA(gStatus, SB_SETTEXTA, 1, (LPARAM)model_part);
+    WCHAR *status_wide = utf8_to_wide(gStatusText), *model_wide = utf8_to_wide(model_part);
+    if (status_wide) SendMessageW(gStatus, SB_SETTEXTW, 0, (LPARAM)status_wide);
+    if (model_wide) SendMessageW(gStatus, SB_SETTEXTW, 1, (LPARAM)model_wide);
+    free(status_wide); free(model_wide);
     SendMessageA(gStatus, SB_SETTEXTA, 2, (LPARAM)thread_part);
     SendMessageA(gStatus, SB_SETTEXTA, 3, (LPARAM)"0.0 tok/s");
     SendMessageA(gStatus, SB_SETTEXTA, 4, (LPARAM)gPcMemory);
@@ -507,14 +655,14 @@ static void update_status_bar(void) {
 static void update_model_box(void) {
     BOOL ready = InterlockedCompareExchange(&gBackendReady, 0, 0) != 0;
     BOOL named = strcmp(gModelName, "(loading...)") != 0;
-    if (gModelState) SetWindowTextA(gModelState, ready ? "Model loaded" : "Loading model");
-    if (gModel) SetWindowTextA(gModel, named ? gModelName : MODEL_LABEL);
+    if (gModelState) set_window_utf8(gModelState, ready ? "Model loaded" : "Loading model");
+    if (gModel) set_window_utf8(gModel, named ? gModelName : MODEL_LABEL);
     if (gProgress) ShowWindow(gProgress, (ready || named) ? SW_HIDE : SW_SHOW);
     update_status_bar();
 }
 
 static void set_status(const char *text) {
-    snprintf(gStatusText, sizeof(gStatusText), "%s", text ? text : "");
+    copy_utf8_prefix(gStatusText, sizeof(gStatusText), text ? text : "");
     update_status_bar();
 }
 
@@ -531,12 +679,12 @@ static void diagnostics_appendf(const char *fmt, ...) {
     snprintf(line, sizeof(line), "[%02d:%02d:%02d]  %s\r\n",
              st.wHour, st.wMinute, st.wSecond, body);
     SendMessageA(gDiagnostics, EM_SETSEL, (WPARAM)-1, (LPARAM)-1);
-    SendMessageA(gDiagnostics, EM_REPLACESEL, FALSE, (LPARAM)line);
+    replace_selection_utf8(gDiagnostics, line, FALSE);
     SendMessageA(gDiagnostics, WM_VSCROLL, SB_BOTTOM, 0);
 }
 
 static void rich_set_format(COLORREF color, BOOL bold) {
-    CHARFORMAT2A cf;
+    CHARFORMAT2W cf;
     ZeroMemory(&cf, sizeof(cf));
     cf.cbSize = sizeof(cf);
     cf.dwMask = CFM_COLOR | CFM_BOLD;
@@ -556,7 +704,7 @@ static void rich_append_color(const char *text, COLORREF color, BOOL bold) {
     range.cpMax = -1;
     SendMessageA(gTranscript, EM_EXSETSEL, 0, (LPARAM)&range);
     rich_set_format(color, bold);
-    SendMessageA(gTranscript, EM_REPLACESEL, FALSE, (LPARAM)norm.data);
+    replace_selection_utf8(gTranscript, norm.data, FALSE);
     // Always scroll to the new end. The previous "sticky-bottom" version
     // checked SCROLLINFO before appending and only scrolled if the user
     // was already at the bottom; SCROLLINFO lags during fast streaming
@@ -568,9 +716,8 @@ static void rich_append_color(const char *text, COLORREF color, BOOL bold) {
 }
 
 // Return the character offset of the RichEdit's end-of-text. RichEdit
-// offsets are in UTF-16 code units, but our content is ASCII-only and
-// CRLF-normalized, so EM_EXSETSEL(-1,-1) followed by EM_EXGETSEL gives
-// us a usable position for EM_GETTEXTRANGE later.
+// offsets are in UTF-16 code units. Keep them in that form for selections
+// and convert retrieved text to UTF-8 only after EM_GETTEXTRANGE.
 static LONG rich_end_pos(void) {
     CHARRANGE r;
     if (!gTranscript) return 0;
@@ -580,53 +727,38 @@ static LONG rich_end_pos(void) {
     return r.cpMax;
 }
 
-// Pull a character range out of the transcript as ANSI text. Caller frees.
-// Returns NULL on failure or empty range.
-static char * rich_get_range(LONG start, LONG end) {
-    TEXTRANGEA tr;
-    LONG n;
-    char *buf;
-    if (!gTranscript || end <= start) return NULL;
-    n = end - start;
-    // EM_GETTEXTRANGE writes at most cpMax-cpMin chars plus a NUL, but
-    // because RichEdit positions count UTF-16 units we add slack to
-    // be safe against multi-byte expansion (we expect 1:1 ASCII, but
-    // belt-and-braces costs nothing).
-    buf = (char *)malloc((size_t)n * 2 + 8);
-    if (!buf) return NULL;
-    tr.chrg.cpMin = start;
-    tr.chrg.cpMax = end;
-    tr.lpstrText  = buf;
-    SendMessageA(gTranscript, EM_GETTEXTRANGE, 0, (LPARAM)&tr);
-    buf[(size_t)n * 2 + 7] = 0;
-    return buf;
+// RichEdit selection offsets remain UTF-16 units. Return UTF-8 for persistence,
+// backend replay, and per-message actions; callers own the returned string.
+static char *rich_get_range(LONG start, LONG end) {
+    TEXTRANGEW tr;
+    WCHAR *wide;
+    char *text;
+    if (!gTranscript || end <= start || start < 0) return NULL;
+    wide = (WCHAR *)calloc((size_t)(end - start) + 1, sizeof(WCHAR));
+    if (!wide) return NULL;
+    tr.chrg.cpMin = start; tr.chrg.cpMax = end; tr.lpstrText = wide;
+    SendMessageW(gTranscript, EM_GETTEXTRANGE, 0, (LPARAM)&tr);
+    text = wide_to_utf8(wide); free(wide); return text;
 }
 
-// Put a NUL-terminated ANSI string on the clipboard as CF_TEXT.
-// Returns 1 on success, 0 on failure. text is copied into a moveable
-// HGLOBAL; SetClipboardData transfers ownership.
+// Windows synthesizes legacy CF_TEXT if an older application requests it.
+// Store the original Unicode content instead of converting it through ACP.
 static int clipboard_set_text(HWND owner, const char *text) {
+    WCHAR *wide = text ? utf8_to_wide(text) : NULL;
     HGLOBAL hg;
-    size_t len;
-    char *dst;
-    if (!text) return 0;
-    len = strlen(text);
-    if (!OpenClipboard(owner)) return 0;
+    void *dst;
+    size_t bytes;
+    if (!wide) return 0;
+    bytes = (wcslen(wide) + 1) * sizeof(WCHAR);
+    if (!OpenClipboard(owner)) { free(wide); return 0; }
     EmptyClipboard();
-    hg = GlobalAlloc(GMEM_MOVEABLE, len + 1);
-    if (!hg) { CloseClipboard(); return 0; }
-    dst = (char *)GlobalLock(hg);
-    if (!dst) { GlobalFree(hg); CloseClipboard(); return 0; }
-    memcpy(dst, text, len);
-    dst[len] = 0;
-    GlobalUnlock(hg);
-    if (!SetClipboardData(CF_TEXT, hg)) {
-        GlobalFree(hg);
-        CloseClipboard();
-        return 0;
-    }
-    CloseClipboard();
-    return 1;
+    hg = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (!hg) { free(wide); CloseClipboard(); return 0; }
+    dst = GlobalLock(hg);
+    if (!dst) { free(wide); GlobalFree(hg); CloseClipboard(); return 0; }
+    memcpy(dst, wide, bytes); free(wide); GlobalUnlock(hg);
+    if (!SetClipboardData(CF_UNICODETEXT, hg)) { GlobalFree(hg); CloseClipboard(); return 0; }
+    CloseClipboard(); return 1;
 }
 
 static void trim_trailing_newlines(char *text) {
@@ -694,11 +826,11 @@ static int sapi_speak_text(HWND owner, const char *text) {
     if (!text || !*text) return 0;
     if (!sapi_ensure_voice()) goto done;
 
-    wide_len = MultiByteToWideChar(CP_ACP, 0, text, -1, NULL, 0);
+    wide_len = MultiByteToWideChar(CP_UTF8, 0, text, -1, NULL, 0);
     if (wide_len <= 0) goto done;
     wide = (WCHAR *)malloc((size_t)wide_len * sizeof(WCHAR));
     if (!wide) goto done;
-    MultiByteToWideChar(CP_ACP, 0, text, -1, wide, wide_len);
+    MultiByteToWideChar(CP_UTF8, 0, text, -1, wide, wide_len);
     speech = SysAllocString(wide);
     if (!speech) goto done;
 
@@ -744,7 +876,7 @@ static void speak_last_reply(HWND hwnd) {
 }
 
 static void input_toggle_charformat(DWORD mask, DWORD effect) {
-    CHARFORMAT2A cf;
+    CHARFORMAT2W cf;
     if (!gInput) return;
     ZeroMemory(&cf, sizeof(cf));
     cf.cbSize = sizeof(cf);
@@ -759,7 +891,7 @@ static void input_toggle_charformat(DWORD mask, DWORD effect) {
 
 static void input_insert_text(const char *text) {
     if (!gInput || !text) return;
-    SendMessageA(gInput, EM_REPLACESEL, TRUE, (LPARAM)text);
+    replace_selection_utf8(gInput, text, TRUE);
     SetFocus(gInput);
 }
 
@@ -785,9 +917,9 @@ static void clear_transcript(void) {
     gHasAsstTurn   = 0;
     gPendingUser[0] = 0;
     update_msg_actions();
-    SetWindowTextA(gTranscript, "");
+    set_window_utf8(gTranscript, "");
     rich_append_color("Bliss Chat\r\n", RGB(0, 128, 0), TRUE);
-    if (gModel && GetWindowTextA(gModel, model_text, sizeof(model_text)) > 0) {
+    if (gModel && get_window_utf8(gModel, model_text, sizeof(model_text)) > 0) {
         rich_append_color(model_text, RGB(96, 96, 96), FALSE);
         rich_append_color("\r\n", RGB(96, 96, 96), FALSE);
     } else {
@@ -833,6 +965,23 @@ static void post_chunk(const char *text, size_t len) {
     if (!PostMessageA(gMain, WM_APPEND_TEXT, 0, (LPARAM)copy)) free(copy);
 }
 
+static void post_utf8_chunk(Buffer *carry, const char *text, size_t len, int final) {
+    size_t ready = 0;
+    if (len && !buffer_append(carry, text, len)) return;
+    while (ready < carry->len) {
+        unsigned long cp;
+        int k = utf8_unit((const unsigned char *)carry->data + ready, carry->len - ready, &cp, final);
+        if (!k) break;
+        ready += (size_t)k;
+    }
+    if (ready) {
+        post_chunk(carry->data, ready);
+        memmove(carry->data, carry->data + ready, carry->len - ready);
+        carry->len -= ready;
+        carry->data[carry->len] = 0;
+    }
+}
+
 // ---------- backend reader ----------
 // Pulls bytes from gBackendStdoutR forever, splits on \x01 sentinels, posts
 // regular response text via WM_APPEND_TEXT and end-of-turn / ready / dead via
@@ -841,12 +990,14 @@ static DWORD WINAPI reader_thread(LPVOID param) {
     char chunk[1024];
     Buffer line; // buffer for the current sentinel line being assembled
     Buffer turn; // accumulated assistant text for the current turn
+    Buffer utf8_carry; // at most three pending bytes between normal chunks
     DWORD got;
     int in_sentinel = 0;
 
     (void)param;
     buffer_init(&line);
     buffer_init(&turn);
+    buffer_init(&utf8_carry);
 
     while (ReadFile(gBackendStdoutR, chunk, sizeof(chunk), &got, NULL) && got > 0) {
         size_t i;
@@ -865,12 +1016,13 @@ static DWORD WINAPI reader_thread(LPVOID param) {
                         char *t = dup_text(line.data + 5);
                         PostMessageA(gMain, WM_BACKEND_INFO, 0, (LPARAM)t);
                     } else if (strncmp(line.data, "EOT", 3) == 0) {
+                        post_utf8_chunk(&utf8_carry, NULL, 0, 1);
                         // Form: "EOT <token_count>"
                         int tcount = 0;
                         if (line.data[3] == ' ') tcount = atoi(line.data + 4);
                         dbg_log("BACKEND", "EOT received, %d tokens, %lu bytes", tcount, (unsigned long)turn.len);
                         char *t = dup_text_len(turn.data ? turn.data : "", turn.len);
-                        PostMessageA(gMain, WM_RUN_DONE, (WPARAM)tcount, (LPARAM)t);
+                        PostMessageA(gMain, WM_RUN_DONE, take_backend_request() ? (WPARAM)-1 : (WPARAM)tcount, (LPARAM)t);
                         turn.len = 0;
                         if (turn.data) turn.data[0] = 0;
                     } else if (strncmp(line.data, "PROG ", 5) == 0) {
@@ -878,6 +1030,7 @@ static DWORD WINAPI reader_thread(LPVOID param) {
                         if (pct < 0) pct = 0; if (pct > 100) pct = 100;
                         PostMessageA(gMain, WM_BACKEND_PROG, (WPARAM)pct, 0);
                     } else if (strncmp(line.data, "ERR", 3) == 0) {
+                        post_utf8_chunk(&utf8_carry, NULL, 0, 1);
                         dbg_log("BACKEND", "ERR sentinel: %s", line.data + 3);
                         char *t = dup_text(line.data + 3);
                         PostMessageA(gMain, WM_RUN_ERR, 0, (LPARAM)t);
@@ -899,7 +1052,7 @@ static DWORD WINAPI reader_thread(LPVOID param) {
                 if (i > flush_from) {
                     size_t n = i - flush_from;
                     buffer_append(&turn, chunk + flush_from, n);
-                    post_chunk(chunk + flush_from, n);
+                    post_utf8_chunk(&utf8_carry, chunk + flush_from, n, 0);
                 }
                 in_sentinel = 1;
                 flush_from = i + 1;
@@ -909,13 +1062,15 @@ static DWORD WINAPI reader_thread(LPVOID param) {
             size_t n = got - flush_from;
             buffer_append(&turn, chunk + flush_from, n);
             log_bytes("TOKEN", chunk + flush_from, n);
-            post_chunk(chunk + flush_from, n);
+            post_utf8_chunk(&utf8_carry, chunk + flush_from, n, 0);
         }
     }
     dbg_log("READER", "ReadFile loop ended (pipe closed or error)");
+    post_utf8_chunk(&utf8_carry, NULL, 0, 1);
 
     free(line.data);
     free(turn.data);
+    free(utf8_carry.data);
     PostMessageA(gMain, WM_BACKEND_DEAD, 0, 0);
     return 0;
 }
@@ -970,7 +1125,7 @@ static int launch_backend(void) {
     }
 
     snprintf(command, sizeof(command),
-        "\"%s\\%s\" \"%s\\%s\" \"%s\\%s\" -c 256 -t 0.8 -p 0.95 -m \"%s\"",
+        "\"%s\\%s\" \"%s\\%s\" \"%s\\%s\" -c 512 -t 0.0 -p 0.95 -m \"%s\"",
         gAppDir, gBackendExe, gAppDir, MODEL_FILE, gAppDir, TOKENIZER_FILE, mem_path);
 
     dbg_log("GUI", "selected backend: %s (%s)", gBackendExe, gBackendFlavor);
@@ -1291,6 +1446,7 @@ static void know_extract_snippet(const char *text, int off, char *out, int outsz
     }
     while (o > 0 && out[o - 1] == ' ') o--;
     out[o] = 0;
+    trim_incomplete_utf8_tail(out);
 }
 
 static void strip_html_inplace(char *s) {
@@ -1507,7 +1663,7 @@ static void send_prompt_text(const char *user_prompt, int show_user_header) {
     backend_prompt = (user_prompt[0] == '/') ? dup_text(user_prompt) : augment_prompt_with_knowledge(user_prompt);
     if (!backend_prompt) backend_prompt = dup_text(user_prompt);
     snprintf(with_newline, sizeof(with_newline), "%s\n", backend_prompt ? backend_prompt : user_prompt);
-    if (!WriteFile(gBackendStdinW, with_newline, (DWORD)strlen(with_newline), &written, NULL)) {
+    if (!queue_backend_request(0) || !WriteFile(gBackendStdinW, with_newline, (DWORD)strlen(with_newline), &written, NULL)) {
         dbg_log("GUI", "WriteFile to backend stdin failed");
         rich_append_color("[backend write failed]\r\n", RGB(192, 0, 0), TRUE);
         InterlockedExchange(&gRunning, 0);
@@ -1519,10 +1675,13 @@ static void send_prompt_text(const char *user_prompt, int show_user_header) {
 
 static void send_prompt(void) {
     char user_prompt[PROMPT_MAX];
-    GetWindowTextA(gInput, user_prompt, sizeof(user_prompt));
+    if (get_window_utf8(gInput, user_prompt, sizeof(user_prompt)) < 0) {
+        set_status("Message exceeds the UTF-8 input limit; please shorten it.");
+        return;
+    }
     sanitize_user(user_prompt);
     if (!input_has_text(user_prompt)) return;
-    SetWindowTextA(gInput, "");
+    set_window_utf8(gInput, "");
     send_prompt_text(user_prompt, 1);
 }
 
@@ -1615,8 +1774,10 @@ static void create_fonts(void) {
 }
 
 static HWND make_control(const char *klass, const char *text, DWORD style, DWORD exstyle, int id, HWND parent) {
-    HWND hwnd = CreateWindowExA(exstyle, klass, text, style | WS_CHILD | WS_VISIBLE,
-        0, 0, 10, 10, parent, (HMENU)(INT_PTR)id, gInstance, NULL);
+    WCHAR *wklass = utf8_to_wide(klass), *wtext = utf8_to_wide(text);
+    HWND hwnd = (wklass && wtext) ? CreateWindowExW(exstyle, wklass, wtext, style | WS_CHILD | WS_VISIBLE,
+        0, 0, 10, 10, parent, (HMENU)(INT_PTR)id, gInstance, NULL) : NULL;
+    free(wklass); free(wtext);
     if (hwnd && gUiFont) SendMessageA(hwnd, WM_SETFONT, (WPARAM)gUiFont, TRUE);
     return hwnd;
 }
@@ -2001,14 +2162,14 @@ static void create_controls(HWND hwnd) {
     gModelState = make_control("STATIC", "Loading model", SS_LEFT, 0, IDC_MODEL_STATE, hwnd);
     gModel = make_control("STATIC", MODEL_LABEL, SS_LEFT, 0, IDC_MODEL, hwnd);
 
-    gTranscript = make_control("RichEdit20A", "",
+    gTranscript = make_control("RichEdit20W", "",
         ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP,
         WS_EX_CLIENTEDGE, IDC_TRANSCRIPT, hwnd);
     SendMessageA(gTranscript, WM_SETFONT, (WPARAM)gMonoFont, TRUE);
     SendMessageA(gTranscript, EM_SETBKGNDCOLOR, 0, RGB(255, 255, 255));
     SendMessageA(gTranscript, EM_EXLIMITTEXT, 0, 524288);
 
-    gInput = make_control("RichEdit20A", "",
+    gInput = make_control("RichEdit20W", "",
         ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_TABSTOP,
         WS_EX_CLIENTEDGE, IDC_INPUT, hwnd);
     SendMessageA(gInput, EM_SETLIMITTEXT, PROMPT_MAX - 1, 0);
@@ -2407,7 +2568,7 @@ static void chat_chomp_title(char *s) {
     p = strchr(s, '\r'); if (p) *p = 0;
     int n = (int)strlen(s);
     if (n > CHAT_TITLE_MAX - 4) {
-        s[CHAT_TITLE_MAX - 4] = 0;
+        copy_utf8_prefix(s, CHAT_TITLE_MAX - 3, s);
         strcat(s, "...");
     }
 }
@@ -2420,7 +2581,7 @@ static void chat_read_title(const char *path, char *out, int outsz) {
     out[0] = 0;
     while (fgets(line, sizeof(line), fp)) {
         if (!strncmp(line, "TITLE: ", 7)) {
-            snprintf(out, outsz, "%s", line + 7);
+            copy_utf8_prefix(out, (size_t)outsz, line + 7);
             chat_chomp_title(out);
             break;
         }
@@ -2455,7 +2616,9 @@ static void chats_listbox_insert(int idx, const ChatEntry *e) {
              e->stamp.wMonth, e->stamp.wDay,
              hour12, e->stamp.wMinute, ampm,
              e->title);
-    SendMessageA(gChatList, LB_INSERTSTRING, idx, (LPARAM)display);
+    WCHAR *wide = utf8_to_wide(display);
+    if (wide) SendMessageW(gChatList, LB_INSERTSTRING, idx, (LPARAM)wide);
+    free(wide);
 }
 
 // Compare for sort (newest first).
@@ -2581,7 +2744,7 @@ static void chats_append_turn(const char *role, const char *text) {
 static int chats_write_title(int idx, const char *new_title) {
     if (idx < 0 || idx >= gChatCount) return 0;
     char title[CHAT_TITLE_MAX];
-    snprintf(title, sizeof(title), "%s", new_title ? new_title : "");
+    copy_utf8_prefix(title, sizeof(title), new_title ? new_title : "");
     chat_chomp_title(title);
 
     // Read full file, swap TITLE: line, write back.
@@ -2649,7 +2812,7 @@ static INT_PTR CALLBACK rename_dlg_proc(HWND dlg, UINT msg, WPARAM wparam, LPARA
     (void)lparam;
     switch (msg) {
     case WM_INITDIALOG:
-        SetDlgItemTextA(dlg, IDC_RENAME_EDIT, gRenameBuf);
+        set_dialog_utf8(dlg, IDC_RENAME_EDIT, gRenameBuf);
         // Select all so the user can just start typing.
         SendDlgItemMessageA(dlg, IDC_RENAME_EDIT, EM_SETSEL, 0, -1);
         SetFocus(GetDlgItem(dlg, IDC_RENAME_EDIT));
@@ -2657,7 +2820,10 @@ static INT_PTR CALLBACK rename_dlg_proc(HWND dlg, UINT msg, WPARAM wparam, LPARA
     case WM_COMMAND:
         switch (LOWORD(wparam)) {
         case IDOK:
-            GetDlgItemTextA(dlg, IDC_RENAME_EDIT, gRenameBuf, (int)sizeof(gRenameBuf));
+            if (get_dialog_utf8(dlg, IDC_RENAME_EDIT, gRenameBuf, (int)sizeof(gRenameBuf)) < 0) {
+                MessageBoxA(dlg, "Please use a shorter chat title.", APP_NAME, MB_OK | MB_ICONINFORMATION);
+                return TRUE;
+            }
             EndDialog(dlg, IDOK);
             return TRUE;
         case IDCANCEL:
@@ -2679,7 +2845,7 @@ static INT_PTR CALLBACK rename_dlg_proc(HWND dlg, UINT msg, WPARAM wparam, LPARA
 static void chats_rename_interactive(HWND parent, int idx) {
     if (idx < 0 || idx >= gChatCount) return;
     snprintf(gRenameBuf, sizeof(gRenameBuf), "%s", gChats[idx].title);
-    INT_PTR rc = DialogBoxParamA(gInstance, MAKEINTRESOURCEA(IDD_RENAME),
+    INT_PTR rc = DialogBoxParamW(gInstance, MAKEINTRESOURCEW(IDD_RENAME),
                                  parent, rename_dlg_proc, 0);
     if (rc != IDOK) return;
     if (!input_has_text(gRenameBuf)) return;  // empty/whitespace -> cancel
@@ -2725,7 +2891,7 @@ static void chats_load_into_view(int idx) {
     gPendingUser[0] = 0;
     update_msg_actions();
 
-    SetWindowTextA(gTranscript, "");
+    set_window_utf8(gTranscript, "");
     rich_append_color("Bliss Chat\r\n", RGB(0, 128, 0), TRUE);
     rich_append_color(gChats[idx].title, RGB(96, 96, 96), FALSE);
     rich_append_color("\r\n\r\n", RGB(96, 96, 96), FALSE);
@@ -2787,6 +2953,7 @@ static void replay_accum(char *dst, const char *line) {
         }
     }
     dst[o] = 0;
+    trim_incomplete_utf8_tail(dst);
 }
 
 // Push `cur` into the pairs ring if both sides are non-empty (after
@@ -2863,12 +3030,27 @@ static BOOL backend_send_line(const char *line) {
     char buf[4096];
     snprintf(buf, sizeof(buf), "%s\n", line);
     DWORD wrote = 0;
-    return WriteFile(gBackendStdinW, buf, (DWORD)strlen(buf), &wrote, NULL);
+    return queue_backend_request(1) && WriteFile(gBackendStdinW, buf, (DWORD)strlen(buf), &wrote, NULL);
 }
 
 // HKCU\Software\bliss-chat\SettingsCoherentV2 holds persisted sampling.
 // New key intentionally avoids old installs resurrecting stale temp=0.8/0.9.
 #define BLISS_REG_SETTINGS "Software\\bliss-chat\\SettingsCoherentV2"
+
+static void settings_normalize(void) {
+    // Negated inclusive comparisons also reject NaN from dialog text.
+    if (!(gTemp >= 0.0f && gTemp <= 5.0f)) gTemp = DEFAULT_TEMP;
+    if (!(gTopP > 0.0f && gTopP <= 1.0f)) gTopP = DEFAULT_TOPP;
+    if (!gMaxTok || gMaxTok > 512) gMaxTok = DEFAULT_MAXTOK;
+}
+
+static int settings_read_dword(HKEY key, const char *name, DWORD *value) {
+    DWORD type = 0, size = sizeof(DWORD), candidate = 0;
+    if (RegQueryValueExA(key, name, NULL, &type, (BYTE *)&candidate, &size) != ERROR_SUCCESS ||
+        type != REG_DWORD || size != sizeof(DWORD)) return 0;
+    *value = candidate;
+    return 1;
+}
 
 static void settings_load(void) {
     HKEY key;
@@ -2876,38 +3058,44 @@ static void settings_load(void) {
                       KEY_READ, &key) != ERROR_SUCCESS) return;
     DWORD type = 0, sz;
     DWORD t_milli = 0;     // store temp as int(*1000) so REG_DWORD fits cleanly
-    sz = sizeof(t_milli);
-    if (RegQueryValueExA(key, "TempMilli", NULL, &type, (BYTE *)&t_milli, &sz) == ERROR_SUCCESS) {
+    if (settings_read_dword(key, "TempMilli", &t_milli)) {
         gTemp = (float)t_milli / 1000.0f;
     }
     DWORD seed = 0;
-    sz = sizeof(seed);
-    if (RegQueryValueExA(key, "Seed", NULL, &type, (BYTE *)&seed, &sz) == ERROR_SUCCESS) {
+    if (settings_read_dword(key, "Seed", &seed)) {
         gSeed = seed;
     }
     // Top-P stored same as Temp: int(*1000) for REG_DWORD cleanliness.
     DWORD p_milli = 0;
-    sz = sizeof(p_milli);
-    if (RegQueryValueExA(key, "TopPMilli", NULL, &type, (BYTE *)&p_milli, &sz) == ERROR_SUCCESS) {
+    if (settings_read_dword(key, "TopPMilli", &p_milli)) {
         gTopP = (float)p_milli / 1000.0f;
     }
     DWORD maxtok = 0;
-    sz = sizeof(maxtok);
-    if (RegQueryValueExA(key, "MaxTok", NULL, &type, (BYTE *)&maxtok, &sz) == ERROR_SUCCESS) {
+    if (settings_read_dword(key, "MaxTok", &maxtok)) {
         gMaxTok = maxtok;
     }
     // System prompt is REG_SZ. May be empty (treated as "use backend default").
-    sz = sizeof(gSysPrompt);
-    if (RegQueryValueExA(key, "SystemPrompt", NULL, &type, (BYTE *)gSysPrompt, &sz) != ERROR_SUCCESS) {
-        gSysPrompt[0] = 0;
-    } else {
-        gSysPrompt[sizeof(gSysPrompt) - 1] = 0;
+    {
+        WCHAR system_wide[2049] = {0};
+        sz = sizeof(system_wide) - sizeof(WCHAR);
+        if (RegQueryValueExW(key, L"SystemPrompt", NULL, &type, (BYTE *)system_wide, &sz) == ERROR_SUCCESS &&
+            type == REG_SZ && sz >= sizeof(WCHAR) && sz <= sizeof(system_wide) - sizeof(WCHAR) && !(sz % sizeof(WCHAR))) {
+            char *text;
+            // RegQueryValueExW does not guarantee termination of stored REG_SZ.
+            system_wide[sz / sizeof(WCHAR)] = 0;
+            text = wide_to_utf8(system_wide);
+            if (text && strlen(text) < sizeof(gSysPrompt)) strcpy(gSysPrompt, text);
+            else gSysPrompt[0] = 0;
+            free(text);
+        } else gSysPrompt[0] = 0;
     }
+    settings_normalize();
     RegCloseKey(key);
 }
 
 static void settings_save(void) {
     HKEY key;
+    settings_normalize();
     if (RegCreateKeyExA(HKEY_CURRENT_USER, BLISS_REG_SETTINGS, 0, NULL,
                         REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL,
                         &key, NULL) != ERROR_SUCCESS) return;
@@ -2917,12 +3105,15 @@ static void settings_save(void) {
     RegSetValueExA(key, "Seed",       0, REG_DWORD, (BYTE *)&gSeed,    sizeof(gSeed));
     RegSetValueExA(key, "TopPMilli",  0, REG_DWORD, (BYTE *)&p_milli,  sizeof(p_milli));
     RegSetValueExA(key, "MaxTok",     0, REG_DWORD, (BYTE *)&gMaxTok,  sizeof(gMaxTok));
-    RegSetValueExA(key, "SystemPrompt", 0, REG_SZ,
-                   (BYTE *)gSysPrompt, (DWORD)(strlen(gSysPrompt) + 1));
+    {
+        WCHAR *wide = utf8_to_wide(gSysPrompt);
+        if (wide) RegSetValueExW(key, L"SystemPrompt", 0, REG_SZ, (BYTE *)wide, (DWORD)((wcslen(wide) + 1) * sizeof(WCHAR)));
+        free(wide);
+    }
     RegCloseKey(key);
 }
 
-// Wipe the whole HKCU\Software\bliss-chat\Settings subkey and revert
+// Wipe the HKCU\Software\bliss-chat\SettingsCoherentV2 subkey and revert
 // the in-memory mirrors to defaults. Used by "Reset All Settings".
 static void settings_reset_all(void) {
     gTemp   = DEFAULT_TEMP;
@@ -2957,6 +3148,7 @@ static void escape_newlines(const char *in, char *out, size_t outsz) {
 // Safe to call any time — backend echoes an INFO + EOT for each.
 static void settings_apply_to_backend(void) {
     char buf[3072];
+    settings_normalize();
     snprintf(buf, sizeof(buf), "/temp %.3f", gTemp);
     backend_send_line(buf);
     snprintf(buf, sizeof(buf), "/topp %.3f", gTopP);
@@ -2978,9 +3170,9 @@ static void settings_apply_to_backend(void) {
 static void apply_settings_preset(HWND dlg, int preset_index) {
     int count = (int)(sizeof(gSettingsPresets) / sizeof(gSettingsPresets[0]));
     if (!dlg || preset_index < 0 || preset_index >= count) return;
-    SetDlgItemTextA(dlg, IDC_TEMP_EDIT, gSettingsPresets[preset_index].temp);
-    SetDlgItemTextA(dlg, IDC_TOPP_EDIT, gSettingsPresets[preset_index].top_p);
-    SetDlgItemTextA(dlg, IDC_MAXTOK_EDIT, gSettingsPresets[preset_index].max_tok);
+    set_dialog_utf8(dlg, IDC_TEMP_EDIT, gSettingsPresets[preset_index].temp);
+    set_dialog_utf8(dlg, IDC_TOPP_EDIT, gSettingsPresets[preset_index].top_p);
+    set_dialog_utf8(dlg, IDC_MAXTOK_EDIT, gSettingsPresets[preset_index].max_tok);
 }
 
 // Dialog proc for the Settings dialog. Loads gTemp / gSeed / gTopP /
@@ -2992,14 +3184,14 @@ static INT_PTR CALLBACK settings_dlg_proc(HWND dlg, UINT msg, WPARAM wparam, LPA
     switch (msg) {
     case WM_INITDIALOG:
         snprintf(buf, sizeof(buf), "%.2f", gTemp);
-        SetDlgItemTextA(dlg, IDC_TEMP_EDIT, buf);
+        set_dialog_utf8(dlg, IDC_TEMP_EDIT, buf);
         snprintf(buf, sizeof(buf), "%lu", (unsigned long)gSeed);
-        SetDlgItemTextA(dlg, IDC_SEED_EDIT, buf);
+        set_dialog_utf8(dlg, IDC_SEED_EDIT, buf);
         snprintf(buf, sizeof(buf), "%.2f", gTopP);
-        SetDlgItemTextA(dlg, IDC_TOPP_EDIT, buf);
+        set_dialog_utf8(dlg, IDC_TOPP_EDIT, buf);
         snprintf(buf, sizeof(buf), "%lu", (unsigned long)gMaxTok);
-        SetDlgItemTextA(dlg, IDC_MAXTOK_EDIT, buf);
-        SetDlgItemTextA(dlg, IDC_SYSPROMPT_EDIT, gSysPrompt);
+        set_dialog_utf8(dlg, IDC_MAXTOK_EDIT, buf);
+        set_dialog_utf8(dlg, IDC_SYSPROMPT_EDIT, gSysPrompt);
         return TRUE;
 
     case WM_COMMAND:
@@ -3008,23 +3200,28 @@ static INT_PTR CALLBACK settings_dlg_proc(HWND dlg, UINT msg, WPARAM wparam, LPA
             float t, p;
             DWORD maxtok;
             char sysbuf[2048];
-            GetDlgItemTextA(dlg, IDC_TEMP_EDIT, buf, sizeof(buf));
+            get_dialog_utf8(dlg, IDC_TEMP_EDIT, buf, sizeof(buf));
             t = (float)atof(buf);
             if (t < 0.0f) t = 0.0f;
             if (t > 5.0f) t = 5.0f;
             gTemp = t;
-            GetDlgItemTextA(dlg, IDC_SEED_EDIT, buf, sizeof(buf));
+            get_dialog_utf8(dlg, IDC_SEED_EDIT, buf, sizeof(buf));
             gSeed = (DWORD)strtoul(buf, NULL, 10);
-            GetDlgItemTextA(dlg, IDC_TOPP_EDIT, buf, sizeof(buf));
+            get_dialog_utf8(dlg, IDC_TOPP_EDIT, buf, sizeof(buf));
             p = (float)atof(buf);
-            if (p < 0.0f) p = 0.0f;
+            if (p <= 0.0f) p = DEFAULT_TOPP;
             if (p > 1.0f) p = 1.0f;
             gTopP = p;
-            GetDlgItemTextA(dlg, IDC_MAXTOK_EDIT, buf, sizeof(buf));
+            get_dialog_utf8(dlg, IDC_MAXTOK_EDIT, buf, sizeof(buf));
             maxtok = (DWORD)strtoul(buf, NULL, 10);
-            if (maxtok > 2048) maxtok = 2048;
+            if (!maxtok) maxtok = DEFAULT_MAXTOK;
+            if (maxtok > 512) maxtok = 512;
             gMaxTok = maxtok;
-            GetDlgItemTextA(dlg, IDC_SYSPROMPT_EDIT, sysbuf, sizeof(sysbuf));
+            settings_normalize();
+            if (get_dialog_utf8(dlg, IDC_SYSPROMPT_EDIT, sysbuf, sizeof(sysbuf)) < 0) {
+                MessageBoxA(dlg, "Please shorten the system prompt.", APP_NAME, MB_OK | MB_ICONINFORMATION);
+                return TRUE;
+            }
             snprintf(gSysPrompt, sizeof(gSysPrompt), "%s", sysbuf);
             settings_save();
             settings_apply_to_backend();
@@ -3051,17 +3248,17 @@ static INT_PTR CALLBACK settings_dlg_proc(HWND dlg, UINT msg, WPARAM wparam, LPA
         case IDC_SEED_RANDOM: {
             DWORD r = GetTickCount() ^ ((DWORD)(uintptr_t)dlg);
             snprintf(buf, sizeof(buf), "%lu", (unsigned long)r);
-            SetDlgItemTextA(dlg, IDC_SEED_EDIT, buf);
+            set_dialog_utf8(dlg, IDC_SEED_EDIT, buf);
             return TRUE;
         }
 
         case IDC_DEFAULTS:
             // "Reset Defaults" — only clears the Sampling group, leaves
             // the Advanced fields alone (system prompt etc.).
-            SetDlgItemTextA(dlg, IDC_TEMP_EDIT, "0.00");
-            SetDlgItemTextA(dlg, IDC_SEED_EDIT, "0");
-            SetDlgItemTextA(dlg, IDC_TOPP_EDIT, "0.95");
-            SetDlgItemTextA(dlg, IDC_MAXTOK_EDIT, "128");
+            set_dialog_utf8(dlg, IDC_TEMP_EDIT, "0.00");
+            set_dialog_utf8(dlg, IDC_SEED_EDIT, "0");
+            set_dialog_utf8(dlg, IDC_TOPP_EDIT, "0.95");
+            set_dialog_utf8(dlg, IDC_MAXTOK_EDIT, "128");
             return TRUE;
 
         case IDC_RESET_ALL:
@@ -3071,11 +3268,11 @@ static INT_PTR CALLBACK settings_dlg_proc(HWND dlg, UINT msg, WPARAM wparam, LPA
                 "Reset every setting (temperature, seed, top-p, max tokens, system prompt) to defaults and clear the saved registry values?",
                 "Reset all settings", MB_ICONQUESTION | MB_YESNO) == IDYES) {
                 settings_reset_all();
-                SetDlgItemTextA(dlg, IDC_TEMP_EDIT, "0.00");
-                SetDlgItemTextA(dlg, IDC_SEED_EDIT, "0");
-                SetDlgItemTextA(dlg, IDC_TOPP_EDIT, "0.95");
-                SetDlgItemTextA(dlg, IDC_MAXTOK_EDIT, "128");
-                SetDlgItemTextA(dlg, IDC_SYSPROMPT_EDIT, "");
+                set_dialog_utf8(dlg, IDC_TEMP_EDIT, "0.00");
+                set_dialog_utf8(dlg, IDC_SEED_EDIT, "0");
+                set_dialog_utf8(dlg, IDC_TOPP_EDIT, "0.95");
+                set_dialog_utf8(dlg, IDC_MAXTOK_EDIT, "128");
+                set_dialog_utf8(dlg, IDC_SYSPROMPT_EDIT, "");
             }
             return TRUE;
         }
@@ -3097,7 +3294,7 @@ static INT_PTR CALLBACK editprompt_dlg_proc(HWND dlg, UINT msg, WPARAM wparam, L
     case WM_INITDIALOG:
         out_buf = (char *)lparam;
         if (out_buf) {
-            SetDlgItemTextA(dlg, IDC_EDITPROMPT_TEXT, out_buf);
+            set_dialog_utf8(dlg, IDC_EDITPROMPT_TEXT, out_buf);
             // Select all so the user can just start typing to replace,
             // or Shift+End / arrow to extend the selection.
             SendDlgItemMessageA(dlg, IDC_EDITPROMPT_TEXT, EM_SETSEL, 0, -1);
@@ -3109,7 +3306,10 @@ static INT_PTR CALLBACK editprompt_dlg_proc(HWND dlg, UINT msg, WPARAM wparam, L
         switch (LOWORD(wparam)) {
         case IDOK: {
             if (out_buf) {
-                GetDlgItemTextA(dlg, IDC_EDITPROMPT_TEXT, out_buf, PROMPT_MAX);
+                if (get_dialog_utf8(dlg, IDC_EDITPROMPT_TEXT, out_buf, PROMPT_MAX) < 0) {
+                    MessageBoxA(dlg, "Please shorten the edited message.", APP_NAME, MB_OK | MB_ICONINFORMATION);
+                    return TRUE;
+                }
             }
             EndDialog(dlg, IDOK);
             return TRUE;
@@ -3200,14 +3400,14 @@ static void save_transcript_dialog(HWND parent) {
 
     if (!GetSaveFileNameA(&ofn)) return;
 
-    int n = GetWindowTextLengthA(gTranscript);
+    int n = GetWindowTextLengthW(gTranscript);
     if (n <= 0) {
         MessageBoxA(parent, "Transcript is empty.", APP_NAME, MB_ICONINFORMATION | MB_OK);
         return;
     }
-    char *buf = (char *)malloc((size_t)n + 1);
+    char *buf = window_text_utf8(gTranscript);
     if (!buf) return;
-    GetWindowTextA(gTranscript, buf, n + 1);
+    n = (int)strlen(buf);
 
     FILE *fp = fopen(path, "wb");
     if (!fp) {
@@ -3263,42 +3463,24 @@ static void do_select_all(void) {
 // the position right after the current selection. Returns 0 if not
 // found, 1 if a hit was selected.
 static int do_find_in_transcript(const char *needle) {
+    FINDTEXTEXW find;
+    CHARRANGE current;
+    WCHAR *wide;
+    LRESULT found;
     if (!gTranscript || !needle || !*needle) return 0;
-    int total = GetWindowTextLengthA(gTranscript);
-    if (total <= 0) return 0;
-    char *hay = (char *)malloc((size_t)total + 1);
-    if (!hay) return 0;
-    GetWindowTextA(gTranscript, hay, total + 1);
-
-    // Where to start: just after the current selection end. If nothing
-    // selected, start at 0. If we've already scanned past the end on a
-    // previous "Find Next", wrap to the top.
-    DWORD sel_lo = 0, sel_hi = 0;
-    SendMessageA(gTranscript, EM_GETSEL, (WPARAM)&sel_lo, (LPARAM)&sel_hi);
-    int start = (int)sel_hi;
-    if (start < 0 || start >= total) start = 0;
-
-    size_t nlen = strlen(needle);
-    int found_at = -1;
-    for (int pass = 0; pass < 2 && found_at < 0; pass++) {
-        int from = (pass == 0) ? start : 0;
-        int to   = (pass == 0) ? total : start;
-        for (int i = from; i + (int)nlen <= to; i++) {
-            int ok = 1;
-            for (size_t j = 0; j < nlen; j++) {
-                char a = hay[i + j], b = needle[j];
-                if (a >= 'A' && a <= 'Z') a = (char)(a + 32);
-                if (b >= 'A' && b <= 'Z') b = (char)(b + 32);
-                if (a != b) { ok = 0; break; }
-            }
-            if (ok) { found_at = i; break; }
-        }
+    wide = utf8_to_wide(needle);
+    if (!wide) return 0;
+    SendMessageW(gTranscript, EM_EXGETSEL, 0, (LPARAM)&current);
+    find.chrg.cpMin = current.cpMax; find.chrg.cpMax = -1; find.lpstrText = wide;
+    found = SendMessageW(gTranscript, EM_FINDTEXTEXW, FR_DOWN, (LPARAM)&find);
+    if (found < 0 && current.cpMax > 0) {
+        find.chrg.cpMin = 0; find.chrg.cpMax = current.cpMax;
+        found = SendMessageW(gTranscript, EM_FINDTEXTEXW, FR_DOWN, (LPARAM)&find);
     }
-    free(hay);
-    if (found_at < 0) return 0;
-    SendMessageA(gTranscript, EM_SETSEL, (WPARAM)found_at,
-                 (LPARAM)(found_at + (int)nlen));
-    SendMessageA(gTranscript, EM_SCROLLCARET, 0, 0);
+    free(wide);
+    if (found < 0) return 0;
+    SendMessageW(gTranscript, EM_EXSETSEL, 0, (LPARAM)&find.chrgText);
+    SendMessageW(gTranscript, EM_SCROLLCARET, 0, 0);
     return 1;
 }
 
@@ -3306,7 +3488,7 @@ static INT_PTR CALLBACK find_dlg_proc(HWND dlg, UINT msg, WPARAM wparam, LPARAM 
     (void)lparam;
     switch (msg) {
     case WM_INITDIALOG:
-        SetDlgItemTextA(dlg, IDC_FIND_EDIT, gLastFind);
+        set_dialog_utf8(dlg, IDC_FIND_EDIT, gLastFind);
         // Move caret to end of edit so typing replaces.
         SendDlgItemMessageA(dlg, IDC_FIND_EDIT, EM_SETSEL, 0, -1);
         return TRUE;
@@ -3315,7 +3497,7 @@ static INT_PTR CALLBACK find_dlg_proc(HWND dlg, UINT msg, WPARAM wparam, LPARAM 
         switch (LOWORD(wparam)) {
         case IDC_FIND_NEXT:
         case IDOK:
-            GetDlgItemTextA(dlg, IDC_FIND_EDIT, gLastFind, sizeof(gLastFind));
+            get_dialog_utf8(dlg, IDC_FIND_EDIT, gLastFind, sizeof(gLastFind));
             if (gLastFind[0]) {
                 if (!do_find_in_transcript(gLastFind)) {
                     MessageBoxA(dlg, "Not found.", APP_NAME,
@@ -3355,7 +3537,7 @@ static INT_PTR CALLBACK shortcuts_dlg_proc(HWND dlg, UINT msg, WPARAM wparam, LP
             "  Shift+Enter Insert newline in input\r\n"
             "  F2          Rename chat (if available)\r\n"
             "  Del         Delete chat (if available)\r\n";
-        SetDlgItemTextA(dlg, IDC_SHORTCUTS_TEXT, SHORTCUTS_BODY);
+        set_dialog_utf8(dlg, IDC_SHORTCUTS_TEXT, SHORTCUTS_BODY);
         return TRUE;
     }
 
@@ -3377,7 +3559,7 @@ static LRESULT CALLBACK input_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lp
     // Enter sends; Shift+Enter inserts a newline (passthrough).
     if (msg == WM_KEYDOWN && wparam == VK_RETURN) {
         if (GetKeyState(VK_SHIFT) & 0x8000) {
-            return CallWindowProcA(gOldInputProc, hwnd, msg, wparam, lparam);
+            return CallWindowProcW(gOldInputProc, hwnd, msg, wparam, lparam);
         }
         send_prompt();
         return 0;
@@ -3393,11 +3575,11 @@ static LRESULT CALLBACK input_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lp
             return 0;
         }
     }
-    return CallWindowProcA(gOldInputProc, hwnd, msg, wparam, lparam);
+    return CallWindowProcW(gOldInputProc, hwnd, msg, wparam, lparam);
 }
 
 static void subclass_input(void) {
-    gOldInputProc = (WNDPROC)SetWindowLongPtrA(gInput, GWLP_WNDPROC, (LONG_PTR)input_proc);
+    gOldInputProc = (WNDPROC)SetWindowLongPtrW(gInput, GWLP_WNDPROC, (LONG_PTR)input_proc);
 }
 
 // Resolve the listbox row at point `pt` (client coords of gChatList). The
@@ -3492,11 +3674,19 @@ static LRESULT CALLBACK chatlist_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
         }
         return 0;
     }
-    return CallWindowProcA(gOldChatListProc, hwnd, msg, wparam, lparam);
+    return CallWindowProcW(gOldChatListProc, hwnd, msg, wparam, lparam);
 }
 
 static void subclass_chatlist(void) {
-    gOldChatListProc = (WNDPROC)SetWindowLongPtrA(gChatList, GWLP_WNDPROC, (LONG_PTR)chatlist_proc);
+    gOldChatListProc = (WNDPROC)SetWindowLongPtrW(gChatList, GWLP_WNDPROC, (LONG_PTR)chatlist_proc);
+}
+
+static const char *backend_model_name(const char *info) {
+    if (!info) return NULL;
+    if (!strncmp(info, "MODEL ", 6)) return info[6] ? info + 6 : NULL;
+    if (!strncmp(info, "Bliss ", 6) || !strncmp(info, "SmolLM2 ", 8) ||
+        !strncmp(info, "nanochat-", 9) || !strncmp(info, "Qwen", 4)) return info;
+    return NULL;
 }
 
 static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
@@ -3650,15 +3840,17 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
             // banners. Other INFO events — temp changes, /reset notices,
             // etc. — flash through the status bar instead so the model
             // identity stays visible.
-            if (!strncmp(info, "Bliss ", 6) || !strncmp(info, "nanochat-", 9)) {
-                char label[256];
-                snprintf(label, sizeof(label), "%s", info);
-                snprintf(gModelName, sizeof(gModelName), "%s", info);
-                SetWindowTextA(gModel, label);
+            const char *model_name = backend_model_name(info);
+            if (model_name) {
+                copy_utf8_prefix(gModelName, sizeof(gModelName), model_name);
+                set_window_utf8(gModel, gModelName);
                 diagnostics_appendf("Model loaded: %s", info);
                 layout_controls(hwnd);
                 InvalidateRect(hwnd, &gRcModelBox, TRUE);
                 InvalidateRect(hwnd, &gRcStatusBar, TRUE);
+            } else if (!strncmp(info, "SOURCE ", 7) && info[7]) {
+                copy_utf8_prefix(gModelSource, sizeof(gModelSource), info + 7);
+                diagnostics_appendf("Model source: %s", gModelSource);
             } else {
                 set_status(info);
                 diagnostics_appendf("%s", info);
@@ -3706,6 +3898,11 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
     case WM_RUN_DONE: {
         char *message = (char *)lparam;
         int  tcount   = (int)wparam;
+        if (tcount < 0) {
+            if (message) free(message);
+            if (!InterlockedCompareExchange(&gRunning, 0, 0) && InterlockedCompareExchange(&gBackendReady, 0, 0)) set_status("Ready");
+            return 0;
+        }
         DWORD elapsed_ms = GetTickCount() - gRunStarted;
         double elapsed_s = elapsed_ms / 1000.0;
         BOOL was_running = InterlockedCompareExchange(&gRunning, 0, 0) != 0;
@@ -3857,7 +4054,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
             if (InterlockedCompareExchange(&gRunning, 0, 0)) return 0;
             char edited[PROMPT_MAX];
             snprintf(edited, sizeof(edited), "%s", gPendingUser);
-            INT_PTR r = DialogBoxParamA(gInstance, MAKEINTRESOURCEA(IDD_EDITPROMPT),
+            INT_PTR r = DialogBoxParamW(gInstance, MAKEINTRESOURCEW(IDD_EDITPROMPT),
                                         hwnd, editprompt_dlg_proc, (LPARAM)edited);
             if (r != IDOK) return 0;
             sanitize_user(edited);
@@ -3878,7 +4075,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
             }
             if (InterlockedCompareExchange(&gRunning, 0, 0)) return 0;
             if (gPendingUser[0]) {
-                snprintf(fact, sizeof(fact), "%.150s", gPendingUser);
+                copy_utf8_prefix(fact, 151, gPendingUser);
             } else if (gHasAsstTurn && gLastAsstEnd > gLastAsstStart) {
                 char *body = rich_get_range(gLastAsstStart, gLastAsstEnd);
                 if (!body) {
@@ -3886,7 +4083,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
                     return 0;
                 }
                 trim_trailing_newlines(body);
-                snprintf(fact, sizeof(fact), "%.150s", body);
+                copy_utf8_prefix(fact, 151, body);
                 free(body);
             } else {
                 MessageBeep(MB_ICONWARNING);
@@ -3902,18 +4099,22 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
             set_status("Saving memory...");
             return 0;
         }
-        case IDM_ABOUT:
-            MessageBoxA(hwnd,
-                APP_NAME "\n\nReal LLM running natively on Windows XP.\n"
-                "Backend: NC_RUN.EXE — custom C99 inference engine\n"
-                "Architecture: Karpathy nanochat (RMSNorm, RoPE, QK-norm,\n"
-                "  ReLU\xb2 MLP, value embeddings, sliding-window attention)\n"
-                "SIMD: SSE2 / SSE3 (Pentium 4 compatible)\n"
-                "Model file: MODEL.NCB (custom NCB1 format, int8 quantized)\n"
+        case IDM_ABOUT: {
+            char msg[1280];
+            snprintf(msg, sizeof(msg),
+                APP_NAME " 2.0.0-candidate.20260915\n\nLocal LLM for Windows XP.\n"
+                "Backend: native C99 inference engine\n"
+                "Model: %s\n"
+                "Source: %s\n"
+                "CPU: 32-bit x86, SSE2 (Pentium M compatible)\n"
+                "Context: 512 tokens, including conversation and notes\n"
+                "MODEL.NCB: SLM weights; TOKENIZER.NCT: matching SLT tokenizer\n"
                 "\n"
-                "Slash commands: /help /info /template /defaults /preset /reset /temp /topp /seed /maxtok /system",
-                APP_NAME, MB_ICONINFORMATION | MB_OK);
+                "Slash commands: /help /info /reset /temp /topp /seed /maxtok /system /remember /memories /forget",
+                gModelName, gModelSource);
+            message_box_utf8(hwnd, msg, L"Bliss Chat", MB_ICONINFORMATION | MB_OK);
             return 0;
+        }
         case IDM_EXIT:
             PostMessageA(hwnd, WM_CLOSE, 0, 0);
             return 0;
@@ -3976,26 +4177,26 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
             // EN_CHANGE on the search edit -> re-filter the listbox by
             // the current text content (case-insensitive substring).
             if (HIWORD(wparam) == EN_CHANGE) {
-                GetWindowTextA(gSearch, gSearchText, (int)sizeof(gSearchText));
+                get_window_utf8(gSearch, gSearchText, (int)sizeof(gSearchText));
                 chats_repopulate_listbox();
             }
             return 0;
         case IDM_SETTINGS:
-            DialogBoxParamA(gInstance, MAKEINTRESOURCEA(IDD_SETTINGS), hwnd,
+            DialogBoxParamW(gInstance, MAKEINTRESOURCEW(IDD_SETTINGS), hwnd,
                             settings_dlg_proc, 0);
             return 0;
         case IDM_MODELINFO: {
-            char msg[640];
+            char msg[960];
             snprintf(msg, sizeof(msg),
                 "Model: %s\n"
+                "Source: %s\n"
                 "Backend: NC_RUN.EXE\n"
                 "Tokenizer: TOKENIZER.NCT\n"
                 "Computer: %s\n"
                 "Memory: %s\n"
                 "Threads: %s",
-                gModelName, gPcCpu, gPcMemory, gPcThreads);
-            MessageBoxA(hwnd, msg, APP_NAME " - Model Info",
-                        MB_ICONINFORMATION | MB_OK);
+                gModelName, gModelSource, gPcCpu, gPcMemory, gPcThreads);
+            message_box_utf8(hwnd, msg, L"Bliss Chat - Model Info", MB_ICONINFORMATION | MB_OK);
             return 0;
         }
         case IDM_PERF:
@@ -4036,12 +4237,12 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
             do_select_all();
             return 0;
         case IDM_FIND:
-            DialogBoxParamA(gInstance, MAKEINTRESOURCEA(IDD_FIND), hwnd,
+            DialogBoxParamW(gInstance, MAKEINTRESOURCEW(IDD_FIND), hwnd,
                             find_dlg_proc, 0);
             return 0;
         case IDM_SHORTCUTS:
         case IDM_HELPTOPICS:
-            DialogBoxParamA(gInstance, MAKEINTRESOURCEA(IDD_SHORTCUTS), hwnd,
+            DialogBoxParamW(gInstance, MAKEINTRESOURCEW(IDD_SHORTCUTS), hwnd,
                             shortcuts_dlg_proc, 0);
             return 0;
         case IDM_SLASHHELP:
@@ -4069,7 +4270,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
             // "/forget " so the user just types the number and hits Enter.
             if (InterlockedCompareExchange(&gBackendReady, 0, 0)) {
                 backend_send_line("/memories");
-                SetWindowTextA(gInput, "/forget ");
+                set_window_utf8(gInput, "/forget ");
                 SetFocus(gInput);
                 {
                     int len = GetWindowTextLengthA(gInput);

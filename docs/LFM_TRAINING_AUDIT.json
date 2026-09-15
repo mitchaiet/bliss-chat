@@ -1,0 +1,102 @@
+{
+  "training_script_sha256": "1c7ed07b5c0c6e8dcbb5e9e65c8fc2de793a51a3dede039f3c1fd2313fb9e2f5",
+  "training_jsonl_sha256": "56c23f0057d7f508446c51be04e15bbe773ac0f03ebd77ea4bff11f2017db164",
+  "model_small_file_hashes": {
+    "config.json": "720b43d6ddc2ed25be23eed355aefcf342434a176dedad23dbe0a5e3ac24bbb8",
+    "tokenizer.json": "df1d8d5ec5d091b460562ffd545e4a5e91d17d4a0db7ebe733be34ed374377bd",
+    "tokenizer_config.json": "3701f370c70034d06e28947ff51c1063983393319f429e3ce58f06a45fae67cc",
+    "chat_template.jinja": "ba551d58630afa3190b1be3602e28301f3d2e9bbac978dfc49d6d825171648b6"
+  },
+  "versions": {
+    "torch": "2.9.1+cu128",
+    "transformers": "4.57.6",
+    "peft": "0.17.1"
+  },
+  "masking": {
+    "training_rows_scanned": 26471,
+    "selected_rows": 340,
+    "sample_per_source": 64,
+    "source_rows": {
+      "bliss-procedural-v1": 12051,
+      "HuggingFaceTB/smol-smoltalk/smol-magpie-ultra-short": 10400,
+      "HuggingFaceTB/smol-smoltalk/smollm-rewrite-30k": 1600,
+      "HuggingFaceTB/smol-smoltalk/smol-contraints": 800,
+      "HuggingFaceTB/smol-smoltalk/smol-summarize-20k": 1600,
+      "HuggingFaceTB/smol-smoltalk/everyday-conversations": 20
+    },
+    "selected_sources": {
+      "bliss-procedural-v1": 64,
+      "HuggingFaceTB/smol-smoltalk/smollm-rewrite-30k": 64,
+      "HuggingFaceTB/smol-smoltalk/smol-magpie-ultra-short": 64,
+      "HuggingFaceTB/smol-smoltalk/smol-summarize-20k": 64,
+      "HuggingFaceTB/smol-smoltalk/smol-contraints": 64,
+      "HuggingFaceTB/smol-smoltalk/everyday-conversations": 20
+    },
+    "template_sensitive_rows_in_full_data": 0,
+    "checks": {
+      "assistant_boundaries_checked": 452,
+      "exact_mask_rows": 340,
+      "supervised_tokens": 32540
+    },
+    "failures": [],
+    "tokenizer_class": "PreTrainedTokenizerFast",
+    "tokenizer_loader_checked_from_training_main": true,
+    "bos_token_id": 1,
+    "eos_token_id": 7,
+    "template_sha256": "ba551d58630afa3190b1be3602e28301f3d2e9bbac978dfc49d6d825171648b6"
+  },
+  "tiny_hybrid": {
+    "device": "cpu",
+    "dtype": "float32",
+    "layers": [
+      "conv",
+      "full_attention"
+    ],
+    "hidden_size": 32,
+    "vocab_size": 97,
+    "total_parameters": 22832,
+    "adapter_tensors": 8,
+    "adapter_names": [
+      "base_model.model.model.layers.0.conv.out_proj.lora_A.default.weight",
+      "base_model.model.model.layers.0.conv.out_proj.lora_B.default.weight",
+      "base_model.model.model.layers.1.self_attn.q_proj.lora_A.default.weight",
+      "base_model.model.model.layers.1.self_attn.q_proj.lora_B.default.weight",
+      "base_model.model.model.layers.1.self_attn.v_proj.lora_A.default.weight",
+      "base_model.model.model.layers.1.self_attn.v_proj.lora_B.default.weight",
+      "base_model.model.model.layers.1.self_attn.out_proj.lora_A.default.weight",
+      "base_model.model.model.layers.1.self_attn.out_proj.lora_B.default.weight"
+    ],
+    "assistant_kl_positions": 128,
+    "ce": 4.598743915557861,
+    "kl": 0.00024934648536145687,
+    "combined_loss": 4.598918437957764,
+    "manual_loss_abs_error": 0.0,
+    "wrong_shift_kl": 0.017219725996255875,
+    "combined_gradient_norms": {
+      "base_model.model.model.layers.0.conv.out_proj.lora_A.default.weight": 1.659573354118038e-05,
+      "base_model.model.model.layers.0.conv.out_proj.lora_B.default.weight": 4.636732046492398e-05,
+      "base_model.model.model.layers.1.self_attn.q_proj.lora_A.default.weight": 0.008116885088384151,
+      "base_model.model.model.layers.1.self_attn.q_proj.lora_B.default.weight": 0.02498752996325493,
+      "base_model.model.model.layers.1.self_attn.v_proj.lora_A.default.weight": 0.010024621151387691,
+      "base_model.model.model.layers.1.self_attn.v_proj.lora_B.default.weight": 0.02758621796965599,
+      "base_model.model.model.layers.1.self_attn.out_proj.lora_A.default.weight": 0.011965195648372173,
+      "base_model.model.model.layers.1.self_attn.out_proj.lora_B.default.weight": 0.024200065061450005
+    },
+    "kl_only_gradient_norms": {
+      "base_model.model.model.layers.0.conv.out_proj.lora_A.default.weight": 1.7369906402109336e-07,
+      "base_model.model.model.layers.0.conv.out_proj.lora_B.default.weight": 5.212518772168551e-07,
+      "base_model.model.model.layers.1.self_attn.q_proj.lora_A.default.weight": 0.00018958312284667045,
+      "base_model.model.model.layers.1.self_attn.q_proj.lora_B.default.weight": 0.0006236466579139233,
+      "base_model.model.model.layers.1.self_attn.v_proj.lora_A.default.weight": 0.0005000129458494484,
+      "base_model.model.model.layers.1.self_attn.v_proj.lora_B.default.weight": 0.001120826113037765,
+      "base_model.model.model.layers.1.self_attn.out_proj.lora_A.default.weight": 0.0005426812567748129,
+      "base_model.model.model.layers.1.self_attn.out_proj.lora_B.default.weight": 0.000720039417501539
+    },
+    "frozen_base_gradients_absent": true,
+    "disabled_adapter_teacher_unchanged": true,
+    "merge_max_logit_abs_error": 1.7881393432617188e-07,
+    "cuda_initialized": false
+  },
+  "trained_weights_loaded": false,
+  "evaluation_cases_read": false
+}
