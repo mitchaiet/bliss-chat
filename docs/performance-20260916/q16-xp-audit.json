@@ -1,0 +1,20 @@
+[
+  {
+    "file": "SLM_RUN_SSE2.EXE",
+    "bytes": 355142,
+    "sha256": "71a570f3bf7b6cd46705caffcbcfe88c04aa982bf6ab84210cf998b0b384bd4c",
+    "pe32": true,
+    "subsystem_version": "5.1",
+    "imported_dlls": [
+      "KERNEL32.dll",
+      "msvcrt.dll"
+    ],
+    "modern_crt_imports": [],
+    "post_sse2_instruction_matches": [],
+    "legacy_alias_instructions": [
+      "tzcnt"
+    ],
+    "legacy_alias_note": "TZCNT encoding executes BSF on pre-BMI CPUs. MinGW numeric conversion helpers use this encoding for nonzero bit scans; zero/flag assumptions require source or disassembly review.",
+    "limits": "Static evidence only. DLL presence does not verify every API or physical XP startup."
+  }
+]

@@ -1,0 +1,39 @@
+{
+  "tokenizer_cases": 0,
+  "tokenizer_failures": [],
+  "logit_checks": [
+    {
+      "probe": 0,
+      "tokens": 1,
+      "bits": 6,
+      "max_abs": 0.0034804344177246094,
+      "mean_abs": 0.0006469239015132189,
+      "cosine": 1.0,
+      "argmax_native": 36309,
+      "argmax_hf": 36309,
+      "passed": true
+    },
+    {
+      "probe": 1,
+      "tokens": 12,
+      "bits": 6,
+      "max_abs": 0.005557537078857422,
+      "mean_abs": 0.0008490096079185605,
+      "cosine": 1.000000238418579,
+      "argmax_native": 523,
+      "argmax_hf": 523,
+      "passed": true
+    },
+    {
+      "probe": 2,
+      "tokens": 47,
+      "bits": 6,
+      "max_abs": 0.004773259162902832,
+      "mean_abs": 0.0005572601221501827,
+      "cosine": 1.0000001192092896,
+      "argmax_native": 13618,
+      "argmax_hf": 13618,
+      "passed": true
+    }
+  ]
+}

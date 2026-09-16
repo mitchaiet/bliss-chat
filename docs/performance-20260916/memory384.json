@@ -1,0 +1,16 @@
+{
+  "platform": "linux",
+  "scope": "Linux native process under RLIMIT_AS; no physical Windows XP claim",
+  "binary": "final/slm_run",
+  "binary_sha256": "8ecc7b7b9e01dcc900e3413dc1d7691af64928b6644c45ffaeeaf0cf7cc9ad9c",
+  "model_sha256": "ac4fe748bfa8f61af3b55f13e5435c299ca4c5abad71cd24c233f6ff24a33953",
+  "runtime_args": [],
+  "context_filled": 512,
+  "virtual_memory_limit_mib": 384,
+  "peak_child_rss_kib": 301632,
+  "elapsed_seconds": 20.208212287980132,
+  "returncode": 0,
+  "complete_finite_logits": true,
+  "stderr": "[slm] 16 layers dim1024 Q6 KV8 context512 weights274.87MiB KV12.00MiB backend=SSE2\n",
+  "passed": true
+}

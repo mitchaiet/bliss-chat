@@ -1,0 +1,19 @@
+{
+  "checks": {
+    "saved_notes": true,
+    "command_endings": true,
+    "restart_reload_forget": true,
+    "oversized_system_recoverable": true,
+    "oversized_user_recoverable": true,
+    "replay_reset_alive": true,
+    "persistent_note_used": true,
+    "generated_turn_ended": true,
+    "context_rollover_alive": true
+  },
+  "samples": {
+    "persistent_note_reply": "\u0001READY\n\u0001INFO MODEL LFM2.5 native Q6 SSE2; context512\n\u0001INFO SOURCE LiquidAI/LFM2.5-350M\nPepper\n\u0001EOT 2\n",
+    "rollover_reply": "\u0001READY\n\u0001INFO MODEL LFM2.5 native Q6 SSE2; context128\n\u0001INFO SOURCE LiquidAI/LFM2.5-350M\n\u0001EOT 0\n\u0001EOT 0\n\u0001EOT 0\n\u0001EOT 0\n\u0001EOT 0\n\u0001EOT 0\n\u0001EOT 0\n\u0001EOT 0\n\u0001INFO ChatML, Q6, context128, temp0.00, top_p0.90, maxtok12; /reset /temp /topp /maxtok /seed /system /replay\n\u0001EOT 0\nThe color of your kite is yellow.\n\u0001EOT 9\n"
+  },
+  "linux_virtual_memory_limit_mib": 384,
+  "runtime_args": []
+}

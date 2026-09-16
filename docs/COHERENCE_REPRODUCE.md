@@ -56,7 +56,9 @@ python tools/export_slm.py --model NEW_SELECTED_RUN/training/merged \
   --out NEW_NATIVE_EXPORT --bits 6 --group 64 --context 512 --scale-method maxabs
 ```
 
-Q6 uses FP32 activations automatically. The native tokenizer should match
+The optimized Q6 runtime uses 16-bit activation values for matrix products.
+Pass `--float-activations` to reproduce the original RC1/RC2 FP32 activation
+evaluation; the frozen-selection file describes that original run. The native tokenizer should match
 the publisher-derived hash recorded in the model card. Fixed seeds preserve
 the recipe; bitwise training reproducibility across hardware/software changes
 is not guaranteed.

@@ -1,0 +1,10 @@
+{
+  "scope": "Single thread, modern Linux CPU on mitch-xpt; SSE2-only build. This is not physical Pentium 4 performance.",
+  "benchmark": "Same executable and fixed tokens; --float-activations versus default Q16. 16 prefill tokens and 16 decode tokens, first pass excluded. CPU time.",
+  "reference_decode_tok_s": 9.1589295,
+  "optimized_decode_tok_s": 20.830987,
+  "reference_prefill_s": 1.4052535,
+  "optimized_prefill_s": 0.6207335,
+  "decode_speedup": 2.2743910191687795,
+  "prefill_speedup": 2.2638596112502385
+}

@@ -1,0 +1,16 @@
+{
+  "scope": "Single observed GUI comparison on the same offline 512 MiB XP VM, using a fresh chat and the same hi prompt. Not a physical CPU benchmark.",
+  "prompt": "hi",
+  "answer": "Hello! How can I help you today?",
+  "baseline_elapsed_s": 110.3,
+  "optimized_elapsed_s": 46.5,
+  "tokens_each": 9,
+  "wall_clock_speedup": 2.372043010752688,
+  "streaming_observed": true,
+  "ready_after_response": true,
+  "screenshots": [
+    "xp-chat-complete.png",
+    "xp-streaming-response.png"
+  ],
+  "baseline_screenshot": "WindowsXP-Pentium4-512MB/generation-check-latest.png"
+}

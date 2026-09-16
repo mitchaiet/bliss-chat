@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Independent HF/tokenizers parity for native FP32 and Q4/Q8 runtime.
+"""Independent HF/tokenizers parity for native FP32 and Q4/Q6/Q8 runtime.
 
 CPU only. The quantized comparison restores the actual exported tensors into
 HF and adds group64 activation quantization at Linear inputs, matching the
@@ -52,13 +52,19 @@ def main():
     from slm_to_hf import restore_slm
     meta = restore_slm(model, a.export / "MODEL.SLM")
     bits, group = meta['bits'], meta['group']
-    if bits not in (6, 32) and not a.float_activations:
+    if bits != 32 and not a.float_activations:
         def qactivation(module, args):
             x = args[0]
             shaped = x.reshape(*x.shape[:-1], -1, group)
-            scale = shaped.abs().amax(dim=-1, keepdim=True) / 127
+            bound = 32767 if bits == 6 else 127
+            scale = shaped.abs().amax(dim=-1, keepdim=True) / bound
             scale = torch.where(scale == 0, torch.ones_like(scale), scale)
-            return ((shaped / scale).round().clamp(-127, 127).mul(scale).reshape_as(x),)
+            if bits == 6:
+                scale = scale.clamp_min(torch.finfo(torch.float32).tiny)
+                values = shaped * scale.reciprocal()
+            else:
+                values = shaped / scale
+            return (values.round().clamp(-bound, bound).mul(scale).reshape_as(x),)
         for module in model.modules():
             if isinstance(module, torch.nn.Linear):
                 module.register_forward_pre_hook(qactivation)

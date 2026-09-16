@@ -1,0 +1,46 @@
+{
+  "scope": "Windows XP guest, 512 MiB, one Pentium 4-compatible CPU, native ARM64 QEMU TCG; not physical Pentium 4 speed",
+  "benchmark": "3 fixed prefill tokens + 4 fixed decode tokens, two passes, same released Q6 weights; matched test source in baseline and candidate directories",
+  "baseline": [
+    {
+      "prefill_s": 16.516,
+      "decode_s": 25.906,
+      "decode_tok_s": 0.154404
+    },
+    {
+      "prefill_s": 15.703,
+      "decode_s": 25.703,
+      "decode_tok_s": 0.155624
+    }
+  ],
+  "prototype": [
+    {
+      "prefill_s": 5.875,
+      "decode_s": 8.735,
+      "decode_tok_s": 0.457928
+    },
+    {
+      "prefill_s": 5.312,
+      "decode_s": 8.61,
+      "decode_tok_s": 0.464576
+    }
+  ],
+  "transcription": "Values transcribed from the saved XP screenshots xp-ab-benchmark.png and xp-final-and-installation.png.",
+  "final": [
+    {
+      "prefill_s": 6.937,
+      "decode_s": 10.172,
+      "decode_tok_s": 0.393236
+    },
+    {
+      "prefill_s": 6.188,
+      "decode_s": 9.968,
+      "decode_tok_s": 0.401284
+    }
+  ],
+  "final_warm_decode_speedup": 2.578551364365971,
+  "final_warm_prefill_speedup": 2.5376535229476405,
+  "installed_runtime_sha256": "71a570f3bf7b6cd46705caffcbcfe88c04aa982bf6ab84210cf998b0b384bd4c",
+  "installation_verified": "All three backend files compared byte-for-byte in XP; receipt C:\\BlissChat-RC2\\Q16-UPDATE-VERIFIED.TXT",
+  "rollback": "C:\\BlissChat-RC2\\Runtime-before-Q16"
+}

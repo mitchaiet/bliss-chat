@@ -12,7 +12,12 @@ layers. It is an adapted LFM model; GPT-6 Astra assisted engineering, data desig
 and evaluation, and its weights are not part of this package.
 
 The native model file uses group 64 six-bit weights and FP32 scales/norms.
-The backend automatically uses FP32 activations for Q6. Weights occupy
+The optimized backend uses groupwise signed 16-bit activation values for Q6
+matrix products, with FP32 scales and accumulation between groups. Attention,
+normalization, convolution and residual values remain FP32. The original
+RC1/RC2 FP32 activation path remains available with `--float-activations`.
+This runtime update does not change the model weights. See
+[performance validation](docs/Q16_PERFORMANCE.md). Weights occupy
 288,226,560 bytes (274.87 MiB); the tokenizer occupies 1,692,655 bytes.
 The default context is 512 tokens and replies are capped at 128 tokens, with greedy
 decoding. Longer conversations retain recent turns, and saved notes are
@@ -50,6 +55,9 @@ It remains preserved on the T2. Selection was recorded before the fresh final
 that suite's answers.
 
 ## Evaluation
+
+These model-quality and original latency results describe the frozen RC1/RC2
+package. The runtime-only update is documented separately above.
 
 The 42-case development suite improved from 15 to 25 mechanical passes and from
 4.500 to 6.524/8 on a structured review of relevance, correctness, coherence

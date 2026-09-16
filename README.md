@@ -7,6 +7,9 @@ documents/memory tools. The model and runtime are unchanged from RC1.
 Physical XP validation is still pending; this release does not replace v1.3.0
 as the stable recommendation.
 
+The current source includes a [Q6 runtime speed improvement](docs/Q16_PERFORMANCE.md)
+using the same model weights. The published RC2 downloads retain the original runtime.
+
 A small language model with a native Windows XP chat interface. This branch
 adds a new compact pretrained foundation, controlled chat adaptation and an
 SSE2 C inference engine for the repository's target: **Dell Inspiron 8600,

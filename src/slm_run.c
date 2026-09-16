@@ -1,7 +1,8 @@
 /* Native SmolLM2/Llama and LFM2 inference for WinXP32 SSE2 and POSIX.
  * Independent C implementation: HF split-half RoPE, learned RMSNorm, GQA, SwiGLU.
  * Q4/Q8 matrices stay mapped, embeddings are dequantized one row at a time.
- * Quantized inference uses group16/32/64 Q8 activations and SSE2 signed16 dot products.
+ * Q4/Q8 inference uses Q8 activations; Q6 uses Q16 activations and SSE2 signed16
+ * dot products. --float-activations retains the reference FP32 path.
  */
 #define _CRT_SECURE_NO_WARNINGS
 #ifndef _WIN32_WINNT
@@ -38,6 +39,7 @@
 #define SLM_FLOAT_DOT_SCALAR
 #endif
 #include "slm_float_dot.h"
+#include "slm_q6_dot.h"
 typedef struct {const unsigned char *q; const float *scales; int rows,cols;} Matrix;
 typedef struct {const float *an,*fn,*qn,*kn,*conv; Matrix q,k,v,o,in,gate,up,down;int type,cache;} Layer;
 typedef struct {
@@ -51,7 +53,7 @@ typedef struct {
 } Model;
 typedef struct {
     Model *m;float *x,*xb,*tmp,*q,*k,*v,*gate,*up,*att,*logits,*kc,*vc,*rotcos,*rotsin,*conv_state,*conv_proj;
-    int8_t *aq;float *as;int pos;
+    int8_t *aq;int16_t *aq16;float *as;int pos;
 } State;
 static int float_activations=0;
 static void die(const char *s){fprintf(stderr,"[slm] %s\n",s);exit(2);}
@@ -102,14 +104,14 @@ static void free_model(Model *m){free(m->layers);
 }
 static State *new_state(Model *m){State *s=alloc(1,sizeof(*s));s->m=m;int d=m->d,kd=m->nk*m->hd;
     size_t kv_elements=checked_size((uint64_t)m->na*(unsigned)m->ctx*(unsigned)kd);int widest=d>m->ff?d:m->ff;
-    s->x=alloc((size_t)d,4);s->xb=alloc((size_t)d,4);s->tmp=alloc((size_t)d,4);s->q=alloc((size_t)d,4);s->k=alloc((size_t)kd,4);s->v=alloc((size_t)kd,4);s->gate=alloc((size_t)m->ff,4);s->up=alloc((size_t)m->ff,4);s->att=alloc((size_t)m->ctx,4);s->logits=alloc((size_t)m->vocab,4);s->kc=alloc(kv_elements?kv_elements:1,4);s->vc=alloc(kv_elements?kv_elements:1,4);s->aq=alloc((size_t)widest,1);s->as=alloc((size_t)widest/m->group,4);
+    s->x=alloc((size_t)d,4);s->xb=alloc((size_t)d,4);s->tmp=alloc((size_t)d,4);s->q=alloc((size_t)d,4);s->k=alloc((size_t)kd,4);s->v=alloc((size_t)kd,4);s->gate=alloc((size_t)m->ff,4);s->up=alloc((size_t)m->ff,4);s->att=alloc((size_t)m->ctx,4);s->logits=alloc((size_t)m->vocab,4);s->kc=alloc(kv_elements?kv_elements:1,4);s->vc=alloc(kv_elements?kv_elements:1,4);s->aq=alloc((size_t)widest,1);s->aq16=alloc((size_t)widest,2);s->as=alloc((size_t)widest/m->group,4);
     if(m->nc){s->conv_state=alloc(checked_size((uint64_t)m->nc*(unsigned)d*(unsigned)m->conv_width),4);s->conv_proj=alloc((size_t)3*d,4);}
     s->rotcos=alloc((size_t)m->ctx*m->hd/2,4);s->rotsin=alloc((size_t)m->ctx*m->hd/2,4);
     for(int p=0;p<m->ctx;p++)for(int j=0;j<m->hd/2;j++){float angle=(float)p/powf(m->theta,(float)(2*j)/(float)m->hd);s->rotcos[p*(m->hd/2)+j]=cosf(angle);s->rotsin[p*(m->hd/2)+j]=sinf(angle);}
     return s;
 }
 static void reset_state(State *s){s->pos=0;if(s->conv_state)memset(s->conv_state,0,checked_size((uint64_t)s->m->nc*(unsigned)s->m->d*(unsigned)s->m->conv_width*4));}
-static void free_state(State *s){free(s->x);free(s->xb);free(s->tmp);free(s->q);free(s->k);free(s->v);free(s->gate);free(s->up);free(s->att);free(s->logits);free(s->kc);free(s->vc);free(s->aq);free(s->as);free(s->rotcos);free(s->rotsin);free(s->conv_state);free(s->conv_proj);free(s);}
+static void free_state(State *s){free(s->x);free(s->xb);free(s->tmp);free(s->q);free(s->k);free(s->v);free(s->gate);free(s->up);free(s->att);free(s->logits);free(s->kc);free(s->vc);free(s->aq);free(s->aq16);free(s->as);free(s->rotcos);free(s->rotsin);free(s->conv_state);free(s->conv_proj);free(s);}
 static float dot(const float *a,const float *b,int n){float sum=0;
 #if SIMD
     __m128 z=_mm_setzero_ps();int i=0;for(;i+4<=n;i+=4)z=_mm_add_ps(z,_mm_mul_ps(_mm_loadu_ps(a+i),_mm_loadu_ps(b+i)));float v[4];_mm_storeu_ps(v,z);sum=v[0]+v[1]+v[2]+v[3];for(;i<n;i++)sum+=a[i]*b[i];
@@ -145,6 +147,18 @@ static int dot_quant(const unsigned char *w,const int8_t *x,int bits,int n){
 }
 static void linear(State *s,float *out,const Matrix *w,const float *x,int already_quant){Model *m=s->m;
     if(m->bits==32){const float *p=(const float*)w->q;for(int r=0;r<w->rows;r++)out[r]=dot(p+(size_t)r*w->cols,x,w->cols);return;}
+    if(m->bits==6&&!float_activations){
+        int ng=w->cols/64;
+        if(!already_quant)for(int g=0;g<ng;g++)slm_quantize_q16_64(x+g*64,s->aq16+g*64,s->as+g);
+        for(int r=0;r<w->rows;r++){
+            const unsigned char *row=w->q+(size_t)r*ng*48;
+            const float *scales=w->scales+(size_t)r*ng;
+            float total=0;
+            for(int g=0;g<ng;g++)total+=(float)slm_dot_q6_q16(row+(size_t)g*48,s->aq16+g*64)*scales[g]*s->as[g];
+            out[r]=total;
+        }
+        return;
+    }
     if(float_activations||m->bits==6){
         int ng=w->cols/m->group,gb=m->group*m->bits/8;
         for(int r=0;r<w->rows;r++){

@@ -106,9 +106,12 @@ FP32. Q6 is accepted only for LFM with group size 64.
 The 350M Q6 model file is **288,226,560 bytes (274.87 MiB)**. Context 512
 adds 12 MiB of KV cache and 0.117 MiB of convolution state, plus tokenizer
 and runtime scratch space. These calculated sizes do not establish an XP
-working set. Q6 automatically uses the SSE2 FP32 activation path, so it
-requires no `--float-activations` argument. Q4 and Q8 retain their existing
-activation defaults.
+working set. The optimized Q6 runtime quantizes each activation group to
+signed 16-bit values and uses SSE2 integer dot products. It adds only twice
+the widest matrix-input dimension in bytes of scratch space. Weights and
+the model format are unchanged. `--float-activations` selects the original
+RC1/RC2 FP32 matrix path. Q4 and Q8 retain their existing activation defaults.
+See [the speed and response comparison](Q16_PERFORMANCE.md).
 
 Converted model headers carry a modification notice referring to
 `MODEL_CARD.md` and `MODEL-LICENSE.txt`. It begins at byte 128 for the

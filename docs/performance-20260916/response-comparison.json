@@ -1,0 +1,12 @@
+{
+  "cases": 48,
+  "turns": 56,
+  "changed_turns": [],
+  "old_mechanical_passes": 24,
+  "new_mechanical_passes": 24,
+  "scope": "Exact response and token-count regression comparison on the existing 48-case suite; not a new independent generalization evaluation.",
+  "reference_predictions_sha256": "c248c3416acc73c09d70206c1c7d6b351eed87ab207fa40d66f79f54b8ca1e50",
+  "optimized_predictions_sha256": "f876c9da2bc9bd7ef7c45bf27e81dec314b8c05696ce5f11c6f9aa9fafcc08fa",
+  "optimized_linux_binary_sha256": "8ecc7b7b9e01dcc900e3413dc1d7691af64928b6644c45ffaeeaf0cf7cc9ad9c",
+  "model_sha256": "ac4fe748bfa8f61af3b55f13e5435c299ca4c5abad71cd24c233f6ff24a33953"
+}
