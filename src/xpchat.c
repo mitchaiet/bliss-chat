@@ -1090,6 +1090,7 @@ static int launch_backend(void) {
     char err_buf[256];
     char err_log_path[MAX_PATH];
     char mem_path[MAX_PATH + 32];
+    char prefix_path[MAX_PATH + 32];
 
     sa.nLength = sizeof(sa);
     sa.lpSecurityDescriptor = NULL;
@@ -1123,14 +1124,31 @@ static int launch_backend(void) {
             snprintf(parent, sizeof(parent), "%s\\bliss-chat", appdata);
             CreateDirectoryA(parent, NULL);  // ok if it exists
             snprintf(mem_path, sizeof(mem_path), "%s\\MEMORY.TXT", parent);
+            snprintf(prefix_path, sizeof(prefix_path), "%s\\PREFIX.CACHE", parent);
         } else {
             snprintf(mem_path, sizeof(mem_path), "%s\\MEMORY.TXT", gAppDir);
+            snprintf(prefix_path, sizeof(prefix_path), "%s\\PREFIX.CACHE", gAppDir);
         }
     }
 
     snprintf(command, sizeof(command),
         "\"%s\\%s\" \"%s\\%s\" \"%s\\%s\" -c 512 -t 0.0 -p 0.95 -m \"%s\"",
         gAppDir, gBackendExe, gAppDir, MODEL_FILE, gAppDir, TOKENIZER_FILE, mem_path);
+    /* Only Q6X4 v3 bundles support this option. Published SLM v1/v2 and legacy
+     * NC runtime/model pairs must also work when restored beside this GUI. */
+    {
+        char model_path[MAX_PATH + 32];unsigned char header[12];
+        snprintf(model_path, sizeof(model_path), "%s\\%s", gAppDir, MODEL_FILE);
+        FILE *model = fopen(model_path, "rb");
+        int q6x4 = model && fread(header, 1, sizeof(header), model) == sizeof(header)
+            && memcmp(header, "SLMODEL1", 8) == 0
+            && header[8] == 3 && header[9] == 0 && header[10] == 0 && header[11] == 0;
+        if (model) fclose(model);
+        if (q6x4) {
+            size_t used = strlen(command);
+            snprintf(command + used, sizeof(command) - used, " --prefix-cache \"%s\"", prefix_path);
+        }
+    }
 
     dbg_log("GUI", "selected backend: %s (%s)", gBackendExe, gBackendFlavor);
     dbg_log("GUI", "spawning backend: %s", command);

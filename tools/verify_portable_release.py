@@ -45,7 +45,7 @@ def main():
         'payload_files': expected,
         'wrapper': {'pe32': True, 'subsystem': f'{major}.{minor}', 'dlls': dlls, 'modern_crt_imports': []},
         'limitations': ['Physical Windows XP remains untested.',
-                       'The extracted payload matches the previously Wine-tested Windows backend.',
+                       'Payload equality verifies packaging integrity, not runtime execution.',
                        'Independent extraction does not prove the wrapper GUI runs on physical XP.',
                        'The EXE is unsigned.'],
     }

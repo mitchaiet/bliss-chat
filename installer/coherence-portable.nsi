@@ -11,7 +11,16 @@ Unicode false
 !ifndef ICON
   !define ICON "..\assets\bliss_chat.ico"
 !endif
-Name "Bliss Chat 2 - Release Candidate 2"
+!ifndef RELEASE_VERSION
+  !define RELEASE_VERSION "2.0.0-rc.2"
+!endif
+!ifndef RELEASE_NAME
+  !define RELEASE_NAME "Bliss Chat 2 - Release Candidate 2"
+!endif
+!ifndef FILE_VERSION
+  !define FILE_VERSION "2.0.0.2"
+!endif
+Name "${RELEASE_NAME}"
 Caption "Bliss Chat 2"
 OutFile "${OUTFILE}"
 Icon "${ICON}"
@@ -22,11 +31,11 @@ SetCompressor /SOLID lzma
 ; Keep decompression memory modest on the 512 MB target.
 SetCompressorDictSize 8
 InstallDir "$TEMP\BlissChat2-Extracted"
-VIProductVersion "2.0.0.2"
+VIProductVersion "${FILE_VERSION}"
 VIAddVersionKey "ProductName" "Bliss Chat XP"
-VIAddVersionKey "FileDescription" "Bliss Chat 2 RC2 - offline LFM2.5-350M Q6"
-VIAddVersionKey "FileVersion" "2.0.0-rc.2"
-VIAddVersionKey "ProductVersion" "2.0.0-rc.2"
+VIAddVersionKey "FileDescription" "${RELEASE_NAME} - offline LFM2.5-350M"
+VIAddVersionKey "FileVersion" "${RELEASE_VERSION}"
+VIAddVersionKey "ProductVersion" "${RELEASE_VERSION}"
 VIAddVersionKey "LegalCopyright" "See MODEL-LICENSE.txt and NOTICE.txt in the extracted payload."
 Var ExtractOnly
 

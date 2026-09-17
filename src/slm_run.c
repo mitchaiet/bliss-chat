@@ -40,10 +40,15 @@
 #endif
 #include "slm_float_dot.h"
 #include "slm_q6_dot.h"
+#include "slm_q6x4.h"
+#include "slm_sha256.h"
+#ifdef _WIN32
+#include <sys/stat.h>
+#endif
 typedef struct {const unsigned char *q; const float *scales; int rows,cols;} Matrix;
 typedef struct {const float *an,*fn,*qn,*kn,*conv; Matrix q,k,v,o,in,gate,up,down;int type,cache;} Layer;
 typedef struct {
-    unsigned char *map;size_t mapsize;int bits,d,ff,nl,nh,nk,hd,vocab,ctx,group,bos,eos,start,arch,conv_width,na,nc;float theta,eps;
+    unsigned char *map;size_t mapsize;int expanded,bits,d,ff,nl,nh,nk,hd,vocab,ctx,group,bos,eos,start,arch,conv_width,na,nc;float theta,eps;
     Matrix emb;Layer *layers;const float *norm;
 #ifdef _WIN32
     HANDLE file,mapping;
@@ -53,7 +58,7 @@ typedef struct {
 } Model;
 typedef struct {
     Model *m;float *x,*xb,*tmp,*q,*k,*v,*gate,*up,*att,*logits,*kc,*vc,*rotcos,*rotsin,*conv_state,*conv_proj;
-    int8_t *aq;int16_t *aq16;float *as;int pos;
+    int8_t *aq;int16_t *aq16,*aq4,*aq4_allocation;int *correction;float *as;int pos;
 } State;
 static int float_activations=0;
 static void die(const char *s){fprintf(stderr,"[slm] %s\n",s);exit(2);}
@@ -62,7 +67,7 @@ static uint32_t u32(const unsigned char *p){uint32_t x;memcpy(&x,p,4);return x;}
 static float f32(const unsigned char *p){float x;memcpy(&x,p,4);return x;}
 static const unsigned char *take(Model *m,size_t *offset,size_t bytes){if(*offset>m->mapsize||bytes>m->mapsize-*offset)die("truncated model tensor");const unsigned char *p=m->map+*offset;*offset+=bytes;return p;}
 static size_t checked_size(uint64_t n){if(n>SIZE_MAX)die("tensor allocation exceeds address space");return(size_t)n;}
-static Matrix matrix(Model *m,size_t *off,int rows,int cols){Matrix w;w.rows=rows;w.cols=cols;uint64_t n=(uint64_t)rows*(uint64_t)cols;w.q=take(m,off,checked_size(n*(unsigned)m->bits/8));w.scales=m->bits==32?NULL:(const float*)take(m,off,checked_size(n/(unsigned)m->group*4));return w;}
+static Matrix matrix(Model *m,size_t *off,int rows,int cols){Matrix w;w.rows=rows;w.cols=cols;if(m->expanded&&rows%4)die("Q6X4 requires four-row aligned matrices");uint64_t n=(uint64_t)rows*(uint64_t)cols;w.q=take(m,off,checked_size(n*(unsigned)m->bits/8));w.scales=m->bits==32?NULL:(const float*)take(m,off,checked_size(n/(unsigned)m->group*4));return w;}
 static Model *load_model(const char *path,int ctx){
     Model *m=alloc(1,sizeof(*m));
 #ifdef _WIN32
@@ -77,11 +82,13 @@ static Model *load_model(const char *path,int ctx){
     m->fd=open(path,O_RDONLY);if(m->fd<0)die("cannot open model");struct stat st;if(fstat(m->fd,&st)||st.st_size<256||(uint64_t)st.st_size>SIZE_MAX)die("invalid model size");m->mapsize=(size_t)st.st_size;
     m->map=mmap(NULL,m->mapsize,PROT_READ,MAP_PRIVATE,m->fd,0);if(m->map==MAP_FAILED)die("mmap failed");
 #endif
-    if(m->mapsize<256||memcmp(m->map,"SLMODEL1",8)||(u32(m->map+8)!=1&&u32(m->map+8)!=2))die("invalid SLM model header");
+    if(m->mapsize<256||memcmp(m->map,"SLMODEL1",8)||(u32(m->map+8)!=1&&u32(m->map+8)!=2&&u32(m->map+8)!=3))die("invalid SLM model header");
+    m->expanded=u32(m->map+8)==3;
     m->bits=(int)u32(m->map+12);m->d=(int)u32(m->map+16);m->ff=(int)u32(m->map+20);m->nl=(int)u32(m->map+24);m->nh=(int)u32(m->map+28);m->nk=(int)u32(m->map+32);m->hd=(int)u32(m->map+36);m->vocab=(int)u32(m->map+40);m->ctx=(int)u32(m->map+44);m->group=(int)u32(m->map+48);m->bos=(int)u32(m->map+52);m->eos=(int)u32(m->map+56);m->theta=f32(m->map+64);m->eps=f32(m->map+68);
     if((m->bits!=4&&m->bits!=6&&m->bits!=8&&m->bits!=32)||m->d<64||m->d>4096||m->ff<64||m->ff>16384||m->nl<1||m->nl>128||m->nh<1||m->nh>64||m->nk<1||m->nk>m->nh||m->nh%m->nk||m->hd<2||m->hd>256||m->hd%2||m->nh*m->hd!=m->d||m->vocab<256||m->vocab>200000||m->ctx<32||m->ctx>8192||(m->group!=16&&m->group!=32&&m->group!=64)||m->d%m->group||m->ff%m->group||m->bos<0||m->bos>=m->vocab||m->eos<0||m->eos>=m->vocab||!isfinite(m->theta)||m->theta<=1||!isfinite(m->eps)||m->eps<=0)die("unsupported or corrupt model config");
     m->start=m->bos;
-    if(u32(m->map+8)==2){m->arch=(int)u32(m->map+60);m->conv_width=(int)u32(m->map+72);m->start=(int)u32(m->map+76);if(m->arch!=1||m->conv_width!=3||m->start<0||m->start>=m->vocab)die("unsupported hybrid model header");}
+    if(u32(m->map+8)>=2){m->arch=(int)u32(m->map+60);m->conv_width=(int)u32(m->map+72);m->start=(int)u32(m->map+76);if(m->arch!=1||m->conv_width!=3||m->start<0||m->start>=m->vocab)die("unsupported hybrid model header");}
+    if(m->expanded&&(m->bits!=8||m->group!=64||!m->arch))die("invalid Q6X4 model config");
     if(m->bits==6&&(!m->arch||m->group!=64))die("Q6 requires an LFM model with group64");
     if(ctx>0){if(ctx>m->ctx||ctx<32)die("requested context outside model range");m->ctx=ctx;}
     size_t off=256;m->emb=matrix(m,&off,m->vocab,m->d);m->layers=alloc((size_t)m->nl,sizeof(Layer));
@@ -105,13 +112,14 @@ static void free_model(Model *m){free(m->layers);
 static State *new_state(Model *m){State *s=alloc(1,sizeof(*s));s->m=m;int d=m->d,kd=m->nk*m->hd;
     size_t kv_elements=checked_size((uint64_t)m->na*(unsigned)m->ctx*(unsigned)kd);int widest=d>m->ff?d:m->ff;
     s->x=alloc((size_t)d,4);s->xb=alloc((size_t)d,4);s->tmp=alloc((size_t)d,4);s->q=alloc((size_t)d,4);s->k=alloc((size_t)kd,4);s->v=alloc((size_t)kd,4);s->gate=alloc((size_t)m->ff,4);s->up=alloc((size_t)m->ff,4);s->att=alloc((size_t)m->ctx,4);s->logits=alloc((size_t)m->vocab,4);s->kc=alloc(kv_elements?kv_elements:1,4);s->vc=alloc(kv_elements?kv_elements:1,4);s->aq=alloc((size_t)widest,1);s->aq16=alloc((size_t)widest,2);s->as=alloc((size_t)widest/m->group,4);
+    if(m->expanded){s->aq4_allocation=alloc((size_t)widest*4+7,2);s->aq4=(int16_t*)(((uintptr_t)s->aq4_allocation+15)&~(uintptr_t)15);s->correction=alloc((size_t)widest/64,4);}
     if(m->nc){s->conv_state=alloc(checked_size((uint64_t)m->nc*(unsigned)d*(unsigned)m->conv_width),4);s->conv_proj=alloc((size_t)3*d,4);}
     s->rotcos=alloc((size_t)m->ctx*m->hd/2,4);s->rotsin=alloc((size_t)m->ctx*m->hd/2,4);
     for(int p=0;p<m->ctx;p++)for(int j=0;j<m->hd/2;j++){float angle=(float)p/powf(m->theta,(float)(2*j)/(float)m->hd);s->rotcos[p*(m->hd/2)+j]=cosf(angle);s->rotsin[p*(m->hd/2)+j]=sinf(angle);}
     return s;
 }
 static void reset_state(State *s){s->pos=0;if(s->conv_state)memset(s->conv_state,0,checked_size((uint64_t)s->m->nc*(unsigned)s->m->d*(unsigned)s->m->conv_width*4));}
-static void free_state(State *s){free(s->x);free(s->xb);free(s->tmp);free(s->q);free(s->k);free(s->v);free(s->gate);free(s->up);free(s->att);free(s->logits);free(s->kc);free(s->vc);free(s->aq);free(s->aq16);free(s->as);free(s->rotcos);free(s->rotsin);free(s->conv_state);free(s->conv_proj);free(s);}
+static void free_state(State *s){free(s->x);free(s->xb);free(s->tmp);free(s->q);free(s->k);free(s->v);free(s->gate);free(s->up);free(s->att);free(s->logits);free(s->kc);free(s->vc);free(s->aq);free(s->aq16);free(s->aq4_allocation);free(s->correction);free(s->as);free(s->rotcos);free(s->rotsin);free(s->conv_state);free(s->conv_proj);free(s);}
 static float dot(const float *a,const float *b,int n){float sum=0;
 #if SIMD
     __m128 z=_mm_setzero_ps();int i=0;for(;i+4<=n;i+=4)z=_mm_add_ps(z,_mm_mul_ps(_mm_loadu_ps(a+i),_mm_loadu_ps(b+i)));float v[4];_mm_storeu_ps(v,z);sum=v[0]+v[1]+v[2]+v[3];for(;i<n;i++)sum+=a[i]*b[i];
@@ -147,6 +155,22 @@ static int dot_quant(const unsigned char *w,const int8_t *x,int bits,int n){
 }
 static void linear(State *s,float *out,const Matrix *w,const float *x,int already_quant){Model *m=s->m;
     if(m->bits==32){const float *p=(const float*)w->q;for(int r=0;r<w->rows;r++)out[r]=dot(p+(size_t)r*w->cols,x,w->cols);return;}
+    if(m->expanded){
+        int ng=w->cols/64;
+        if(float_activations){
+            for(int r=0;r<w->rows;r++){
+                float total=0;
+                for(int g=0;g<ng;g++){
+                    int8_t q[64];
+                    for(int j=0;j<64;j++)q[j]=(int8_t)slm_q6x4_value(w->q,ng,r,g*64+j);
+                    total+=slm_dot_float((const unsigned char*)q,x+g*64,8,64)*w->scales[(size_t)(r/4)*ng*4+g*4+r%4];
+                }out[r]=total;
+            }
+        }else{
+            if(!already_quant)slm_q6x4_prepare(x,s->aq16,s->aq4,s->as,s->correction,ng);
+            slm_q6x4_linear(out,w->q,w->scales,w->rows,ng,s->aq4,s->as,s->correction);
+        }return;
+    }
     if(m->bits==6&&!float_activations){
         int ng=w->cols/64;
         if(!already_quant)for(int g=0;g<ng;g++)slm_quantize_q16_64(x+g*64,s->aq16+g*64,s->as+g);
@@ -173,7 +197,7 @@ static void linear(State *s,float *out,const Matrix *w,const float *x,int alread
 }
 static void embedding(State *s,int token){Model *m=s->m;size_t base=(size_t)token*m->d;
     if(m->bits==32){memcpy(s->x,(const float*)m->emb.q+base,(size_t)m->d*4);return;}
-    for(int j=0;j<m->d;j++){size_t i=base+(size_t)j;int q=m->bits==6?slm_q6_value(m->emb.q+(i/64)*48,(int)(i%64)):m->bits==4?((m->emb.q[i/2]>>(4*(i%2)))&15)-8:((const int8_t*)m->emb.q)[i];s->x[j]=(float)q*m->emb.scales[i/(size_t)m->group];}
+    for(int j=0;j<m->d;j++){size_t i=base+(size_t)j;int q=m->expanded?slm_q6x4_value(m->emb.q,m->d/64,token,j):m->bits==6?slm_q6_value(m->emb.q+(i/64)*48,(int)(i%64)):m->bits==4?((m->emb.q[i/2]>>(4*(i%2)))&15)-8:((const int8_t*)m->emb.q)[i];s->x[j]=(float)q*m->emb.scales[m->expanded?((size_t)(token/4)*(m->d/64)+j/64)*4+token%4:i/(size_t)m->group];}
 }
 static void rope(State *s,float *x,int heads){int hd=s->m->hd,half=hd/2;const float *co=s->rotcos+s->pos*half,*si=s->rotsin+s->pos*half;for(int h=0;h<heads;h++)for(int j=0;j<half;j++){float a=x[h*hd+j],b=x[h*hd+j+half];x[h*hd+j]=a*co[j]-b*si[j];x[h*hd+j+half]=b*co[j]+a*si[j];}}
 static float *forward(State *s,int token,int logits){
@@ -255,7 +279,13 @@ static int contains_word(const char *text,const char *word){size_t n=strlen(word
 static int note_score(const char *query,const char *note){int score=0;const char *stop="a an the is are was were be to of in on at for with and or my i me you your what which how do does did this that have has it from about can tell";while(*query){while(*query&&!isalnum((unsigned char)*query))query++;char word[64];int n=0;while(*query&&isalnum((unsigned char)*query)){if(n<63)word[n++]=(char)tolower((unsigned char)*query);query++;}word[n]=0;if(n>1&&!contains_word(stop,word)&&contains_word(note,word))score++;}return score;}
 static char *memory_context(const char *query){size_t cap=strlen(query)+MEM_MAX*MEM_LINE+64;char *text=alloc(cap,1);int picked[MEM_MAX]={0},used=0;for(int take_index=0;take_index<3;take_index++){int best=-1,score=0;for(int i=0;i<memories.count;i++)if(!picked[i]){int v=note_score(query,memories.notes[i]);if(v>score){score=v;best=i;}}if(best<0)break;picked[best]=1;if(!used)strcat(text,"Saved notes:\n");strcat(text,"- ");strcat(text,memories.notes[best]);strcat(text,"\n");used++;}if(used)strcat(text,"\n");strcat(text,query);return text;}
 static int encode_text(slm_tokenizer *t,const char *text,int *out,int cap){int n=slm_encode(t,text,0,out,cap);if(n<0)die("input tokenization exceeds capacity");return n;}
-typedef struct {State *s;slm_tokenizer *tok;int *history,*scratch;int used,prefix,ends[128],turns;char system[4096];} Chat;
+typedef struct {
+    State *s;slm_tokenizer *tok;int *history,*scratch;
+    int used,prefix,ends[128],turns;char system[4096];
+    /* Only the system-prefix rows are saved, never the entire context cache. */
+    int *prefix_ids,prefix_tokens;float *prefix_state;
+    const char *prefix_path;unsigned char prefix_identity[64];
+} Chat;
 static int role_message(Chat *c,const char *role,const char *text,int closed,int *out,int cap){int n=0;if(cap<1)return -1;out[n++]=c->s->m->start;size_t bytes=strlen(role)+strlen(text)+2;char *body=alloc(bytes,1);snprintf(body,bytes,"%s\n%s",role,text);int k=slm_encode(c->tok,body,0,out+n,cap-n);free(body);if(k<0)return -1;n+=k;if(closed){if(n>=cap)return -1;out[n++]=c->s->m->eos;k=slm_encode(c->tok,"\n",0,out+n,cap-n);if(k<0)return -1;n+=k;}return n;}
 static void append(Chat *c,const int *tokens,int n,int last_logits){for(int j=0;j<n;j++){if(c->used>=c->s->m->ctx)die("history overflow");c->history[c->used++]=tokens[j];forward(c->s,tokens[j],last_logits&&j==n-1);}}
 static int system_message(Chat *c,const char *text,int *out,int cap){
@@ -263,31 +293,97 @@ static int system_message(Chat *c,const char *text,int *out,int cap){
     if(prefix){out[0]=c->s->m->bos;if(!*text)return prefix;}
     int n=role_message(c,"system",text,1,out+prefix,cap-prefix);return n<0?-1:prefix+n;
 }
-static int chat_reset(Chat *c){int n=system_message(c,c->system,c->scratch,c->s->m->ctx);if(n<0||n>c->s->m->ctx/2)return 0;c->used=0;c->turns=0;reset_state(c->s);append(c,c->scratch,n,0);c->prefix=c->used;return 1;}
-static int make_room(Chat *c,int needed){int ctx=c->s->m->ctx;if(needed>ctx-c->prefix)return 0;if(c->used+needed<=ctx)return 1;int drop=0,last=c->prefix;while(drop<c->turns&&c->used-(last-c->prefix)+needed>ctx)last=c->ends[drop++];if(c->used-(last-c->prefix)+needed>ctx)return 0;int removed=last-c->prefix;memmove(c->history+c->prefix,c->history+last,(size_t)(c->used-last)*sizeof(int));c->used-=removed;for(int i=drop;i<c->turns;i++)c->ends[i-drop]=c->ends[i]-removed;c->turns-=drop;reset_state(c->s);for(int i=0;i<c->used;i++)forward(c->s,c->history[i],0);return 1;}
+static void free_prefix(Chat *c){
+    free(c->prefix_ids);free(c->prefix_state);
+    c->prefix_ids=NULL;c->prefix_state=NULL;c->prefix_tokens=0;
+}
+static int prefix_matches(const Chat *c,const int *ids,int n){
+    return c->prefix_ids&&c->prefix_tokens==n&&!memcmp(c->prefix_ids,ids,(size_t)n*sizeof(int));
+}
+/* Copy exact cached floats, including every convolution delay element. Scratch
+ * vectors and logits need no snapshot: the next forward call overwrites them.
+ * Rows beyond the prefix remain untouched and are overwritten before use. */
+static void transfer_prefix(Chat *c,int restore){
+    Model *m=c->s->m;size_t kd=(size_t)m->nk*m->hd;
+    size_t rows=(size_t)c->prefix_tokens*kd,layer_stride=(size_t)m->ctx*kd;
+    float *saved=c->prefix_state;
+    for(int layer=0;layer<m->na;layer++){
+        float *key=c->s->kc+(size_t)layer*layer_stride;
+        float *value=c->s->vc+(size_t)layer*layer_stride;
+        if(restore){memcpy(key,saved,rows*sizeof(float));memcpy(value,saved+rows,rows*sizeof(float));}
+        else{memcpy(saved,key,rows*sizeof(float));memcpy(saved+rows,value,rows*sizeof(float));}
+        saved+=2*rows;
+    }
+    size_t conv=(size_t)m->nc*m->d*m->conv_width;
+    if(conv){
+        if(restore)memcpy(c->s->conv_state,saved,conv*sizeof(float));
+        else memcpy(saved,c->s->conv_state,conv*sizeof(float));
+    }
+    if(restore)c->s->pos=c->prefix_tokens;
+}
+static void save_prefix(Chat *c){
+    Model *m=c->s->m;int n=c->prefix;
+    size_t elements=checked_size(2ull*m->na*(unsigned)n*m->nk*m->hd+(uint64_t)m->nc*m->d*m->conv_width);
+    c->prefix_ids=alloc((size_t)n,sizeof(int));
+    c->prefix_state=alloc(elements?elements:1,sizeof(float));
+    c->prefix_tokens=n;
+    memcpy(c->prefix_ids,c->history,(size_t)n*sizeof(int));transfer_prefix(c,0);
+}
+#include "slm_prefix_disk.h"
+static int chat_reset(Chat *c){
+    int n=system_message(c,c->system,c->scratch,c->s->m->ctx);
+    if(n<0||n>c->s->m->ctx/2)return 0;
+    c->used=0;c->turns=0;
+    if(prefix_matches(c,c->scratch,n)){
+        transfer_prefix(c,1);memcpy(c->history,c->prefix_ids,(size_t)n*sizeof(int));c->used=n;
+    }else{
+        free_prefix(c);
+        if(!prefix_disk_load(c,c->scratch,n)){
+            reset_state(c->s);append(c,c->scratch,n,0);
+            c->prefix=n;save_prefix(c);prefix_disk_save(c);
+        }
+    }
+    c->prefix=n;return 1;
+}
+static int make_room(Chat *c,int needed){
+    int ctx=c->s->m->ctx;if(needed>ctx-c->prefix)return 0;
+    if(c->used+needed<=ctx)return 1;
+    int drop=0,last=c->prefix;
+    while(drop<c->turns&&c->used-(last-c->prefix)+needed>ctx)last=c->ends[drop++];
+    if(c->used-(last-c->prefix)+needed>ctx)return 0;
+    int removed=last-c->prefix;
+    memmove(c->history+c->prefix,c->history+last,(size_t)(c->used-last)*sizeof(int));c->used-=removed;
+    for(int i=drop;i<c->turns;i++)c->ends[i-drop]=c->ends[i]-removed;
+    c->turns-=drop;
+    int start=0;
+    if(prefix_matches(c,c->history,c->prefix)){transfer_prefix(c,1);start=c->prefix;}
+    else reset_state(c->s);
+    for(int i=start;i<c->used;i++)forward(c->s,c->history[i],0);
+    return 1;
+}
 static int chat_turn(Chat *c,const char *text,int maximum,float temp,float topp,Candidate *candidates,int ipc){int ctx=c->s->m->ctx;char *enriched=memory_context(text);int n=role_message(c,"user",enriched,1,c->scratch,ctx);free(enriched);if(n<0)return -1;int k=role_message(c,"assistant","",0,c->scratch+n,ctx-n);if(k<0)return -1;n+=k;
     int room=ctx-c->prefix-n-3;if(room<1)return -1;if(maximum>room)maximum=room;if(!make_room(c,n+maximum+3))return -1;append(c,c->scratch,n,1);int count=0;
     for(int i=0;i<maximum;i++){if(stop_requested())break;int token=sample(c->s,temp,topp,candidates);if(token==c->s->m->eos)break;int len,special;const unsigned char *raw=slm_token_bytes(c->tok,token,&len,&special);if(special&&!c->s->m->arch)break;if(!special&&raw)fwrite(raw,1,(size_t)len,stdout);fflush(stdout);count++;append(c,&token,1,1);}
     int ending[16];ending[0]=c->s->m->eos;int en=1+encode_text(c->tok,"\n",ending+1,15);append(c,ending,en,0);if(c->turns>=128)die("too many history turn boundaries");c->ends[c->turns++]=c->used;if(ipc)printf("\n\001EOT %d\n",count);else printf("\n");fflush(stdout);return count;
 }
-static void usage(void){fprintf(stderr,"Usage: slm_run MODEL.SLM TOKENIZER.SLT [-c context] [-t temp] [-p top_p] [-n max_tokens]\n  [-s seed] [-m MEMORY.TXT] [--float-activations]\n  [--prompt text] [--raw text] [--tokens comma_ids] [--logits output.f32]\n  [--tokenize text] [--specials] [--system text]\n  Without a prompt, serves the Bliss Win32 sentinel protocol on stdin/stdout.\n");}
+static void usage(void){fprintf(stderr,"Usage: slm_run MODEL.SLM TOKENIZER.SLT [-c context] [-t temp] [-p top_p] [-n max_tokens]\n  [-s seed] [-m MEMORY.TXT] [--float-activations] [--prefix-cache path]\n  [--prompt text] [--raw text] [--tokens comma_ids] [--logits output.f32]\n  [--tokenize text] [--specials] [--system text]\n  Without a prompt, serves the Bliss Win32 sentinel protocol on stdin/stdout.\n");}
 int main(int argc,char **argv){
-    if(argc<3){usage();return 2;}const char *modelpath=argv[1],*tokpath=argv[2],*prompt=NULL,*raw=NULL,*tokenlist=NULL,*logitpath=NULL,*tokenize=NULL,*sysprompt="You are Bliss, a helpful local assistant running on Windows XP. Give a clear, concise answer, usually in one to three sentences. Use the conversation and supplied notes when relevant. If the supplied information does not answer the question, say so.";int ctx=0,maximum=96,specials=0;float temp=0.0f,topp=0.9f;
-    for(int i=3;i<argc;i++){const char *a=argv[i];if(!strcmp(a,"--specials")){specials=1;continue;}if(!strcmp(a,"--float-activations")){float_activations=1;continue;}if(i+1>=argc){usage();return 2;}const char *v=argv[++i];if(!strcmp(a,"-c")||!strcmp(a,"--ctx"))ctx=atoi(v);else if(!strcmp(a,"-t")||!strcmp(a,"--temp"))temp=(float)atof(v);else if(!strcmp(a,"-p")||!strcmp(a,"--top-p"))topp=(float)atof(v);else if(!strcmp(a,"-n")||!strcmp(a,"--max-tokens"))maximum=atoi(v);else if(!strcmp(a,"--prompt"))prompt=v;else if(!strcmp(a,"--raw"))raw=v;else if(!strcmp(a,"--tokens"))tokenlist=v;else if(!strcmp(a,"--logits"))logitpath=v;else if(!strcmp(a,"--tokenize"))tokenize=v;else if(!strcmp(a,"--system"))sysprompt=v;else if(!strcmp(a,"-s")||!strcmp(a,"--seed"))rngstate=(uint32_t)strtoul(v,NULL,10);else if(!strcmp(a,"-m"))snprintf(memories.path,sizeof(memories.path),"%s",v);else{usage();return 2;}}
+    if(argc<3){usage();return 2;}const char *modelpath=argv[1],*tokpath=argv[2],*prompt=NULL,*raw=NULL,*tokenlist=NULL,*logitpath=NULL,*tokenize=NULL,*prefixpath=NULL,*sysprompt="You are Bliss, a helpful local assistant running on Windows XP. Give a clear, concise answer, usually in one to three sentences. Use the conversation and supplied notes when relevant. If the supplied information does not answer the question, say so.";int ctx=0,maximum=96,specials=0;float temp=0.0f,topp=0.9f;
+    for(int i=3;i<argc;i++){const char *a=argv[i];if(!strcmp(a,"--specials")){specials=1;continue;}if(!strcmp(a,"--float-activations")){float_activations=1;continue;}if(i+1>=argc){usage();return 2;}const char *v=argv[++i];if(!strcmp(a,"-c")||!strcmp(a,"--ctx"))ctx=atoi(v);else if(!strcmp(a,"-t")||!strcmp(a,"--temp"))temp=(float)atof(v);else if(!strcmp(a,"-p")||!strcmp(a,"--top-p"))topp=(float)atof(v);else if(!strcmp(a,"-n")||!strcmp(a,"--max-tokens"))maximum=atoi(v);else if(!strcmp(a,"--prompt"))prompt=v;else if(!strcmp(a,"--raw"))raw=v;else if(!strcmp(a,"--tokens"))tokenlist=v;else if(!strcmp(a,"--logits"))logitpath=v;else if(!strcmp(a,"--tokenize"))tokenize=v;else if(!strcmp(a,"--system"))sysprompt=v;else if(!strcmp(a,"--prefix-cache"))prefixpath=v;else if(!strcmp(a,"-s")||!strcmp(a,"--seed"))rngstate=(uint32_t)strtoul(v,NULL,10);else if(!strcmp(a,"-m"))snprintf(memories.path,sizeof(memories.path),"%s",v);else{usage();return 2;}}
     if(maximum<1||maximum>8192||!isfinite(temp)||temp<0||!isfinite(topp)||topp<=0||topp>1)die("invalid sampling settings");
     if(!rngstate)rngstate=42;
     slm_tokenizer *tok=slm_tokenizer_load(tokpath);if(!tok)die("cannot load tokenizer");
     if(tokenize){int cap=(int)strlen(tokenize)+32,*ids=alloc((size_t)cap,sizeof(int));int n=slm_encode(tok,tokenize,specials,ids,cap);if(n<0)die("tokenizer failed");printf("[");for(int i=0;i<n;i++)printf("%s%d",i?",":"",ids[i]);printf("]\n");free(ids);slm_tokenizer_free(tok);return 0;}
     Model *m=load_model(modelpath,ctx);if(slm_tokenizer_vocab(tok)!=m->vocab)die("model/tokenizer vocab mismatch");State *s=new_state(m);Candidate *candidates=alloc((size_t)m->vocab,sizeof(Candidate));
-    fprintf(stderr,"[slm] %d layers dim%d Q%d KV%d context%d weights%.2fMiB KV%.2fMiB backend=%s\n",m->nl,m->d,m->bits,m->nk,m->ctx,(double)m->mapsize/1048576.0,(double)(2ull*m->na*m->ctx*m->nk*m->hd*4)/1048576.0,SIMD?"SSE2":"scalar");
+    fprintf(stderr,"[slm] %d layers dim%d Q%d KV%d context%d weights%.2fMiB KV%.2fMiB backend=%s\n",m->nl,m->d,m->expanded?6:m->bits,m->nk,m->ctx,(double)m->mapsize/1048576.0,(double)(2ull*m->na*m->ctx*m->nk*m->hd*4)/1048576.0,SIMD?"SSE2":"scalar");
     if(raw||tokenlist){int *ids=alloc((size_t)m->ctx,sizeof(int)),n=0;if(raw)n=slm_encode(tok,raw,specials,ids,m->ctx);else{const char *p=tokenlist;while(*p&&n<m->ctx){char *end;long x=strtol(p,&end,10);if(end==p||x<0||x>=m->vocab)die("invalid token list");ids[n++]=(int)x;if(!*end)break;if(*end!=',')die("invalid token list separator");p=end+1;}}if(n<1)die("empty or oversized prompt");for(int j=0;j<n;j++)forward(s,ids[j],j==n-1);if(logitpath){FILE *f=fopen(logitpath,"wb");if(!f||fwrite(s->logits,4,(size_t)m->vocab,f)!=(size_t)m->vocab)die("cannot write logits");fclose(f);}else{for(int j=0;j<maximum&&s->pos<m->ctx;j++){int token=sample(s,temp,topp,candidates);if(token==m->eos)break;int len,sp;const unsigned char *b=slm_token_bytes(tok,token,&len,&sp);if(!sp)fwrite(b,1,(size_t)len,stdout);forward(s,token,1);}printf("\n");}free(ids);}
-    else{Chat c={0};c.s=s;c.tok=tok;c.history=alloc((size_t)m->ctx,sizeof(int));c.scratch=alloc((size_t)m->ctx,sizeof(int));snprintf(c.system,sizeof(c.system),"%s",sysprompt);if(!memory_load())fprintf(stderr,"[slm] cannot read persistent notes\n");if(!chat_reset(&c))die("system prompt exceeds half the context");
+    else{Chat c={0};c.s=s;c.tok=tok;c.history=alloc((size_t)m->ctx,sizeof(int));c.scratch=alloc((size_t)m->ctx,sizeof(int));prefix_disk_init(&c,prefixpath,argv[0]);snprintf(c.system,sizeof(c.system),"%s",sysprompt);if(!memory_load())fprintf(stderr,"[slm] cannot read persistent notes\n");if(!chat_reset(&c))die("system prompt exceeds half the context");
         if(prompt){if(chat_turn(&c,prompt,maximum,temp,topp,candidates,0)<0)die("prompt too long for context");}
         else{setvbuf(stdin,NULL,_IONBF,0);setvbuf(stdout,NULL,_IONBF,0);
 #ifdef _WIN32
             _setmode(_fileno(stdin),_O_BINARY);_setmode(_fileno(stdout),_O_BINARY);
 #endif
-            printf("\001READY\n\001INFO MODEL %s native Q%d SSE2; context%d\n\001INFO SOURCE %s\n",m->arch?"LFM2.5":"SmolLM2",m->bits,m->ctx,m->arch?"LiquidAI/LFM2.5-350M":"HuggingFaceTB/SmolLM2-360M-Instruct");char line[32768];
+            printf("\001READY\n\001INFO MODEL %s native Q%d%s SSE2; context%d\n\001INFO SOURCE %s\n",m->arch?"LFM2.5":"SmolLM2",m->expanded?6:m->bits,m->expanded?"X4":"",m->ctx,m->arch?"LiquidAI/LFM2.5-350M":"HuggingFaceTB/SmolLM2-360M-Instruct");char line[32768];
             while(1){if(pending[0]){snprintf(line,sizeof(line),"%s",pending);pending[0]=0;}else if(!fgets(line,sizeof(line),stdin))break;line[strcspn(line,"\r\n")]=0;if(!line[0])continue;if(!strcmp(line,"\001STOP"))continue;
                 if(line[0]=='/'){char *arg=strchr(line,' ');if(arg)*arg++=0;
                     if(!strcmp(line,"/reset"))chat_reset(&c);
@@ -303,13 +399,13 @@ int main(int argc,char **argv){
                     else if(!strcmp(line,"/memreload")){if(memory_load())printf("\001INFO Loaded %d notes.\n",memories.count);else printf("\001ERR Could not read notes.\n");}
                     else if(!strcmp(line,"/memfile")&&arg){Memories old=memories;snprintf(memories.path,sizeof(memories.path),"%s",arg);if(!memory_load()){memories=old;printf("\001ERR Could not read notes file; previous notes retained.\n");}else printf("\001INFO Loaded %d notes.\n",memories.count);}
                     else if(!strcmp(line,"/replay")&&arg){char *sep=strchr(arg,'\t');if(sep){*sep++=0;unescape(arg);unescape(sep);int n=role_message(&c,"user",arg,1,c.scratch,m->ctx);if(n>0){int k=role_message(&c,"assistant",sep,1,c.scratch+n,m->ctx-n);if(k>0&&make_room(&c,n+k)){append(&c,c.scratch,n+k,0);c.ends[c.turns++]=c.used;}}}}
-                    else if(!strcmp(line,"/info")||!strcmp(line,"/help")||!strcmp(line,"/template"))printf("\001INFO ChatML, Q%d, context%d, temp%.2f, top_p%.2f, maxtok%d; /reset /temp /topp /maxtok /seed /system /replay\n",m->bits,m->ctx,temp,topp,maximum);
+                    else if(!strcmp(line,"/info")||!strcmp(line,"/help")||!strcmp(line,"/template"))printf("\001INFO ChatML, Q%d%s, context%d, temp%.2f, top_p%.2f, maxtok%d; /reset /temp /topp /maxtok /seed /system /replay\n",m->expanded?6:m->bits,m->expanded?"X4":"",m->ctx,temp,topp,maximum);
                     else printf("\001ERR unsupported command: %s\n",line);
                     printf("\001EOT 0\n");continue;
                 }
                 unescape(line);if(chat_turn(&c,line,maximum,temp,topp,candidates,1)<0)printf("\001ERR Prompt too long for the configured context.\n\001EOT 0\n");
             }
-        }free(c.history);free(c.scratch);
+        }free_prefix(&c);free(c.history);free(c.scratch);
     }
     free(candidates);free_state(s);free_model(m);slm_tokenizer_free(tok);return 0;
 }

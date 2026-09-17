@@ -18,7 +18,11 @@ normalization, convolution and residual values remain FP32. The original
 RC1/RC2 FP32 activation path remains available with `--float-activations`.
 This runtime update does not change the model weights. See
 [performance validation](docs/Q16_PERFORMANCE.md). Weights occupy
-288,226,560 bytes (274.87 MiB); the tokenizer occupies 1,692,655 bytes.
+288,226,560 bytes (274.87 MiB) in the packed format. The optional
+[Q6X4 speed build](docs/Q6X4_PERFORMANCE.md) expands and rearranges those
+same values losslessly into 376,831,232 bytes (359.37 MiB), mapped directly
+from disk. It requires the accompanying version-3-capable runtime. The
+tokenizer occupies 1,692,655 bytes.
 The default context is 512 tokens and replies are capped at 128 tokens, with greedy
 decoding. Longer conversations retain recent turns, and saved notes are
 retrieved separately. Chat and note data stay on the local machine.

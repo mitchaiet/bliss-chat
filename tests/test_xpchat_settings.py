@@ -6,6 +6,8 @@ No Windows registry, backend process, or model is accessed.
 
 from pathlib import Path
 import unittest
+import subprocess
+import tempfile
 
 import test_xpchat_transport as transport
 
@@ -43,6 +45,40 @@ class XpChatSettingsTests(unittest.TestCase):
         settings = transport.excerpt(self.source, "static void settings_load(", "static void settings_save(")
         self.assertNotIn('"Context"', settings)
         self.assertNotIn('"Ctx"', settings)
+
+    def test_prefix_cache_option_requires_q6x4_v3(self):
+        start = self.source.index("    /* Only Q6X4 v3 bundles support this option.")
+        end = self.source.index('    dbg_log("GUI", "selected backend:', start)
+        block = self.source[start:end].replace('"%s\\\\%s"', '"%s/%s"')
+        harness = r'''#include <stdio.h>
+#include <string.h>
+#define MAX_PATH 260
+#define MODEL_FILE "MODEL.NCB"
+int main(int argc,char **argv){
+    if(argc!=2)return 2;
+    const char *gAppDir=argv[1],*prefix_path="PREFIX.CACHE";
+    char command[2048]="backend";
+''' + block + '\nputs(command);return 0;}\n'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / "gate"
+            subprocess.run(["cc", "-std=c99", "-Wall", "-Wextra", "-Werror",
+                            "-x", "c", "-", "-o", str(binary)],
+                           input=harness, text=True, check=True, capture_output=True)
+            model = root / "MODEL.NCB"
+            cases = [(b"SLMODEL1" + n.to_bytes(4, "little"), n == 3)
+                     for n in (0, 1, 2, 3, 4, 0x103, 0x3000000)]
+            cases += [(b"SLMODEL1", False), (b"SLMODEL1\x03\0\0", False),
+                      (b"NC_MODEL" + b"\x03\0\0\0", False)]
+            for header, enabled in cases:
+                model.write_bytes(header)
+                result = subprocess.run([str(binary), str(root)], text=True,
+                                        check=True, capture_output=True)
+                self.assertEqual('--prefix-cache' in result.stdout, enabled, header)
+            model.unlink()
+            result = subprocess.run([str(binary), str(root)], text=True,
+                                    check=True, capture_output=True)
+            self.assertNotIn('--prefix-cache', result.stdout)
 
     def test_settings_are_normalized_before_save_and_send(self):
         save = transport.excerpt(self.source, "static void settings_save(", "static void settings_reset_all(")

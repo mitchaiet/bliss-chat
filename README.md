@@ -7,8 +7,9 @@ documents/memory tools. The model and runtime are unchanged from RC1.
 Physical XP validation is still pending; this release does not replace v1.3.0
 as the stable recommendation.
 
-The current source includes a [Q6 runtime speed improvement](docs/Q16_PERFORMANCE.md)
-using the same model weights. The published RC2 downloads retain the original runtime.
+The current source includes a [Pentium 4 speed build](docs/Q6X4_PERFORMANCE.md)
+with a lossless model layout and a Clang-compiled SSE2 runtime. The original
+packed model and the [earlier Q16 improvement](docs/Q16_PERFORMANCE.md) remain supported.
 
 A small language model with a native Windows XP chat interface. This branch
 adds a new compact pretrained foundation, controlled chat adaptation and an
