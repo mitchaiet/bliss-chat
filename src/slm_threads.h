@@ -39,7 +39,15 @@ static struct {
     pthread_mutex_t mutex; pthread_cond_t cond;
 #endif
 } slm_pool;
+/* Helpers spin this many pause iterations before sleeping. Spinning keeps
+ * the per-layer hand-off cheap while tokens stream (6 threads: 3.7 tok/s in
+ * the XP VM versus 2.9 with a 2000-iteration budget), but on an oversubscribed
+ * host every spinning helper steals cycles from the working thread, so
+ * SLM_SPIN=2000 or SLM_SPIN=0 can override it at runtime. */
+#ifndef SLM_SPIN_ITERATIONS
 #define SLM_SPIN_ITERATIONS 200000
+#endif
+static long slm_spin_limit = SLM_SPIN_ITERATIONS;
 
 static void slm_pool_range(int index, int *r0, int *r1) {
     int blocks = (slm_pool.rows + slm_pool.align - 1) / slm_pool.align;
@@ -67,7 +75,7 @@ static void slm_worker_loop(SlmWorker *w) {
     for (;;) {
         int spins = 0;
         while (slm_atomic_load(&slm_pool.generation) == seen) {
-            if (++spins < SLM_SPIN_ITERATIONS) { SLM_PAUSE(); continue; }
+            if (++spins < slm_spin_limit) { SLM_PAUSE(); continue; }
             w->sleeping = 1;
 #ifdef _WIN32
             if (slm_atomic_load(&slm_pool.generation) == seen) WaitForSingleObject(w->wake, INFINITE);
@@ -101,6 +109,7 @@ static int slm_default_threads(void) {
 static int slm_threads_init(int count) {
     if (slm_pool.count) return slm_pool.count;
     if (count <= 0) { const char *env = getenv("SLM_THREADS"); count = env && atoi(env) > 0 ? atoi(env) : slm_default_threads(); }
+    { const char *spin = getenv("SLM_SPIN"); if (spin && atol(spin) >= 0) slm_spin_limit = atol(spin); }
     if (count > 64) count = 64;
     if (count < 1) count = 1;
     slm_pool.count = 1;

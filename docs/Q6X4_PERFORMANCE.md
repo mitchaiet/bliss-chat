@@ -50,6 +50,44 @@ No Python, GPU, server, or network connection is needed on the XP machine.
 
 ## Measurements
 
-Validation results will be recorded with the selected executable's hashes.
-Windows XP VM results measure ARM64 QEMU TCG with one Pentium 4-compatible
-CPU and 512 MiB RAM. They are not measurements on a physical Pentium 4.
+Windows XP VM results measure ARM64 QEMU 11.1 TCG (Apple M1 Pro host) with
+Pentium 4-compatible virtual CPUs and 512 MiB RAM. They are not measurements
+on a physical Pentium 4; TCG executes every SSE2 instruction through a helper
+call, so a real 3 GHz Pentium 4 should be several times faster per core.
+
+`bench/slm_speed_xp.c` (built with `-DSLM_PROFILE`) on the installed
+Q6X4 model, warm second pass, 2026-09-17. Host wall-clock time agreed with
+the guest's QueryPerformanceCounter and tick clocks within a second when the
+host was otherwise idle.
+
+| Threads | vCPUs | Decode, 32 tokens | Prefill, 64 tokens | Linear share |
+|---|---|---:|---:|---:|
+| 1 | 4 | 1.07 tok/s | 1.27 tok/s | 87.1% (SwiGLU 11.5%) |
+| 2 | 4 | 2.10 tok/s | 2.53 tok/s | 95.5% |
+| 4 | 4 | 3.7 tok/s | 4.5 tok/s | 97.3% |
+| 5 | 6 | 3.2 tok/s | 3.9 tok/s | 97.7% |
+| 6 | 6 | 3.7 tok/s | 4.4 tok/s | 98.0% |
+| 6, SLM_SPIN=2000 | 6 | 2.9 tok/s | 3.5 tok/s | 97.7% |
+
+Beyond four threads the host, not the guest, is the limit: the 10-core M1 Pro
+was also running other work, and TCG's per-instruction helpers plus MTTCG
+memory barriers leave little headroom. Eight virtual CPUs bug-checked
+Windows XP under sustained load and the spinning pool degraded badly there,
+so the VM runs with four.
+
+Reference points on one vCPU: the packed Q6 runtime with Q16 activations
+decoded at about 0.40 tok/s, and the original RC2 runtime at about 0.19 tok/s.
+Working set was 373 MiB in every run, leaving about 35 MiB free in the guest.
+The first pass after a process start pays a 70 to 90 second page-in of the
+mapped model from the emulated IDE disk; the GUI shows this as "Loading
+model...".
+
+Answers were unchanged in every configuration: the 48-case held-out suite
+(56 turns) produced byte-identical replies with 1 and 10 threads on the
+x86_64 SSE2 host build, and the prefix-cache tests report bit-exact logit
+continuations.
+
+The VM boots Windows XP Professional SP3 with the ACPI multiprocessor HAL
+(`/HAL=halmacpi.dll /KERNEL=ntkrnlmp.exe` in boot.ini) and
+`-smp N,sockets=1,cores=N` in QEMU. Keep QEMU's `tb-size` at 128 on ARM64
+hosts; larger translation caches abort in `do_patch_instruction`.
