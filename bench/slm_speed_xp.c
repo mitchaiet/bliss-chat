@@ -31,5 +31,14 @@ int main(int argc,char **argv){
           pm.WorkingSetSize/1048576.0,pm.PeakWorkingSetSize/1048576.0,pm.PagefileUsage/1048576.0,ms.dwAvailPhys/1048576.0);
         fputs(line,stdout);fflush(stdout);fputs(line,report);fflush(report);
     }
+#ifdef SLM_PROFILE
+    {
+        double total=0;for(int i=0;i<5;i++)total+=slm_prof[i];
+        char line[512];snprintf(line,sizeof(line),
+          "Profile (%d threads): linear %.1f%%  attention %.1f%%  swiglu %.1f%%  conv %.1f%%  other %.1f%%\n",
+          slm_pool.count,100*slm_prof[0]/total,100*slm_prof[1]/total,100*slm_prof[2]/total,100*slm_prof[3]/total,100*slm_prof[4]/total);
+        fputs(line,stdout);fputs(line,report);
+    }
+#endif
     fclose(report);free_state(s);free_model(m);return 0;
 }

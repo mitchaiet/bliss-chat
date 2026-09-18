@@ -100,7 +100,7 @@ static int slm_default_threads(void) {
 /* Start count-1 helpers; count <= 0 means one thread per processor. */
 static int slm_threads_init(int count) {
     if (slm_pool.count) return slm_pool.count;
-    if (count <= 0) count = slm_default_threads();
+    if (count <= 0) { const char *env = getenv("SLM_THREADS"); count = env && atoi(env) > 0 ? atoi(env) : slm_default_threads(); }
     if (count > 64) count = 64;
     if (count < 1) count = 1;
     slm_pool.count = 1;

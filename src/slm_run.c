@@ -112,7 +112,7 @@ static void free_model(Model *m){free(m->layers);
 }
 static State *new_state(Model *m){State *s=alloc(1,sizeof(*s));s->m=m;int d=m->d,kd=m->nk*m->hd;
     size_t kv_elements=checked_size((uint64_t)m->na*(unsigned)m->ctx*(unsigned)kd);int widest=d>m->ff?d:m->ff;
-    s->x=alloc((size_t)d,4);s->xb=alloc((size_t)d,4);s->tmp=alloc((size_t)d,4);s->q=alloc((size_t)d,4);s->k=alloc((size_t)kd,4);s->v=alloc((size_t)kd,4);s->gate=alloc((size_t)m->ff,4);s->up=alloc((size_t)m->ff,4);s->att=alloc((size_t)m->ctx,4);s->logits=alloc((size_t)m->vocab,4);s->kc=alloc(kv_elements?kv_elements:1,4);s->vc=alloc(kv_elements?kv_elements:1,4);s->aq=alloc((size_t)widest,1);s->aq16=alloc((size_t)widest,2);s->as=alloc((size_t)widest/m->group,4);
+    s->x=alloc((size_t)d,4);s->xb=alloc((size_t)d,4);s->tmp=alloc((size_t)d,4);s->q=alloc((size_t)d,4);s->k=alloc((size_t)kd,4);s->v=alloc((size_t)kd,4);s->gate=alloc((size_t)m->ff,4);s->up=alloc((size_t)m->ff,4);s->att=alloc((size_t)m->ctx*(size_t)m->nh,4);s->logits=alloc((size_t)m->vocab,4);s->kc=alloc(kv_elements?kv_elements:1,4);s->vc=alloc(kv_elements?kv_elements:1,4);s->aq=alloc((size_t)widest,1);s->aq16=alloc((size_t)widest,2);s->as=alloc((size_t)widest/m->group,4);
     if(m->expanded){s->aq4_allocation=alloc((size_t)widest*4+7,2);s->aq4=(int16_t*)(((uintptr_t)s->aq4_allocation+15)&~(uintptr_t)15);s->correction=alloc((size_t)widest/64,4);}
     if(m->nc){s->conv_state=alloc(checked_size((uint64_t)m->nc*(unsigned)d*(unsigned)m->conv_width),4);s->conv_proj=alloc((size_t)3*d,4);}
     s->rotcos=alloc((size_t)m->ctx*m->hd/2,4);s->rotsin=alloc((size_t)m->ctx*m->hd/2,4);
@@ -212,41 +212,93 @@ static void embedding(State *s,int token){Model *m=s->m;size_t base=(size_t)toke
     for(int j=0;j<m->d;j++){size_t i=base+(size_t)j;int q=m->expanded?slm_q6x4_value(m->emb.q,m->d/64,token,j):m->bits==6?slm_q6_value(m->emb.q+(i/64)*48,(int)(i%64)):m->bits==4?((m->emb.q[i/2]>>(4*(i%2)))&15)-8:((const int8_t*)m->emb.q)[i];s->x[j]=(float)q*m->emb.scales[m->expanded?((size_t)(token/4)*(m->d/64)+j/64)*4+token%4:i/(size_t)m->group];}
 }
 static void rope(State *s,float *x,int heads){int hd=s->m->hd,half=hd/2;const float *co=s->rotcos+s->pos*half,*si=s->rotsin+s->pos*half;for(int h=0;h<heads;h++)for(int j=0;j<half;j++){float a=x[h*hd+j],b=x[h*hd+j+half];x[h*hd+j]=a*co[j]-b*si[j];x[h*hd+j+half]=b*co[j]+a*si[j];}}
+/* Optional section timing for the XP benchmark (-DSLM_PROFILE). */
+#ifdef SLM_PROFILE
+static double slm_prof[8];
+static double slm_prof_now(void){
+#ifdef _WIN32
+    LARGE_INTEGER c;QueryPerformanceCounter(&c);return (double)c.QuadPart;
+#else
+    struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return (double)t.tv_sec*1e9+(double)t.tv_nsec;
+#endif
+}
+#define PROF_START double prof_t0=slm_prof_now();
+#define PROF_STOP(i) slm_prof[i]+=slm_prof_now()-prof_t0;
+#define PROF_LAP(i) slm_prof[i]+=slm_prof_now()-prof_t0;prof_t0=slm_prof_now();
+#else
+#define PROF_START
+#define PROF_STOP(i)
+#define PROF_LAP(i)
+#endif
+/* Parallel pieces of the forward pass. Each job writes disjoint elements and
+ * repeats the serial arithmetic exactly, so outputs stay bit-identical. */
+typedef struct {State *s;Layer *w;int pos;} AttnJob;
+static void attention_heads(void *job_,int h0,int h1){
+    AttnJob *job=(AttnJob*)job_;State *s=job->s;Model *m=s->m;Layer *w=job->w;int pos=job->pos,kd=m->nk*m->hd;
+    float *kc=s->kc+(size_t)w->cache*m->ctx*kd,*vc=s->vc+(size_t)w->cache*m->ctx*kd;
+    for(int h=h0;h<h1;h++){
+        int kh=h/(m->nh/m->nk);float mx=-INFINITY;float *att=s->att+(size_t)h*m->ctx;
+        for(int t=0;t<=pos;t++){float z=dot(s->q+h*m->hd,kc+(size_t)t*kd+kh*m->hd,m->hd)/sqrtf((float)m->hd);att[t]=z;if(z>mx)mx=z;}
+        float sum=0;for(int t=0;t<=pos;t++){att[t]=expf(att[t]-mx);sum+=att[t];}
+        for(int t=0;t<=pos;t++)axpy(s->xb+h*m->hd,vc+(size_t)t*kd+kh*m->hd,att[t]/sum,m->hd);
+    }
+}
+typedef struct {State *s;Layer *w;} ConvJob;
+static void conv_channels(void *job_,int j0,int j1){
+    ConvJob *job=(ConvJob*)job_;State *s=job->s;Model *m=s->m;Layer *w=job->w;int d=m->d;
+    float *cache=s->conv_state+(size_t)w->cache*d*m->conv_width;
+    for(int j=j0;j<j1;j++){
+        float *history=cache+(size_t)j*m->conv_width;
+        for(int k=0;k<m->conv_width-1;k++)history[k]=history[k+1];
+        history[m->conv_width-1]=s->conv_proj[j]*s->conv_proj[2*d+j];
+        /* PyTorch Conv1d is cross-correlation: oldest sample uses kernel[0]. */
+        float z=0;for(int k=0;k<m->conv_width;k++)z+=history[k]*w->conv[(size_t)j*m->conv_width+k];
+        s->xb[j]=s->conv_proj[d+j]*z;
+    }
+}
+static void swiglu_range(void *job_,int j0,int j1){
+    State *s=(State*)job_;for(int j=j0;j<j1;j++)s->gate[j]=(s->gate[j]/(1.0f+expf(-s->gate[j])))*s->up[j];
+}
 static float *forward(State *s,int token,int logits){
     Model *m=s->m;if(token<0||token>=m->vocab||s->pos>=m->ctx)die("token or context out of bounds");
-    int d=m->d,kd=m->nk*m->hd,pos=s->pos;embedding(s,token);
+    int d=m->d,kd=m->nk*m->hd,pos=s->pos;
+    PROF_START
+    embedding(s,token);
     for(int l=0;l<m->nl;l++){
         Layer *w=m->layers+l;rms(s->xb,s->x,w->an,d,m->eps);
+        PROF_LAP(4)
         if(w->type){
             linear(s,s->conv_proj,&w->in,s->xb,0);
-            float *cache=s->conv_state+(size_t)w->cache*d*m->conv_width;
-            for(int j=0;j<d;j++){
-                float *history=cache+(size_t)j*m->conv_width;
-                for(int k=0;k<m->conv_width-1;k++)history[k]=history[k+1];
-                history[m->conv_width-1]=s->conv_proj[j]*s->conv_proj[2*d+j];
-                /* PyTorch Conv1d is cross-correlation: oldest sample uses kernel[0]. */
-                float z=0;for(int k=0;k<m->conv_width;k++)z+=history[k]*w->conv[(size_t)j*m->conv_width+k];
-                s->xb[j]=s->conv_proj[d+j]*z;
-            }
+            PROF_LAP(0)
+            ConvJob cj={s,w};slm_parallel_rows(d,64,conv_channels,&cj);
+            PROF_LAP(3)
         }else{
             linear(s,s->q,&w->q,s->xb,0);linear(s,s->k,&w->k,s->xb,1);linear(s,s->v,&w->v,s->xb,1);
+            PROF_LAP(0)
             if(w->qn){for(int h=0;h<m->nh;h++)rms(s->q+h*m->hd,s->q+h*m->hd,w->qn,m->hd,m->eps);for(int h=0;h<m->nk;h++)rms(s->k+h*m->hd,s->k+h*m->hd,w->kn,m->hd,m->eps);}
             rope(s,s->q,m->nh);rope(s,s->k,m->nk);
             float *kc=s->kc+(size_t)w->cache*m->ctx*kd,*vc=s->vc+(size_t)w->cache*m->ctx*kd;
             memcpy(kc+(size_t)pos*kd,s->k,(size_t)kd*4);memcpy(vc+(size_t)pos*kd,s->v,(size_t)kd*4);memset(s->xb,0,(size_t)d*4);
-            for(int h=0;h<m->nh;h++){
-                int kh=h/(m->nh/m->nk);float mx=-INFINITY;
-                for(int t=0;t<=pos;t++){float z=dot(s->q+h*m->hd,kc+(size_t)t*kd+kh*m->hd,m->hd)/sqrtf((float)m->hd);s->att[t]=z;if(z>mx)mx=z;}
-                float sum=0;for(int t=0;t<=pos;t++){s->att[t]=expf(s->att[t]-mx);sum+=s->att[t];}
-                for(int t=0;t<=pos;t++)axpy(s->xb+h*m->hd,vc+(size_t)t*kd+kh*m->hd,s->att[t]/sum,m->hd);
-            }
+            PROF_LAP(4)
+            AttnJob aj={s,w,pos};slm_parallel_rows(m->nh,1,attention_heads,&aj);
+            PROF_LAP(1)
         }
-        linear(s,s->tmp,&w->o,s->xb,0);axpy(s->x,s->tmp,1,d);
-        rms(s->xb,s->x,w->fn,d,m->eps);linear(s,s->gate,&w->gate,s->xb,0);linear(s,s->up,&w->up,s->xb,1);
-        for(int j=0;j<m->ff;j++)s->gate[j]=(s->gate[j]/(1.0f+expf(-s->gate[j])))*s->up[j];
-        linear(s,s->tmp,&w->down,s->gate,0);axpy(s->x,s->tmp,1,d);
+        linear(s,s->tmp,&w->o,s->xb,0);
+        PROF_LAP(0)
+        axpy(s->x,s->tmp,1,d);
+        rms(s->xb,s->x,w->fn,d,m->eps);
+        PROF_LAP(4)
+        linear(s,s->gate,&w->gate,s->xb,0);linear(s,s->up,&w->up,s->xb,1);
+        PROF_LAP(0)
+        slm_parallel_rows(m->ff,64,swiglu_range,s);
+        PROF_LAP(2)
+        linear(s,s->tmp,&w->down,s->gate,0);
+        PROF_LAP(0)
+        axpy(s->x,s->tmp,1,d);
+        PROF_LAP(4)
     }
-    if(logits){rms(s->xb,s->x,m->norm,d,m->eps);linear(s,s->logits,&m->emb,s->xb,0);}s->pos++;return s->logits;
+    if(logits){rms(s->xb,s->x,m->norm,d,m->eps);PROF_LAP(4) linear(s,s->logits,&m->emb,s->xb,0);PROF_LAP(0)}
+    s->pos++;return s->logits;
 }
 typedef struct {float p;int id;} Candidate;
 static int probcmp(const void *a,const void *b){float x=((const Candidate*)a)->p,y=((const Candidate*)b)->p;return x<y?1:x>y?-1:0;}
