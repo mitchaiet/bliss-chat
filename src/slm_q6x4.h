@@ -43,6 +43,7 @@ static void slm_q6x4_linear(float *out, const unsigned char *weights,
             __m128i sum0=_mm_setzero_si128(),sum1=sum0,zero=sum0;
             /* Fixed-size groups remove repeated branch and offset steps.
              * Each output accumulates groups in its original order. */
+#ifdef SLM_Q6X4_NARROW_LOADS
 #if defined(__clang__)
 #pragma clang loop unroll_count(32)
 #elif defined(__GNUC__)
@@ -55,6 +56,26 @@ static void slm_q6x4_linear(float *out, const unsigned char *weights,
                 sum0=_mm_add_epi32(sum0,_mm_madd_epi16(q0,a));
                 sum1=_mm_add_epi32(sum1,_mm_madd_epi16(q1,a));
             }
+#else
+            /* Two consecutive input pairs of one four-row block are 16
+             * adjacent bytes, so one load feeds both unpack halves. Integer
+             * accumulation is exact, so the sums are unchanged. */
+#if defined(__clang__)
+#pragma clang loop unroll_count(16)
+#elif defined(__GNUC__)
+#pragma GCC unroll 16
+#endif
+            for(int j=0;j<32;j+=2){
+                __m128i a0=_mm_load_si128((const __m128i*)(x+j*8));
+                __m128i a1=_mm_load_si128((const __m128i*)(x+j*8+8));
+                __m128i b0=_mm_loadu_si128((const __m128i*)(w0+j*8));
+                __m128i b1=_mm_loadu_si128((const __m128i*)(w1+j*8));
+                sum0=_mm_add_epi32(sum0,_mm_madd_epi16(_mm_unpacklo_epi8(b0,zero),a0));
+                sum0=_mm_add_epi32(sum0,_mm_madd_epi16(_mm_unpackhi_epi8(b0,zero),a1));
+                sum1=_mm_add_epi32(sum1,_mm_madd_epi16(_mm_unpacklo_epi8(b1,zero),a0));
+                sum1=_mm_add_epi32(sum1,_mm_madd_epi16(_mm_unpackhi_epi8(b1,zero),a1));
+            }
+#endif
             __m128i correction4=_mm_set1_epi32(correction[g]);
             __m128 a=_mm_set1_ps(activation_scales[g]);
             __m128 v0=_mm_mul_ps(_mm_cvtepi32_ps(_mm_sub_epi32(sum0,correction4)),_mm_load_ps(scales+(size_t)r*groups+g*4));

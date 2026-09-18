@@ -42,6 +42,7 @@
 #include "slm_q6_dot.h"
 #include "slm_q6x4.h"
 #include "slm_sha256.h"
+#include "slm_threads.h"
 #ifdef _WIN32
 #include <sys/stat.h>
 #endif
@@ -153,12 +154,17 @@ static int dot_quant(const unsigned char *w,const int8_t *x,int bits,int n){
     int z=0;for(int j=0;j<n;j++){int q=bits==4?((w[j/2]>>(4*(j%2)))&15)-8:(int)((const int8_t*)w)[j];z+=q*x[j];}return z;
 #endif
 }
-static void linear(State *s,float *out,const Matrix *w,const float *x,int already_quant){Model *m=s->m;
-    if(m->bits==32){const float *p=(const float*)w->q;for(int r=0;r<w->rows;r++)out[r]=dot(p+(size_t)r*w->cols,x,w->cols);return;}
+/* One contiguous range of output rows. Activations were already quantized by
+ * linear(), so every thread reads the same prepared vectors and writes only
+ * its own rows; the arithmetic per row is unchanged from the serial version. */
+typedef struct {State *s;float *out;const Matrix *w;const float *x;} LinearJob;
+static void linear_rows(void *job_,int r0,int r1){
+    LinearJob *job=(LinearJob*)job_;State *s=job->s;Model *m=s->m;float *out=job->out;const Matrix *w=job->w;const float *x=job->x;
+    if(m->bits==32){const float *p=(const float*)w->q;for(int r=r0;r<r1;r++)out[r]=dot(p+(size_t)r*w->cols,x,w->cols);return;}
     if(m->expanded){
         int ng=w->cols/64;
         if(float_activations){
-            for(int r=0;r<w->rows;r++){
+            for(int r=r0;r<r1;r++){
                 float total=0;
                 for(int g=0;g<ng;g++){
                     int8_t q[64];
@@ -167,14 +173,13 @@ static void linear(State *s,float *out,const Matrix *w,const float *x,int alread
                 }out[r]=total;
             }
         }else{
-            if(!already_quant)slm_q6x4_prepare(x,s->aq16,s->aq4,s->as,s->correction,ng);
-            slm_q6x4_linear(out,w->q,w->scales,w->rows,ng,s->aq4,s->as,s->correction);
+            /* Ranges are multiples of four rows, matching the Q6X4 block layout. */
+            slm_q6x4_linear(out+r0,w->q+(size_t)(r0/4)*ng*256,w->scales+(size_t)r0*ng,r1-r0,ng,s->aq4,s->as,s->correction);
         }return;
     }
     if(m->bits==6&&!float_activations){
         int ng=w->cols/64;
-        if(!already_quant)for(int g=0;g<ng;g++)slm_quantize_q16_64(x+g*64,s->aq16+g*64,s->as+g);
-        for(int r=0;r<w->rows;r++){
+        for(int r=r0;r<r1;r++){
             const unsigned char *row=w->q+(size_t)r*ng*48;
             const float *scales=w->scales+(size_t)r*ng;
             float total=0;
@@ -185,15 +190,22 @@ static void linear(State *s,float *out,const Matrix *w,const float *x,int alread
     }
     if(float_activations||m->bits==6){
         int ng=w->cols/m->group,gb=m->group*m->bits/8;
-        for(int r=0;r<w->rows;r++){
+        for(int r=r0;r<r1;r++){
             float total=0;const unsigned char *row=w->q+(size_t)r*(size_t)ng*(size_t)gb;
             for(int g=0;g<ng;g++)total+=slm_dot_float(row+(size_t)g*gb,x+g*m->group,m->bits,m->group)*w->scales[(size_t)r*ng+g];
             out[r]=total;
         }return;
     }
-    if(!already_quant)quant_activation(s,x,w->cols);
     int ng=w->cols/m->group,gb=m->group*m->bits/8;
-    for(int r=0;r<w->rows;r++){float z=0;const unsigned char *p=w->q+(size_t)r*(size_t)ng*(size_t)gb;const float *scale=w->scales+(size_t)r*ng;for(int g=0;g<ng;g++)z+=(float)dot_quant(p+(size_t)g*gb,s->aq+g*m->group,m->bits,m->group)*scale[g]*s->as[g];out[r]=z;}
+    for(int r=r0;r<r1;r++){float z=0;const unsigned char *p=w->q+(size_t)r*(size_t)ng*(size_t)gb;const float *scale=w->scales+(size_t)r*ng;for(int g=0;g<ng;g++)z+=(float)dot_quant(p+(size_t)g*gb,s->aq+g*m->group,m->bits,m->group)*scale[g]*s->as[g];out[r]=z;}
+}
+static void linear(State *s,float *out,const Matrix *w,const float *x,int already_quant){Model *m=s->m;int align=1;
+    if(m->bits!=32&&!float_activations){
+        if(m->expanded){if(!already_quant)slm_q6x4_prepare(x,s->aq16,s->aq4,s->as,s->correction,w->cols/64);align=8;}
+        else if(m->bits==6){if(!already_quant)for(int g=0;g<w->cols/64;g++)slm_quantize_q16_64(x+g*64,s->aq16+g*64,s->as+g);}
+        else if(!already_quant)quant_activation(s,x,w->cols);
+    }
+    LinearJob job={s,out,w,x};slm_parallel_rows(w->rows,align,linear_rows,&job);
 }
 static void embedding(State *s,int token){Model *m=s->m;size_t base=(size_t)token*m->d;
     if(m->bits==32){memcpy(s->x,(const float*)m->emb.q+base,(size_t)m->d*4);return;}
@@ -366,12 +378,14 @@ static int chat_turn(Chat *c,const char *text,int maximum,float temp,float topp,
     for(int i=0;i<maximum;i++){if(stop_requested())break;int token=sample(c->s,temp,topp,candidates);if(token==c->s->m->eos)break;int len,special;const unsigned char *raw=slm_token_bytes(c->tok,token,&len,&special);if(special&&!c->s->m->arch)break;if(!special&&raw)fwrite(raw,1,(size_t)len,stdout);fflush(stdout);count++;append(c,&token,1,1);}
     int ending[16];ending[0]=c->s->m->eos;int en=1+encode_text(c->tok,"\n",ending+1,15);append(c,ending,en,0);if(c->turns>=128)die("too many history turn boundaries");c->ends[c->turns++]=c->used;if(ipc)printf("\n\001EOT %d\n",count);else printf("\n");fflush(stdout);return count;
 }
-static void usage(void){fprintf(stderr,"Usage: slm_run MODEL.SLM TOKENIZER.SLT [-c context] [-t temp] [-p top_p] [-n max_tokens]\n  [-s seed] [-m MEMORY.TXT] [--float-activations] [--prefix-cache path]\n  [--prompt text] [--raw text] [--tokens comma_ids] [--logits output.f32]\n  [--tokenize text] [--specials] [--system text]\n  Without a prompt, serves the Bliss Win32 sentinel protocol on stdin/stdout.\n");}
+static void usage(void){fprintf(stderr,"Usage: slm_run MODEL.SLM TOKENIZER.SLT [-c context] [-t temp] [-p top_p] [-n max_tokens]\n  [-s seed] [-m MEMORY.TXT] [-j threads] [--float-activations] [--prefix-cache path]\n  [--prompt text] [--raw text] [--tokens comma_ids] [--logits output.f32]\n  [--tokenize text] [--specials] [--system text]\n  Without a prompt, serves the Bliss Win32 sentinel protocol on stdin/stdout.\n");}
 int main(int argc,char **argv){
-    if(argc<3){usage();return 2;}const char *modelpath=argv[1],*tokpath=argv[2],*prompt=NULL,*raw=NULL,*tokenlist=NULL,*logitpath=NULL,*tokenize=NULL,*prefixpath=NULL,*sysprompt="You are Bliss, a helpful local assistant running on Windows XP. Give a clear, concise answer, usually in one to three sentences. Use the conversation and supplied notes when relevant. If the supplied information does not answer the question, say so.";int ctx=0,maximum=96,specials=0;float temp=0.0f,topp=0.9f;
-    for(int i=3;i<argc;i++){const char *a=argv[i];if(!strcmp(a,"--specials")){specials=1;continue;}if(!strcmp(a,"--float-activations")){float_activations=1;continue;}if(i+1>=argc){usage();return 2;}const char *v=argv[++i];if(!strcmp(a,"-c")||!strcmp(a,"--ctx"))ctx=atoi(v);else if(!strcmp(a,"-t")||!strcmp(a,"--temp"))temp=(float)atof(v);else if(!strcmp(a,"-p")||!strcmp(a,"--top-p"))topp=(float)atof(v);else if(!strcmp(a,"-n")||!strcmp(a,"--max-tokens"))maximum=atoi(v);else if(!strcmp(a,"--prompt"))prompt=v;else if(!strcmp(a,"--raw"))raw=v;else if(!strcmp(a,"--tokens"))tokenlist=v;else if(!strcmp(a,"--logits"))logitpath=v;else if(!strcmp(a,"--tokenize"))tokenize=v;else if(!strcmp(a,"--system"))sysprompt=v;else if(!strcmp(a,"--prefix-cache"))prefixpath=v;else if(!strcmp(a,"-s")||!strcmp(a,"--seed"))rngstate=(uint32_t)strtoul(v,NULL,10);else if(!strcmp(a,"-m"))snprintf(memories.path,sizeof(memories.path),"%s",v);else{usage();return 2;}}
+    if(argc<3){usage();return 2;}const char *modelpath=argv[1],*tokpath=argv[2],*prompt=NULL,*raw=NULL,*tokenlist=NULL,*logitpath=NULL,*tokenize=NULL,*prefixpath=NULL,*sysprompt="You are Bliss, a helpful local assistant running on Windows XP. Give a clear, concise answer, usually in one to three sentences. Use the conversation and supplied notes when relevant. If the supplied information does not answer the question, say so.";int ctx=0,maximum=96,specials=0,threads=0;float temp=0.0f,topp=0.9f;
+    for(int i=3;i<argc;i++){const char *a=argv[i];if(!strcmp(a,"--specials")){specials=1;continue;}if(!strcmp(a,"--float-activations")){float_activations=1;continue;}if(i+1>=argc){usage();return 2;}const char *v=argv[++i];if(!strcmp(a,"-c")||!strcmp(a,"--ctx"))ctx=atoi(v);else if(!strcmp(a,"-t")||!strcmp(a,"--temp"))temp=(float)atof(v);else if(!strcmp(a,"-p")||!strcmp(a,"--top-p"))topp=(float)atof(v);else if(!strcmp(a,"-n")||!strcmp(a,"--max-tokens"))maximum=atoi(v);else if(!strcmp(a,"--prompt"))prompt=v;else if(!strcmp(a,"--raw"))raw=v;else if(!strcmp(a,"--tokens"))tokenlist=v;else if(!strcmp(a,"--logits"))logitpath=v;else if(!strcmp(a,"--tokenize"))tokenize=v;else if(!strcmp(a,"--system"))sysprompt=v;else if(!strcmp(a,"--prefix-cache"))prefixpath=v;else if(!strcmp(a,"-j")||!strcmp(a,"--threads"))threads=atoi(v);else if(!strcmp(a,"-s")||!strcmp(a,"--seed"))rngstate=(uint32_t)strtoul(v,NULL,10);else if(!strcmp(a,"-m"))snprintf(memories.path,sizeof(memories.path),"%s",v);else{usage();return 2;}}
     if(maximum<1||maximum>8192||!isfinite(temp)||temp<0||!isfinite(topp)||topp<=0||topp>1)die("invalid sampling settings");
     if(!rngstate)rngstate=42;
+    if(threads<0||threads>64)die("invalid thread count");
+    slm_threads_init(threads);
     slm_tokenizer *tok=slm_tokenizer_load(tokpath);if(!tok)die("cannot load tokenizer");
     if(tokenize){int cap=(int)strlen(tokenize)+32,*ids=alloc((size_t)cap,sizeof(int));int n=slm_encode(tok,tokenize,specials,ids,cap);if(n<0)die("tokenizer failed");printf("[");for(int i=0;i<n;i++)printf("%s%d",i?",":"",ids[i]);printf("]\n");free(ids);slm_tokenizer_free(tok);return 0;}
     Model *m=load_model(modelpath,ctx);if(slm_tokenizer_vocab(tok)!=m->vocab)die("model/tokenizer vocab mismatch");State *s=new_state(m);Candidate *candidates=alloc((size_t)m->vocab,sizeof(Candidate));
@@ -383,7 +397,7 @@ int main(int argc,char **argv){
 #ifdef _WIN32
             _setmode(_fileno(stdin),_O_BINARY);_setmode(_fileno(stdout),_O_BINARY);
 #endif
-            printf("\001READY\n\001INFO MODEL %s native Q%d%s SSE2; context%d\n\001INFO SOURCE %s\n",m->arch?"LFM2.5":"SmolLM2",m->expanded?6:m->bits,m->expanded?"X4":"",m->ctx,m->arch?"LiquidAI/LFM2.5-350M":"HuggingFaceTB/SmolLM2-360M-Instruct");char line[32768];
+            printf("\001READY\n\001INFO MODEL %s native Q%d%s SSE2; context%d; %d thread%s\n\001INFO SOURCE %s\n",m->arch?"LFM2.5":"SmolLM2",m->expanded?6:m->bits,m->expanded?"X4":"",m->ctx,slm_pool.count,slm_pool.count==1?"":"s",m->arch?"LiquidAI/LFM2.5-350M":"HuggingFaceTB/SmolLM2-360M-Instruct");char line[32768];
             while(1){if(pending[0]){snprintf(line,sizeof(line),"%s",pending);pending[0]=0;}else if(!fgets(line,sizeof(line),stdin))break;line[strcspn(line,"\r\n")]=0;if(!line[0])continue;if(!strcmp(line,"\001STOP"))continue;
                 if(line[0]=='/'){char *arg=strchr(line,' ');if(arg)*arg++=0;
                     if(!strcmp(line,"/reset"))chat_reset(&c);
