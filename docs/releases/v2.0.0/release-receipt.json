@@ -1,0 +1,111 @@
+{
+  "release": "2.0.0",
+  "built_utc": "2026-09-19T00:38:01.752148+00:00",
+  "download": {
+    "name": "bliss-chat-xp-v2.0.0-portable.exe",
+    "bytes": 259704390,
+    "sha256": "5a861b6c4d462ae4fc5f4dd7b479f9b8fa69e0cf9c7a8799c46df1f73fe08d04"
+  },
+  "payload_files": {
+    "DATA-LICENSE.txt": {
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "bytes": 11358,
+      "extracted_matches": true
+    },
+    "MODEL-LICENSE.txt": {
+      "sha256": "4d28ca14dedc0b3d0fcc2b3339f0e79931faa33874f3d24f522183a8fc70068c",
+      "bytes": 10574,
+      "extracted_matches": true
+    },
+    "MODEL.NCB": {
+      "sha256": "18bcd278a9d38ef93ca9ec836ce266ef762dff95f391c61e2c5a7837ce3184d7",
+      "bytes": 376831232,
+      "extracted_matches": true
+    },
+    "MODEL_CARD.md": {
+      "sha256": "13d284f461d318a034e3883b727a0db4026611f313c171d91d49f88a95c43dab",
+      "bytes": 8787,
+      "extracted_matches": true
+    },
+    "MODEL_VERSION.txt": {
+      "sha256": "4aa14cb83008f2f0ce8854d4149f519b88243bd8ad5adddcc05de296f776b7be",
+      "bytes": 21,
+      "extracted_matches": true
+    },
+    "NC_RUN.EXE": {
+      "sha256": "6403995aaa8d48175bd351a22f35ae9ac41e2cde031546164e63a3fa803235b1",
+      "bytes": 239365,
+      "extracted_matches": true
+    },
+    "NC_RUN_SSE2.EXE": {
+      "sha256": "6403995aaa8d48175bd351a22f35ae9ac41e2cde031546164e63a3fa803235b1",
+      "bytes": 239365,
+      "extracted_matches": true
+    },
+    "NC_RUN_SSE3.EXE": {
+      "sha256": "6403995aaa8d48175bd351a22f35ae9ac41e2cde031546164e63a3fa803235b1",
+      "bytes": 239365,
+      "extracted_matches": true
+    },
+    "NOTICE.txt": {
+      "sha256": "b93e7d74ef443c6ab41c6f802b2d93003f0e34a76c1a3808ee14835b9280e6bc",
+      "bytes": 1336,
+      "extracted_matches": true
+    },
+    "README.TXT": {
+      "sha256": "dbeafe9abe47a3dd69e413a91929ce342da34055ceabf9d6ef124d818fd34bab",
+      "bytes": 1339,
+      "extracted_matches": true
+    },
+    "TOKENIZER.NCT": {
+      "sha256": "2e9a8349d5242ff0070c060ac9e5d15a05739727f1cd4941d631b23bb881bb2d",
+      "bytes": 1692655,
+      "extracted_matches": true
+    },
+    "XPCHAT.EXE": {
+      "sha256": "90403ca17518e1a5b944d7afeaba0501c71bf27c8368dcfde996e34d58b98cdc",
+      "bytes": 921460,
+      "extracted_matches": true
+    },
+    "release-manifest.json": {
+      "sha256": "5e7372bb94b18b4fa9d441a6bba1358f3e9c6ce905edeb30a528a6e2f8c06075",
+      "bytes": 1831,
+      "extracted_matches": true
+    }
+  },
+  "independent_extraction": {
+    "tool": "7-Zip",
+    "files_compared": 13,
+    "all_bytes_identical": true,
+    "mismatched": []
+  },
+  "pe_audit": {
+    "XPCHAT.EXE": {
+      "dlls": [
+        "ADVAPI32.dll",
+        "COMCTL32.dll",
+        "COMDLG32.DLL",
+        "GDI32.dll",
+        "KERNEL32.dll",
+        "OLEAUT32.dll",
+        "SHELL32.dll",
+        "USER32.dll",
+        "msvcrt.dll",
+        "ole32.dll"
+      ],
+      "modern_crt_imports": []
+    },
+    "NC_RUN_SSE2.EXE": {
+      "dlls": [
+        "KERNEL32.dll",
+        "msvcrt.dll"
+      ],
+      "modern_crt_imports": []
+    }
+  },
+  "limitations": [
+    "Physical Windows XP hardware remains untested; results come from emulation.",
+    "Extraction equality verifies packaging integrity, not runtime execution.",
+    "The executables are unsigned."
+  ]
+}
