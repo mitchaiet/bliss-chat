@@ -75,6 +75,33 @@ memory barriers leave little headroom. Eight virtual CPUs bug-checked
 Windows XP under sustained load and the spinning pool degraded badly there,
 so the VM runs with four.
 
+## Batched prefill
+
+A single token turns each weight matrix into a matrix-vector product, so
+reading a prompt costs one pass over the whole model per token. Feeding
+several tokens at once turns it into a matrix-matrix product: the weights are
+fetched from memory once and each 256-byte block is then reused from L1 for
+the rest of the batch. `SLM_BATCH` sets the size, default eight, costing about
+840 KiB of scratch.
+
+Measured on the x86_64 SSE2 build on a real processor, prefilling a 383-token
+prompt with the same executable:
+
+| Threads | One at a time | Batched | Gain |
+|---|---:|---:|---:|
+| 1 | 9.74 s | 5.98 s | 1.63x |
+| 4 | 3.84 s | 2.67 s | 1.44x |
+
+In the QEMU virtual machine the same change is worth only about 1.09x, and
+that understates it rather than contradicting it. Emulation charges the same
+price for a cache hit as for a main-memory read, which is precisely the cost
+batching removes, so the emulator hides the benefit. A physical Pentium 4 has
+a far wider gap between L1 and DRAM than the host used for the table above,
+so the gain there should be larger than 1.63x. That remains unmeasured.
+
+Decoding is unaffected: it generates one token at a time by nature and still
+runs through the single-token path.
+
 Reference points on one vCPU: the packed Q6 runtime with Q16 activations
 decoded at about 0.40 tok/s, and the original RC2 runtime at about 0.19 tok/s.
 Working set was 373 MiB in every run, leaving about 35 MiB free in the guest.

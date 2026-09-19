@@ -1,21 +1,22 @@
 # Bliss Chat
 
-### [⬇ Download Bliss Chat 2.0.0 for Windows XP](https://github.com/mitchaiet/bliss-chat/releases/latest/download/bliss-chat-xp-v2.0.0-portable.exe)
+### [⬇ Download Bliss Chat 2.1.0 for Windows XP](https://github.com/mitchaiet/bliss-chat/releases/latest/download/bliss-chat-xp-v2.1.0-portable.exe)
 
 One file, 248 MB, model included. Copy it to the XP machine and double-click it.
 Nothing else to install, and nothing is ever sent online.
 
-SHA-256 `5a861b6c4d462ae4fc5f4dd7b479f9b8fa69e0cf9c7a8799c46df1f73fe08d04`.
-See the [release notes](RELEASE_v2.0.0.md) for what changed and the
-[build receipt](docs/releases/v2.0.0/release-receipt.json) for per-file hashes.
+SHA-256 `14d65f01529186dccb5259c636ef066cb3b942603dfd5a781f439071ad958058`.
+See the [release notes](RELEASE_v2.1.0.md) for what changed and the
+[build receipt](docs/releases/v2.1.0/release-receipt.json) for per-file hashes.
 Physical XP validation is still pending.
 
 The current source includes a [Pentium 4 speed build](docs/Q6X4_PERFORMANCE.md)
 with a lossless model layout and a Clang-compiled SSE2 runtime. The runtime
 splits every linear layer, attention head and activation across all
 processors (`-j N`, `--threads N` or `SLM_THREADS=N`; default one thread per
-processor) with bit-identical output, which matters on Hyper-Threaded Pentium 4s
-and on multi-CPU virtual machines. The original packed model and the
+processor), and reads a prompt in batches so the weights stream past the
+processor once per batch rather than once per token (`SLM_BATCH`, default
+eight). Both keep output bit-identical. The original packed model and the
 [earlier Q16 improvement](docs/Q16_PERFORMANCE.md) remain supported.
 
 A small language model with a native Windows XP chat interface. This branch
