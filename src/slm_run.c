@@ -60,6 +60,10 @@ typedef struct {
 typedef struct {
     Model *m;float *x,*xb,*tmp,*q,*k,*v,*gate,*up,*att,*logits,*kc,*vc,*rotcos,*rotsin,*conv_state,*conv_proj;
     int8_t *aq;int16_t *aq16,*aq4,*aq4_allocation;int *correction;float *as;int pos;
+    /* Prefill batch: several tokens share one pass over the weights. */
+    int batch;size_t pair_stride,group_stride;
+    float *xB,*xbB,*tmpB,*qB,*kB,*vB,*gateB,*upB,*projB,*asb;
+    int16_t *aq4b,*aq4b_allocation;int *corrb;
 } State;
 static int float_activations=0;
 static void die(const char *s){fprintf(stderr,"[slm] %s\n",s);exit(2);}
@@ -114,13 +118,34 @@ static State *new_state(Model *m){State *s=alloc(1,sizeof(*s));s->m=m;int d=m->d
     size_t kv_elements=checked_size((uint64_t)m->na*(unsigned)m->ctx*(unsigned)kd);int widest=d>m->ff?d:m->ff;
     s->x=alloc((size_t)d,4);s->xb=alloc((size_t)d,4);s->tmp=alloc((size_t)d,4);s->q=alloc((size_t)d,4);s->k=alloc((size_t)kd,4);s->v=alloc((size_t)kd,4);s->gate=alloc((size_t)m->ff,4);s->up=alloc((size_t)m->ff,4);s->att=alloc((size_t)m->ctx*(size_t)m->nh,4);s->logits=alloc((size_t)m->vocab,4);s->kc=alloc(kv_elements?kv_elements:1,4);s->vc=alloc(kv_elements?kv_elements:1,4);s->aq=alloc((size_t)widest,1);s->aq16=alloc((size_t)widest,2);s->as=alloc((size_t)widest/m->group,4);
     if(m->expanded){s->aq4_allocation=alloc((size_t)widest*4+7,2);s->aq4=(int16_t*)(((uintptr_t)s->aq4_allocation+15)&~(uintptr_t)15);s->correction=alloc((size_t)widest/64,4);}
+    /* Batch buffers, about 840 KiB at the default of eight tokens. Only the
+     * expanded Q6X4 path has a batched kernel, so nothing else allocates them. */
+    s->batch=1;
+    if(m->expanded&&!float_activations){
+        const char *env=getenv("SLM_BATCH");int want=env?atoi(env):8;
+        if(want<1)want=1;if(want>SLM_Q6X4_MAX_BATCH)want=SLM_Q6X4_MAX_BATCH;
+        s->batch=want;
+    }
+    if(s->batch>1){
+        size_t n=(size_t)s->batch;
+        s->pair_stride=(size_t)widest*4;s->group_stride=(size_t)widest/64;
+        s->xB=alloc(n*(size_t)d,4);s->xbB=alloc(n*(size_t)d,4);s->tmpB=alloc(n*(size_t)d,4);
+        s->qB=alloc(n*(size_t)d,4);s->kB=alloc(n*(size_t)kd,4);s->vB=alloc(n*(size_t)kd,4);
+        s->gateB=alloc(n*(size_t)m->ff,4);s->upB=alloc(n*(size_t)m->ff,4);
+        s->projB=alloc(m->nc?n*3*(size_t)d:1,4);
+        s->aq4b_allocation=alloc(n*s->pair_stride+8,2);
+        s->aq4b=(int16_t*)(((uintptr_t)s->aq4b_allocation+15)&~(uintptr_t)15);
+        s->asb=alloc(n*s->group_stride,4);s->corrb=alloc(n*s->group_stride,4);
+    }
     if(m->nc){s->conv_state=alloc(checked_size((uint64_t)m->nc*(unsigned)d*(unsigned)m->conv_width),4);s->conv_proj=alloc((size_t)3*d,4);}
     s->rotcos=alloc((size_t)m->ctx*m->hd/2,4);s->rotsin=alloc((size_t)m->ctx*m->hd/2,4);
     for(int p=0;p<m->ctx;p++)for(int j=0;j<m->hd/2;j++){float angle=(float)p/powf(m->theta,(float)(2*j)/(float)m->hd);s->rotcos[p*(m->hd/2)+j]=cosf(angle);s->rotsin[p*(m->hd/2)+j]=sinf(angle);}
     return s;
 }
 static void reset_state(State *s){s->pos=0;if(s->conv_state)memset(s->conv_state,0,checked_size((uint64_t)s->m->nc*(unsigned)s->m->d*(unsigned)s->m->conv_width*4));}
-static void free_state(State *s){free(s->x);free(s->xb);free(s->tmp);free(s->q);free(s->k);free(s->v);free(s->gate);free(s->up);free(s->att);free(s->logits);free(s->kc);free(s->vc);free(s->aq);free(s->aq16);free(s->aq4_allocation);free(s->correction);free(s->as);free(s->rotcos);free(s->rotsin);free(s->conv_state);free(s->conv_proj);free(s);}
+static void free_state(State *s){free(s->x);free(s->xb);free(s->tmp);free(s->q);free(s->k);free(s->v);free(s->gate);free(s->up);free(s->att);free(s->logits);free(s->kc);free(s->vc);free(s->aq);free(s->aq16);free(s->aq4_allocation);free(s->correction);free(s->as);free(s->rotcos);free(s->rotsin);free(s->conv_state);free(s->conv_proj);
+    free(s->xB);free(s->xbB);free(s->tmpB);free(s->qB);free(s->kB);free(s->vB);
+    free(s->gateB);free(s->upB);free(s->projB);free(s->aq4b_allocation);free(s->asb);free(s->corrb);free(s);}
 static float dot(const float *a,const float *b,int n){float sum=0;
 #if SIMD
     __m128 z=_mm_setzero_ps();int i=0;for(;i+4<=n;i+=4)z=_mm_add_ps(z,_mm_mul_ps(_mm_loadu_ps(a+i),_mm_loadu_ps(b+i)));float v[4];_mm_storeu_ps(v,z);sum=v[0]+v[1]+v[2]+v[3];for(;i<n;i++)sum+=a[i]*b[i];
@@ -207,11 +232,33 @@ static void linear(State *s,float *out,const Matrix *w,const float *x,int alread
     }
     LinearJob job={s,out,w,x};slm_parallel_rows(w->rows,align,linear_rows,&job);
 }
-static void embedding(State *s,int token){Model *m=s->m;size_t base=(size_t)token*m->d;
-    if(m->bits==32){memcpy(s->x,(const float*)m->emb.q+base,(size_t)m->d*4);return;}
-    for(int j=0;j<m->d;j++){size_t i=base+(size_t)j;int q=m->expanded?slm_q6x4_value(m->emb.q,m->d/64,token,j):m->bits==6?slm_q6_value(m->emb.q+(i/64)*48,(int)(i%64)):m->bits==4?((m->emb.q[i/2]>>(4*(i%2)))&15)-8:((const int8_t*)m->emb.q)[i];s->x[j]=(float)q*m->emb.scales[m->expanded?((size_t)(token/4)*(m->d/64)+j/64)*4+token%4:i/(size_t)m->group];}
+/* Batched linear for the expanded Q6X4 path. Activations for every token in the
+ * batch are quantized first, then one sweep of the weights serves them all. The
+ * single-token path above is left untouched. */
+typedef struct {State *s;float *out;size_t out_stride;const Matrix *w;int batch;} BatchLinearJob;
+static void linear_batch_rows(void *job_,int r0,int r1){
+    BatchLinearJob *job=(BatchLinearJob*)job_;State *s=job->s;const Matrix *w=job->w;int ng=w->cols/64;
+    slm_q6x4_linear_batch(job->out+r0,job->out_stride,
+        w->q+(size_t)(r0/4)*ng*256,w->scales+(size_t)r0*ng,r1-r0,ng,
+        s->aq4b,s->pair_stride,s->asb,s->group_stride,s->corrb,s->group_stride,job->batch);
 }
-static void rope(State *s,float *x,int heads){int hd=s->m->hd,half=hd/2;const float *co=s->rotcos+s->pos*half,*si=s->rotsin+s->pos*half;for(int h=0;h<heads;h++)for(int j=0;j<half;j++){float a=x[h*hd+j],b=x[h*hd+j+half];x[h*hd+j]=a*co[j]-b*si[j];x[h*hd+j+half]=b*co[j]+a*si[j];}}
+static void linear_batch(State *s,float *out,size_t out_stride,const Matrix *w,
+                         const float *x,size_t x_stride,int batch,int already_quant){
+    if(!already_quant)
+        for(int b=0;b<batch;b++)
+            slm_q6x4_prepare(x+(size_t)b*x_stride,s->aq16,
+                s->aq4b+(size_t)b*s->pair_stride,s->asb+(size_t)b*s->group_stride,
+                s->corrb+(size_t)b*s->group_stride,w->cols/64);
+    {BatchLinearJob job={s,out,out_stride,w,batch};
+     slm_parallel_rows(w->rows,8,linear_batch_rows,&job);}
+}
+/* These take explicit buffers so one token and a whole batch run the same
+ * arithmetic through the same code; only the pointers and position differ. */
+static void embedding(State *s,int token,float *out){Model *m=s->m;size_t base=(size_t)token*m->d;
+    if(m->bits==32){memcpy(out,(const float*)m->emb.q+base,(size_t)m->d*4);return;}
+    for(int j=0;j<m->d;j++){size_t i=base+(size_t)j;int q=m->expanded?slm_q6x4_value(m->emb.q,m->d/64,token,j):m->bits==6?slm_q6_value(m->emb.q+(i/64)*48,(int)(i%64)):m->bits==4?((m->emb.q[i/2]>>(4*(i%2)))&15)-8:((const int8_t*)m->emb.q)[i];out[j]=(float)q*m->emb.scales[m->expanded?((size_t)(token/4)*(m->d/64)+j/64)*4+token%4:i/(size_t)m->group];}
+}
+static void rope(State *s,float *x,int heads,int pos){int hd=s->m->hd,half=hd/2;const float *co=s->rotcos+(size_t)pos*half,*si=s->rotsin+(size_t)pos*half;for(int h=0;h<heads;h++)for(int j=0;j<half;j++){float a=x[h*hd+j],b=x[h*hd+j+half];x[h*hd+j]=a*co[j]-b*si[j];x[h*hd+j+half]=b*co[j]+a*si[j];}}
 /* Optional section timing for the XP benchmark (-DSLM_PROFILE). */
 #ifdef SLM_PROFILE
 static double slm_prof[8];
@@ -232,55 +279,56 @@ static double slm_prof_now(void){
 #endif
 /* Parallel pieces of the forward pass. Each job writes disjoint elements and
  * repeats the serial arithmetic exactly, so outputs stay bit-identical. */
-typedef struct {State *s;Layer *w;int pos;} AttnJob;
+typedef struct {State *s;Layer *w;int pos;const float *q;float *out;} AttnJob;
 static void attention_heads(void *job_,int h0,int h1){
     AttnJob *job=(AttnJob*)job_;State *s=job->s;Model *m=s->m;Layer *w=job->w;int pos=job->pos,kd=m->nk*m->hd;
     float *kc=s->kc+(size_t)w->cache*m->ctx*kd,*vc=s->vc+(size_t)w->cache*m->ctx*kd;
     for(int h=h0;h<h1;h++){
         int kh=h/(m->nh/m->nk);float mx=-INFINITY;float *att=s->att+(size_t)h*m->ctx;
-        for(int t=0;t<=pos;t++){float z=dot(s->q+h*m->hd,kc+(size_t)t*kd+kh*m->hd,m->hd)/sqrtf((float)m->hd);att[t]=z;if(z>mx)mx=z;}
+        for(int t=0;t<=pos;t++){float z=dot(job->q+h*m->hd,kc+(size_t)t*kd+kh*m->hd,m->hd)/sqrtf((float)m->hd);att[t]=z;if(z>mx)mx=z;}
         float sum=0;for(int t=0;t<=pos;t++){att[t]=expf(att[t]-mx);sum+=att[t];}
-        for(int t=0;t<=pos;t++)axpy(s->xb+h*m->hd,vc+(size_t)t*kd+kh*m->hd,att[t]/sum,m->hd);
+        for(int t=0;t<=pos;t++)axpy(job->out+h*m->hd,vc+(size_t)t*kd+kh*m->hd,att[t]/sum,m->hd);
     }
 }
-typedef struct {State *s;Layer *w;} ConvJob;
+typedef struct {State *s;Layer *w;const float *proj;float *out;} ConvJob;
 static void conv_channels(void *job_,int j0,int j1){
     ConvJob *job=(ConvJob*)job_;State *s=job->s;Model *m=s->m;Layer *w=job->w;int d=m->d;
     float *cache=s->conv_state+(size_t)w->cache*d*m->conv_width;
     for(int j=j0;j<j1;j++){
         float *history=cache+(size_t)j*m->conv_width;
         for(int k=0;k<m->conv_width-1;k++)history[k]=history[k+1];
-        history[m->conv_width-1]=s->conv_proj[j]*s->conv_proj[2*d+j];
+        history[m->conv_width-1]=job->proj[j]*job->proj[2*d+j];
         /* PyTorch Conv1d is cross-correlation: oldest sample uses kernel[0]. */
         float z=0;for(int k=0;k<m->conv_width;k++)z+=history[k]*w->conv[(size_t)j*m->conv_width+k];
-        s->xb[j]=s->conv_proj[d+j]*z;
+        job->out[j]=job->proj[d+j]*z;
     }
 }
+typedef struct {float *gate;const float *up;} SwigluJob;
 static void swiglu_range(void *job_,int j0,int j1){
-    State *s=(State*)job_;for(int j=j0;j<j1;j++)s->gate[j]=(s->gate[j]/(1.0f+expf(-s->gate[j])))*s->up[j];
+    SwigluJob *job=(SwigluJob*)job_;for(int j=j0;j<j1;j++)job->gate[j]=(job->gate[j]/(1.0f+expf(-job->gate[j])))*job->up[j];
 }
 static float *forward(State *s,int token,int logits){
     Model *m=s->m;if(token<0||token>=m->vocab||s->pos>=m->ctx)die("token or context out of bounds");
     int d=m->d,kd=m->nk*m->hd,pos=s->pos;
     PROF_START
-    embedding(s,token);
+    embedding(s,token,s->x);
     for(int l=0;l<m->nl;l++){
         Layer *w=m->layers+l;rms(s->xb,s->x,w->an,d,m->eps);
         PROF_LAP(4)
         if(w->type){
             linear(s,s->conv_proj,&w->in,s->xb,0);
             PROF_LAP(0)
-            ConvJob cj={s,w};slm_parallel_rows(d,64,conv_channels,&cj);
+            ConvJob cj={s,w,s->conv_proj,s->xb};slm_parallel_rows(d,64,conv_channels,&cj);
             PROF_LAP(3)
         }else{
             linear(s,s->q,&w->q,s->xb,0);linear(s,s->k,&w->k,s->xb,1);linear(s,s->v,&w->v,s->xb,1);
             PROF_LAP(0)
             if(w->qn){for(int h=0;h<m->nh;h++)rms(s->q+h*m->hd,s->q+h*m->hd,w->qn,m->hd,m->eps);for(int h=0;h<m->nk;h++)rms(s->k+h*m->hd,s->k+h*m->hd,w->kn,m->hd,m->eps);}
-            rope(s,s->q,m->nh);rope(s,s->k,m->nk);
+            rope(s,s->q,m->nh,pos);rope(s,s->k,m->nk,pos);
             float *kc=s->kc+(size_t)w->cache*m->ctx*kd,*vc=s->vc+(size_t)w->cache*m->ctx*kd;
             memcpy(kc+(size_t)pos*kd,s->k,(size_t)kd*4);memcpy(vc+(size_t)pos*kd,s->v,(size_t)kd*4);memset(s->xb,0,(size_t)d*4);
             PROF_LAP(4)
-            AttnJob aj={s,w,pos};slm_parallel_rows(m->nh,1,attention_heads,&aj);
+            AttnJob aj={s,w,pos,s->q,s->xb};slm_parallel_rows(m->nh,1,attention_heads,&aj);
             PROF_LAP(1)
         }
         linear(s,s->tmp,&w->o,s->xb,0);
@@ -290,7 +338,7 @@ static float *forward(State *s,int token,int logits){
         PROF_LAP(4)
         linear(s,s->gate,&w->gate,s->xb,0);linear(s,s->up,&w->up,s->xb,1);
         PROF_LAP(0)
-        slm_parallel_rows(m->ff,64,swiglu_range,s);
+        {SwigluJob sj={s->gate,s->up};slm_parallel_rows(m->ff,64,swiglu_range,&sj);}
         PROF_LAP(2)
         linear(s,s->tmp,&w->down,s->gate,0);
         PROF_LAP(0)
@@ -299,6 +347,73 @@ static float *forward(State *s,int token,int logits){
     }
     if(logits){rms(s->xb,s->x,m->norm,d,m->eps);PROF_LAP(4) linear(s,s->logits,&m->emb,s->xb,0);PROF_LAP(0)}
     s->pos++;return s->logits;
+}
+/* Prefill several tokens in one sweep of the weights. Reading a prompt used to
+ * cost a full pass over the model per token; a batch pays that once and reuses
+ * each weight block from cache for the rest. Every token runs the same
+ * arithmetic in the same order as forward() above, so the state this leaves
+ * behind is identical to feeding the tokens one at a time. */
+static float *forward_batch(State *s,const int *tokens,int n,int logits){
+    Model *m=s->m;int d=m->d,kd=m->nk*m->hd,base=s->pos,b;
+    if(!m->expanded||float_activations||n<1||n>s->batch)die("prefill batch unavailable");
+    if(base+n>m->ctx)die("token or context out of bounds");
+    for(b=0;b<n;b++){
+        if(tokens[b]<0||tokens[b]>=m->vocab)die("token or context out of bounds");
+        embedding(s,tokens[b],s->xB+(size_t)b*d);
+    }
+    for(int l=0;l<m->nl;l++){
+        Layer *w=m->layers+l;
+        for(b=0;b<n;b++)rms(s->xbB+(size_t)b*d,s->xB+(size_t)b*d,w->an,d,m->eps);
+        if(w->type){
+            linear_batch(s,s->projB,(size_t)3*d,&w->in,s->xbB,(size_t)d,n,0);
+            /* The convolution carries state from one position to the next, so
+             * its channels run in order even though the projection was batched. */
+            for(b=0;b<n;b++){
+                ConvJob cj={s,w,s->projB+(size_t)b*3*d,s->xbB+(size_t)b*d};
+                slm_parallel_rows(d,64,conv_channels,&cj);
+            }
+        }else{
+            linear_batch(s,s->qB,(size_t)d,&w->q,s->xbB,(size_t)d,n,0);
+            linear_batch(s,s->kB,(size_t)kd,&w->k,s->xbB,(size_t)d,n,1);
+            linear_batch(s,s->vB,(size_t)kd,&w->v,s->xbB,(size_t)d,n,1);
+            float *kc=s->kc+(size_t)w->cache*m->ctx*kd,*vc=s->vc+(size_t)w->cache*m->ctx*kd;
+            for(b=0;b<n;b++){
+                float *q=s->qB+(size_t)b*d,*k=s->kB+(size_t)b*kd;
+                if(w->qn){for(int h=0;h<m->nh;h++)rms(q+h*m->hd,q+h*m->hd,w->qn,m->hd,m->eps);for(int h=0;h<m->nk;h++)rms(k+h*m->hd,k+h*m->hd,w->kn,m->hd,m->eps);}
+                rope(s,q,m->nh,base+b);rope(s,k,m->nk,base+b);
+                memcpy(kc+(size_t)(base+b)*kd,k,(size_t)kd*4);
+                memcpy(vc+(size_t)(base+b)*kd,s->vB+(size_t)b*kd,(size_t)kd*4);
+            }
+            /* Every key and value is in place before any attention runs, so
+             * each token still attends to exactly its own past and itself. */
+            for(b=0;b<n;b++){
+                float *out=s->xbB+(size_t)b*d;memset(out,0,(size_t)d*4);
+                AttnJob aj={s,w,base+b,s->qB+(size_t)b*d,out};
+                slm_parallel_rows(m->nh,1,attention_heads,&aj);
+            }
+        }
+        linear_batch(s,s->tmpB,(size_t)d,&w->o,s->xbB,(size_t)d,n,0);
+        for(b=0;b<n;b++)axpy(s->xB+(size_t)b*d,s->tmpB+(size_t)b*d,1,d);
+        for(b=0;b<n;b++)rms(s->xbB+(size_t)b*d,s->xB+(size_t)b*d,w->fn,d,m->eps);
+        linear_batch(s,s->gateB,(size_t)m->ff,&w->gate,s->xbB,(size_t)d,n,0);
+        linear_batch(s,s->upB,(size_t)m->ff,&w->up,s->xbB,(size_t)d,n,1);
+        for(b=0;b<n;b++){SwigluJob sj={s->gateB+(size_t)b*m->ff,s->upB+(size_t)b*m->ff};slm_parallel_rows(m->ff,64,swiglu_range,&sj);}
+        linear_batch(s,s->tmpB,(size_t)d,&w->down,s->gateB,(size_t)m->ff,n,0);
+        for(b=0;b<n;b++)axpy(s->xB+(size_t)b*d,s->tmpB+(size_t)b*d,1,d);
+    }
+    memcpy(s->x,s->xB+(size_t)(n-1)*d,(size_t)d*4);
+    s->pos=base+n;
+    if(logits){rms(s->xb,s->x,m->norm,d,m->eps);linear(s,s->logits,&m->emb,s->xb,0);}
+    return s->logits;
+}
+/* Feed a run of known tokens, batching where the model supports it. */
+static void prefill(State *s,const int *tokens,int n,int last_logits){
+    for(int j=0;j<n;){
+        int room=n-j,chunk=s->batch<room?s->batch:room,want=last_logits&&j+chunk==n;
+        if(chunk>1)forward_batch(s,tokens+j,chunk,want);
+        else forward(s,tokens[j],want);
+        j+=chunk;
+    }
 }
 typedef struct {float p;int id;} Candidate;
 static int probcmp(const void *a,const void *b){float x=((const Candidate*)a)->p,y=((const Candidate*)b)->p;return x<y?1:x>y?-1:0;}
@@ -351,7 +466,11 @@ typedef struct {
     const char *prefix_path;unsigned char prefix_identity[64];
 } Chat;
 static int role_message(Chat *c,const char *role,const char *text,int closed,int *out,int cap){int n=0;if(cap<1)return -1;out[n++]=c->s->m->start;size_t bytes=strlen(role)+strlen(text)+2;char *body=alloc(bytes,1);snprintf(body,bytes,"%s\n%s",role,text);int k=slm_encode(c->tok,body,0,out+n,cap-n);free(body);if(k<0)return -1;n+=k;if(closed){if(n>=cap)return -1;out[n++]=c->s->m->eos;k=slm_encode(c->tok,"\n",0,out+n,cap-n);if(k<0)return -1;n+=k;}return n;}
-static void append(Chat *c,const int *tokens,int n,int last_logits){for(int j=0;j<n;j++){if(c->used>=c->s->m->ctx)die("history overflow");c->history[c->used++]=tokens[j];forward(c->s,tokens[j],last_logits&&j==n-1);}}
+static void append(Chat *c,const int *tokens,int n,int last_logits){
+    if(c->used+n>c->s->m->ctx)die("history overflow");
+    for(int j=0;j<n;j++)c->history[c->used++]=tokens[j];
+    prefill(c->s,tokens,n,last_logits);
+}
 static int system_message(Chat *c,const char *text,int *out,int cap){
     int prefix=c->s->m->arch?1:0;if(cap<=prefix)return -1;
     if(prefix){out[0]=c->s->m->bos;if(!*text)return prefix;}
@@ -422,7 +541,7 @@ static int make_room(Chat *c,int needed){
     int start=0;
     if(prefix_matches(c,c->history,c->prefix)){transfer_prefix(c,1);start=c->prefix;}
     else reset_state(c->s);
-    for(int i=start;i<c->used;i++)forward(c->s,c->history[i],0);
+    prefill(c->s,c->history+start,c->used-start,0);
     return 1;
 }
 static int chat_turn(Chat *c,const char *text,int maximum,float temp,float topp,Candidate *candidates,int ipc){int ctx=c->s->m->ctx;char *enriched=memory_context(text);int n=role_message(c,"user",enriched,1,c->scratch,ctx);free(enriched);if(n<0)return -1;int k=role_message(c,"assistant","",0,c->scratch+n,ctx-n);if(k<0)return -1;n+=k;
@@ -442,7 +561,7 @@ int main(int argc,char **argv){
     if(tokenize){int cap=(int)strlen(tokenize)+32,*ids=alloc((size_t)cap,sizeof(int));int n=slm_encode(tok,tokenize,specials,ids,cap);if(n<0)die("tokenizer failed");printf("[");for(int i=0;i<n;i++)printf("%s%d",i?",":"",ids[i]);printf("]\n");free(ids);slm_tokenizer_free(tok);return 0;}
     Model *m=load_model(modelpath,ctx);if(slm_tokenizer_vocab(tok)!=m->vocab)die("model/tokenizer vocab mismatch");State *s=new_state(m);Candidate *candidates=alloc((size_t)m->vocab,sizeof(Candidate));
     fprintf(stderr,"[slm] %d layers dim%d Q%d KV%d context%d weights%.2fMiB KV%.2fMiB backend=%s\n",m->nl,m->d,m->expanded?6:m->bits,m->nk,m->ctx,(double)m->mapsize/1048576.0,(double)(2ull*m->na*m->ctx*m->nk*m->hd*4)/1048576.0,SIMD?"SSE2":"scalar");
-    if(raw||tokenlist){int *ids=alloc((size_t)m->ctx,sizeof(int)),n=0;if(raw)n=slm_encode(tok,raw,specials,ids,m->ctx);else{const char *p=tokenlist;while(*p&&n<m->ctx){char *end;long x=strtol(p,&end,10);if(end==p||x<0||x>=m->vocab)die("invalid token list");ids[n++]=(int)x;if(!*end)break;if(*end!=',')die("invalid token list separator");p=end+1;}}if(n<1)die("empty or oversized prompt");for(int j=0;j<n;j++)forward(s,ids[j],j==n-1);if(logitpath){FILE *f=fopen(logitpath,"wb");if(!f||fwrite(s->logits,4,(size_t)m->vocab,f)!=(size_t)m->vocab)die("cannot write logits");fclose(f);}else{for(int j=0;j<maximum&&s->pos<m->ctx;j++){int token=sample(s,temp,topp,candidates);if(token==m->eos)break;int len,sp;const unsigned char *b=slm_token_bytes(tok,token,&len,&sp);if(!sp)fwrite(b,1,(size_t)len,stdout);forward(s,token,1);}printf("\n");}free(ids);}
+    if(raw||tokenlist){int *ids=alloc((size_t)m->ctx,sizeof(int)),n=0;if(raw)n=slm_encode(tok,raw,specials,ids,m->ctx);else{const char *p=tokenlist;while(*p&&n<m->ctx){char *end;long x=strtol(p,&end,10);if(end==p||x<0||x>=m->vocab)die("invalid token list");ids[n++]=(int)x;if(!*end)break;if(*end!=',')die("invalid token list separator");p=end+1;}}if(n<1)die("empty or oversized prompt");prefill(s,ids,n,1);if(logitpath){FILE *f=fopen(logitpath,"wb");if(!f||fwrite(s->logits,4,(size_t)m->vocab,f)!=(size_t)m->vocab)die("cannot write logits");fclose(f);}else{for(int j=0;j<maximum&&s->pos<m->ctx;j++){int token=sample(s,temp,topp,candidates);if(token==m->eos)break;int len,sp;const unsigned char *b=slm_token_bytes(tok,token,&len,&sp);if(!sp)fwrite(b,1,(size_t)len,stdout);forward(s,token,1);}printf("\n");}free(ids);}
     else{Chat c={0};c.s=s;c.tok=tok;c.history=alloc((size_t)m->ctx,sizeof(int));c.scratch=alloc((size_t)m->ctx,sizeof(int));prefix_disk_init(&c,prefixpath,argv[0]);snprintf(c.system,sizeof(c.system),"%s",sysprompt);if(!memory_load())fprintf(stderr,"[slm] cannot read persistent notes\n");if(!chat_reset(&c))die("system prompt exceeds half the context");
         if(prompt){if(chat_turn(&c,prompt,maximum,temp,topp,candidates,0)<0)die("prompt too long for context");}
         else{setvbuf(stdin,NULL,_IONBF,0);setvbuf(stdout,NULL,_IONBF,0);

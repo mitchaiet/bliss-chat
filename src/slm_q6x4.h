@@ -3,6 +3,12 @@
 #include <stddef.h>
 #include "slm_q6_dot.h"
 
+/* Most tokens a single batched call may carry. Accumulators for the batch live
+ * in a small stack array, so this bounds that array, not the prefill length. */
+#ifndef SLM_Q6X4_MAX_BATCH
+#define SLM_Q6X4_MAX_BATCH 16
+#endif
+
 /* Lossless Q6 layout: four output rows, one 64-column group, then
  * 32 input pairs. Each pair has eight biased bytes (two per output).
  * pmaddwd produces four independent outputs, avoiding horizontal sums.
@@ -123,5 +129,59 @@ static void slm_q6x4_linear(float *out, const unsigned char *weights,
         (void)correction;
 #endif
     }
+}
+
+/* Batched form: `batch` activation vectors share one pass over the weights.
+ * Each 256-byte weight block is fetched from memory once and then reused for
+ * every batch element out of L1, so prefilling a prompt reads the model once
+ * per batch instead of once per token. Every output accumulates its groups in
+ * the same order, with the same values, as the single-vector kernel above, so
+ * batched and token-by-token results are bit-identical.
+ * Rows must be four-aligned, which the Q6X4 format already guarantees. */
+static void slm_q6x4_linear_batch(float *out, size_t out_stride,
+                                  const unsigned char *weights, const float *scales,
+                                  int rows, int groups,
+                                  const int16_t *pairs, size_t pairs_stride,
+                                  const float *activation_scales, size_t scale_stride,
+                                  const int *correction, size_t correction_stride,
+                                  int batch) {
+#if SLM_FLOAT_DOT_SIMD
+    /* Plain floats with unaligned access: a 32-bit stack gives no alignment
+     * guarantee for a __m128 array, and this costs little beside 32 madds. */
+    float acc[SLM_Q6X4_MAX_BATCH * 4];
+    int r, g, b, j;
+    if (batch > SLM_Q6X4_MAX_BATCH) batch = SLM_Q6X4_MAX_BATCH;
+    for (r = 0; r < rows; r += 4) {
+        for (b = 0; b < batch; b++) _mm_storeu_ps(acc + b * 4, _mm_setzero_ps());
+        for (g = 0; g < groups; g++) {
+            const unsigned char *w = weights + ((size_t)(r / 4) * groups + g) * 256;
+            __m128 sc = _mm_load_ps(scales + (size_t)r * groups + g * 4);
+            for (b = 0; b < batch; b++) {
+                const int16_t *x = pairs + (size_t)b * pairs_stride + g * 256;
+                __m128i sum = _mm_setzero_si128(), zero = sum;
+                for (j = 0; j < 32; j += 2) {
+                    __m128i a0 = _mm_load_si128((const __m128i *)(x + j * 8));
+                    __m128i a1 = _mm_load_si128((const __m128i *)(x + j * 8 + 8));
+                    __m128i q = _mm_loadu_si128((const __m128i *)(w + j * 8));
+                    sum = _mm_add_epi32(sum, _mm_madd_epi16(_mm_unpacklo_epi8(q, zero), a0));
+                    sum = _mm_add_epi32(sum, _mm_madd_epi16(_mm_unpackhi_epi8(q, zero), a1));
+                }
+                sum = _mm_sub_epi32(sum, _mm_set1_epi32(correction[(size_t)b * correction_stride + g]));
+                _mm_storeu_ps(acc + b * 4, _mm_add_ps(_mm_loadu_ps(acc + b * 4),
+                    _mm_mul_ps(_mm_mul_ps(_mm_cvtepi32_ps(sum), sc),
+                               _mm_set1_ps(activation_scales[(size_t)b * scale_stride + g]))));
+            }
+        }
+        for (b = 0; b < batch; b++)
+            _mm_storeu_ps(out + (size_t)b * out_stride + r, _mm_loadu_ps(acc + b * 4));
+    }
+#else
+    int b;
+    for (b = 0; b < batch; b++)
+        slm_q6x4_linear(out + (size_t)b * out_stride, weights, scales, rows, groups,
+                        pairs + (size_t)b * pairs_stride,
+                        activation_scales + (size_t)b * scale_stride,
+                        correction + (size_t)b * correction_stride);
+#endif
 }
 #endif

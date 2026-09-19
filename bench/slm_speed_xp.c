@@ -16,8 +16,11 @@ int main(int argc,char **argv){
     puts("Bliss Q6X4: full context memory allocated. Timing two passes.");fflush(stdout);
     for(int pass=0;pass<2;pass++){
         int pre=pass?64:3,decode=pass?32:8;
+        int prompt[64];for(int i=0;i<pre;i++)prompt[i]=(i*317+19)%m->vocab;
+        /* Prefill goes through prefill(), the path a real prompt takes, so this
+         * measures the batched sweep rather than a token-by-token loop. */
         reset_state(s);QueryPerformanceCounter(&a);DWORD tick=GetTickCount();
-        for(int i=0;i<pre;i++)forward(s,(i*317+19)%m->vocab,0);
+        prefill(s,prompt,pre,0);
         QueryPerformanceCounter(&b);double pre_s=elapsed(a,b,hz);DWORD pre_tick=GetTickCount()-tick;
         QueryPerformanceCounter(&a);tick=GetTickCount();
         for(int i=0;i<decode;i++)forward(s,(i*773+31)%m->vocab,1);
