@@ -32,6 +32,11 @@
 #include "local_ui_ids.h"
 
 #define APP_NAME "Bliss Chat"
+/* Single source of the version the About box reports. The build script passes
+ * -DAPP_VERSION so the installer and the GUI can never disagree again. */
+#ifndef APP_VERSION
+#define APP_VERSION "2.1.0"
+#endif
 #define APP_DISPLAY_NAME "Bliss Chat"
 #define APP_WINDOW_TITLE "Bliss Chat - Local Assistant"
 #define APP_TAGLINE "Local AI conversation utility"
@@ -3779,7 +3784,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         case IDM_ABOUT: {
             char msg[1280];
             snprintf(msg, sizeof(msg),
-                APP_NAME " 2.0.0-rc.2\n\nLocal LLM for Windows XP.\n"
+                APP_NAME " " APP_VERSION "\n\nLocal LLM for Windows XP.\n"
                 "Backend: native C99 inference engine\n"
                 "Model: %s\n"
                 "Source: %s\n"

@@ -5,7 +5,7 @@
 One file, 248 MB, model included. Copy it to the XP machine and double-click it.
 Nothing else to install, and nothing is ever sent online.
 
-SHA-256 `14d65f01529186dccb5259c636ef066cb3b942603dfd5a781f439071ad958058`.
+SHA-256 `a776dee18a0fa032a5c93b17bb9d5a215301a84613d429ec67704beae8e6cbba`.
 See the [release notes](RELEASE_v2.1.0.md) for what changed and the
 [build receipt](docs/releases/v2.1.0/release-receipt.json) for per-file hashes.
 Physical XP validation is still pending.

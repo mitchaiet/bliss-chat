@@ -1,10 +1,10 @@
 {
   "release": "2.1.0",
-  "built_utc": "2026-09-19T13:31:44.829444+00:00",
+  "built_utc": "2026-09-19T15:07:37.190247+00:00",
   "download": {
     "name": "bliss-chat-xp-v2.1.0-portable.exe",
-    "bytes": 259682823,
-    "sha256": "14d65f01529186dccb5259c636ef066cb3b942603dfd5a781f439071ad958058"
+    "bytes": 259646825,
+    "sha256": "a776dee18a0fa032a5c93b17bb9d5a215301a84613d429ec67704beae8e6cbba"
   },
   "payload_files": {
     "DATA-LICENSE.txt": {
@@ -63,12 +63,12 @@
       "extracted_matches": true
     },
     "XPCHAT.EXE": {
-      "sha256": "90403ca17518e1a5b944d7afeaba0501c71bf27c8368dcfde996e34d58b98cdc",
+      "sha256": "9a3fa1ae79651b18eae15f9890011594cb35f080b92b0cab9e03c7f07239224f",
       "bytes": 921460,
       "extracted_matches": true
     },
     "release-manifest.json": {
-      "sha256": "2c787555db9c2d48f2af150747f098408bfdd82254a8e1e45d3a36fc09ed9e6b",
+      "sha256": "7b2726acaddb8963eb050a81fc9a69d2ec30f6ebc94d0cfb2bbf1ca505f750ec",
       "bytes": 1831,
       "extracted_matches": true
     }
@@ -103,6 +103,7 @@
       "modern_crt_imports": []
     }
   },
+  "gui_version_string": "Bliss Chat 2.1.0 (compiled in from APP_VERSION, which the build script reads from the installer version)",
   "batched_prefill": {
     "logits_byte_identical_across_batch_sizes": [
       1,
