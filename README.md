@@ -1,11 +1,10 @@
-# Bliss Chat — XP coherence candidate
+# Bliss Chat
 
-**[Download v2.0.0-rc.2](https://github.com/mitchaiet/bliss-chat/releases/tag/v2.0.0-rc.2)** —
+**[Download v2.0.0](https://github.com/mitchaiet/bliss-chat/releases/tag/v2.0.0)** —
 one portable EXE with the model included, or an extracted-folder ZIP.
-See [release notes](RELEASE_v2.0.0-rc.2.md) for the native XP UI and fully local
-documents/memory tools. The model and runtime are unchanged from RC1.
-Physical XP validation is still pending; this release does not replace v1.3.0
-as the stable recommendation.
+See [release notes](RELEASE_v2.0.0.md) for the Pentium 4 speed build, which
+keeps the RC model and rewrites the engine under it to use every processor.
+Physical XP validation is still pending.
 
 The current source includes a [Pentium 4 speed build](docs/Q6X4_PERFORMANCE.md)
 with a lossless model layout and a Clang-compiled SSE2 runtime. The runtime

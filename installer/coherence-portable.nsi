@@ -12,13 +12,13 @@ Unicode false
   !define ICON "..\assets\bliss_chat.ico"
 !endif
 !ifndef RELEASE_VERSION
-  !define RELEASE_VERSION "2.0.0-rc.2"
+  !define RELEASE_VERSION "2.0.0"
 !endif
 !ifndef RELEASE_NAME
-  !define RELEASE_NAME "Bliss Chat 2 - Release Candidate 2"
+  !define RELEASE_NAME "Bliss Chat 2"
 !endif
 !ifndef FILE_VERSION
-  !define FILE_VERSION "2.0.0.2"
+  !define FILE_VERSION "2.0.0.0"
 !endif
 Name "${RELEASE_NAME}"
 Caption "Bliss Chat 2"
